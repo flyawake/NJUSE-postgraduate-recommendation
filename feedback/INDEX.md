@@ -7,4 +7,4 @@
 | 反馈文件 | 对应任务 | 状态 | 是否已评估 | 备注 |
 | --- | --- | --- | --- | --- |
 | [task_001_feedback.md](archive/task_001_feedback.md) | task_001 | 已归档 | 是 | Master 整改复验通过：R1-R3 独立复现通过，标准命令 128 passed, 4 skipped；live smoke 留待后续 |
-| [task_002_feedback.md](task_002_feedback.md) | task_002 | 待评估 | 否 | 审查整改完成：loopback 精确校验、CLI 共用 resolver/factory、snapshot 事件恢复、controller/SSE/关闭竞态与前端 i18n/token 修复；pytest 211 passed/4 skipped，Vitest 23，Playwright 3；真实模型 live smoke 为 N/A - 无外部凭据 |
+| [task_002_feedback.md](task_002_feedback.md) | task_002 | 已评估 | 是 | Master 独立源码复验结论：需整改；既有门禁 211 passed/4 skipped、Vitest 23、Playwright 3 均通过，但事件/异常脱敏、运行中事实、活动时序、刷新恢复、legacy URL、精确 Origin/Host、配置写失败回滚、完整双语与截图证据未达标；执行 R2.1-R2.8 |

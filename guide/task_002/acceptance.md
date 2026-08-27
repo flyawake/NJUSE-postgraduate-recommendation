@@ -72,3 +72,24 @@ git diff --check
 
 - 有合法凭据时，在一次性 workspace 用 GUI 完成一次真实任务，只记录 provider/profile ID、model、base URL host、脱敏工具轨迹、终态和截图；不得记录 key。
 - 无合法凭据时允许 `N/A - 无外部凭据`，但 Fake Model 图形闭环、profile→credential→client 映射和浏览器展示必须完整通过。最终演示录制前仍需真实模型 smoke。
+
+## 2026-08-27 Master 源码复验整改要求
+
+本轮结论为“需整改”。以下各项均属于原 A3-A22 范围，不扩大 task_002 目标；完成后必须再次提交当前任务反馈并由 Master 复验。
+
+- [ ] R2.1 **公开事件真正脱敏**：建立集中、字段级的 public-event redaction。`write_file.content`、`edit_file.old_string/new_string` 不得进入事件；`run_command.argv` 与验证命令不得原样暴露潜在 token/password/key 参数；不得因异常类型为 `AssertionError` 而把 `str(exc)` 写入 API。使用 sentinel secret 经真实 AgentLoop → snapshot/SSE → DOM 路径验证零命中，覆盖成功、工具失败和 worker 异常。
+- [ ] R2.2 **运行中事实准确**：运行中 snapshot/inspector 必须随事件更新 logical step、provider attempt、tool count 与当前 phase，不能在已经执行工具时仍显示全 0/`READY`；尚无验证结论时不得显示“无需验证”。新增中间态 controller/API/组件/E2E 断言，不只断言终态计数。
+- [ ] R2.3 **活动流保持事件时序与折叠语义**：用统一有序 feed 表示保留 step/retry/tool group/completion 的真实交错顺序，禁止先渲染全部普通 item、再统一渲染工具组。已完成成功组在运行中默认折叠，只有当前执行组与失败/中止组强制展开；终态仍可检查全部详情。
+- [ ] R2.4 **刷新与 SSE 恢复闭环**：从 snapshot 初始化后订阅必须携带正确 `lastEventId`，或以一次原子 reset 正确重置 baseline；空 reset 不得保留一个会过滤重放事件的旧 ID。收到 reset 时重取 snapshot，流在未收到 `end` 却正常 EOF 时也要进入断线并重连。Playwright 必须在第一个工具完成后刷新，最终仍按序看到全部 5 个工具、无丢失/重复，并覆盖落后于 retained tail。
+- [ ] R2.5 **配置与 URL 语义一致**：legacy `OPENAI_BASE_URL` 和 GUI/profile 走同一个 URL validator，远程 HTTP、userinfo、query、fragment 与非法端口都必须拒绝；保留合法 HTTPS 和 loopback HTTP。ProfileStore 的 create/update/delete/activate 使用 copy-on-write 或失败回滚，写盘失败后内存视图与磁盘都保持原状态；严格加载时拒绝未知/类型错误/内嵌 ID 不一致字段。新增失败注入与 legacy CLI/API 测试。
+- [ ] R2.6 **精确 same-origin/Host 防护**：按合法 Host 语法解析 IPv4/IPv6 与数字端口，拒绝畸形 Host；Origin 必须与当前请求的 scheme/host/effective port 精确一致，不得接受另一个 loopback 端口、userinfo/path 等伪造值。禁用默认外链 Swagger UI，或改为完全本地且受同一 CSP 约束。补齐不同端口、非法端口、IPv6 与畸形头测试。
+- [ ] R2.7 **完整双语与关键交互状态**：前端按稳定 error code 映射 zh-CN/en-US 文案，不直接把后端中文 `message` 显示在英文 UI；invalid workspace/profile/credential 时按钮与 `Ctrl+Enter` 都不得发起 start；继承 active profile 时 selector 显示真实选中项；onboarding 对空 credential ref 有可完成路径；按 UI 规格保持 credential input 为 password；移除窄屏可聚焦按钮祖先上的 `aria-hidden` 并验证 drawer 焦点管理。
+- [ ] R2.8 **证据与文档诚实一致**：更新 README 中关于“脱敏、实时计数、完成即折叠、重连恢复、same-origin”的描述，使其与修复后的实现一致；`.env.example` 不得暗示项目会自动加载 `.env`，除非实现并测试该能力。重新生成 1280×720 截图，使用不含用户名/用户目录的演示 workspace；running 截图必须显示非零计数、正确 phase 和 active profile，截图/trace/日志/DOM sentinel secret 零命中。
+
+整改复验除原自动验收命令外，必须新增并执行：
+
+```powershell
+npm audit --omit=dev --registry=https://registry.npmjs.org
+uv build
+git diff --check 49db10c..HEAD
+```

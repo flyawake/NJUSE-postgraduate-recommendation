@@ -210,3 +210,33 @@ git diff --check 49db10c..HEAD     # 0
 ```
 
 4 个 skip 均为平台无法创建符号链接的用例；截图为整改后重新生成，全部 1280×720，字节扫描无 secret/用户目录路径。
+
+## 11. Master 独立源码复验（2026-08-27）
+
+### 结论：需整改
+
+图形应用、profile/credential 基础闭环、AgentLoop 复用、生产静态资源打包和全部既有质量门禁均可独立运行；但 A3-A6、A9-A11、A13-A14、A16-A18、A20、A22 仍有实质缺口，不能以测试全绿判定通过。任务保持“进行中”，按 `guide/task_002/acceptance.md` 的 R2.1-R2.8 整改后重新提交反馈。
+
+### 独立验证结果
+
+- `uv sync --all-groups`、Ruff format/check、`pytest -q`：通过，`211 passed, 4 skipped`，另有 1 个 Starlette TestClient 弃用 warning。
+- 四个 CLI help：全部 exit 0。
+- `npm ci`、typecheck、lint、Vitest、build、OpenAPI 类型一致性：通过，Vitest `23 passed`。
+- Playwright production build：通过，`3 passed`；用例本身未覆盖本轮发现的运行中计数、工具后刷新恢复、真实活动时序和精确 Origin。
+- `uv build`：通过；wheel 含 `web/static/index.html`、CSS、JS，且无 source map。
+- `npm audit --omit=dev --registry=https://registry.npmjs.org`：`0 vulnerabilities`。本机默认 npmmirror audit endpoint 返回 404，显式官方 registry 后通过。
+- 无配置/无网络启动 `coding-agent ui --port 0 --no-browser`：health/root 200，退出后端口释放；A1 通过。
+
+### 可复现缺陷证据
+
+1. **公开事件/异常泄漏 secret（A6/A13/A17）**：真实 AgentLoop 执行 `write_file(content=<sentinel>)` 后，公开 snapshot 的 `tool_started.payload.arguments` 命中 sentinel；`RunController._finish_with_exception(..., AssertionError(<sentinel>))` 也把 sentinel 写入 `error.message`。根因是 `format_args_summary` 只截断不脱敏，controller 只做字段白名单；AssertionError 分支仍拼接异常文本。
+2. **刷新恢复清空已知事件（A5）**：reducer 先从 snapshot 恢复事件 1/2，再处理 SSE `reset` 空列表时保留 `lastEventId=2`，随后重放事件 1/2 均被 APPEND 去重过滤，结果为 `events=[]`。订阅端还没有传入 `state.lastEventId`，也未在正常 EOF 时重连。
+3. **活动时序与运行事实不正确（A4/A6/A7）**：`ActivityFeed` 先渲染 `grouping.items`、再渲染 `grouping.groups`，步骤/重试/完成事件与工具组失去真实交错顺序；`RunInspector` 只读取终态 `RunResult` 计数，运行时为 0。现有 `02-running.png` 直观显示已经完成 glob/grep，但逻辑步数、模型请求数、工具调用数均为 0，phase 为“就绪”，验证误显示“无需验证”。
+4. **legacy URL 与本地 Web 防护不一致（A16/A18）**：`OPENAI_BASE_URL=http://api.example.com/v1` 被 resolver/config 接受；带正确 token 的 `Origin: http://127.0.0.1:9999` 请求到 `127.0.0.1:8000` 返回 200；`Host: localhost:not-a-port` 返回 200；合法 `[::1]:8000` 反而被错误解析为 403。默认 `/api/docs` HTML 仍引用 `cdn.jsdelivr.net`，只是被 CSP 阻止。
+5. **ProfileStore 写失败未回滚内存（A14）**：注入 `os.replace` 失败后磁盘原目标虽未被覆盖，但失败的 profile 仍出现在同一 store 的 `list_profiles()`，后续成功保存可能意外落盘。
+6. **英文错误与交互契约不完整（A3/A9-A11）**：`apiErrorText`、WorkspaceField 和 RunInspector 直接展示后端中文 message，英语界面遇错会混入中文；TaskComposer 的开始按钮/Ctrl+Enter 只检查 task/running，不检查 invalid setup；继承 active profile 时 selector 仍显示“选择 profile”；空 credential ref 会使 onboarding 回到创建表单；窄屏浮动按钮位于 `aria-hidden` 祖先下。
+7. **反馈证据与截图声明不符（A22）**：六张所谓“无用户目录路径”的截图顶部和 workspace 输入均清晰包含 `C:\Users\ASUS\AppData\Local\Temp\...`；running 截图对 inspector 计数的描述也与画面中的 0/0/0 不符。README 同时宣称事件已脱敏、完成组即时折叠、重连恢复和精确安全校验，与当前实现不一致。
+
+### 流程记录
+
+- `543131f` 混入了 Master 管理资料，且 Task 2 实现提交后 `guide/INDEX.md` 仍停留“未开始”。Master 本轮已补记任务为“进行中”；后续整改提交只允许包含实现、测试、README 和 Developer feedback，不得修改 `guide/`、`AGENT_*` 或 `PROJECT_CONTEXT.md`。
