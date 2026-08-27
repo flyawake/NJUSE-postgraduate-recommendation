@@ -1,0 +1,6 @@
+"""Allow ``python -m coding_agent`` as an alternative entry point."""
+
+from coding_agent.cli import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())
