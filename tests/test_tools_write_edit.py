@@ -231,6 +231,34 @@ def test_failed_atomic_replace_keeps_original(env, monkeypatch):
     assert not list(root.glob(".a.py.*.tmp"))
 
 
+def test_read_normalizes_observation_key_for_write_and_edit(env):
+    """R2: read './a.txt' must observe the same key as write/edit use."""
+    root, _tracker, executor = env
+    (root / "a.txt").write_text("one\n", encoding="utf-8")
+    read_outcome = read(env, "./a.txt")
+    assert read_outcome.ok is True
+    assert read_outcome.data["path"] == "a.txt"
+
+    edit_outcome = run(
+        executor,
+        "e1",
+        "edit_file",
+        {"path": "./a.txt", "old_string": "one", "new_string": "two"},
+    )
+    assert edit_outcome.ok is True
+    assert edit_outcome.error is None
+    assert (root / "a.txt").read_text(encoding="utf-8") == "two\n"
+
+    write_outcome = run(
+        executor,
+        "w1",
+        "write_file",
+        {"path": "a.txt", "content": "three\n"},
+    )
+    assert write_outcome.ok is True
+    assert (root / "a.txt").read_text(encoding="utf-8") == "three\n"
+
+
 def test_write_to_directory_is_rejected(env):
     root, _tracker, executor = env
     (root / "d").mkdir()

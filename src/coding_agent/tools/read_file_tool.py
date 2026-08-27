@@ -18,6 +18,7 @@ from .paths import (
     PathIsDirectoryError,
     PathNotFoundError,
     existing_file,
+    normalize_rel,
 )
 
 DEFAULT_OFFSET = 1
@@ -73,7 +74,10 @@ def _validate(args: Dict) -> Dict:
 def _handle(
     args: Dict, workspace_root, tracker: FileObservationTracker
 ) -> Dict[str, Any]:
-    rel = args["path"]
+    try:
+        rel = normalize_rel(args["path"])
+    except ValueError as exc:
+        raise ToolExecutionError(PATH_NOT_ALLOWED, str(exc)) from exc
     try:
         target = existing_file(workspace_root, rel)
     except PathNotFoundError as exc:

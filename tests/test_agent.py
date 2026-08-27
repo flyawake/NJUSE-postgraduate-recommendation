@@ -423,9 +423,12 @@ def test_cancel_between_tool_calls_aborts_half_group(tmp_path):
     class TriggerPolicy:
         def __init__(self):
             self._inner = WorkspaceToolPolicy()
+            self._decisions = 0
 
         def decide(self, effect, tool_name, normalized_args, call_id):
-            flag["cancel"] = True
+            self._decisions += 1
+            if self._decisions == 2:
+                flag["cancel"] = True
             return self._inner.decide(effect, tool_name, normalized_args, call_id)
 
     first = make_tool_call("glob", {"pattern": "*.py"})
@@ -440,9 +443,45 @@ def test_cancel_between_tool_calls_aborts_half_group(tmp_path):
     contents = tool_contents(loop.history)
     assert sum('"ok":true' in content for content in contents) == 1
     assert sum("ABORTED_BEFORE_DISPATCH" in content for content in contents) == 1
+    assert result.tool_call_count == 2
     assert len(model.requests) == 1
     assert history_is_paired(loop.history)
     assert_valid_event_stream(sink.events)
+
+
+def test_cancel_during_policy_prevents_write_side_effect(tmp_path):
+    """R3: cancellation arriving inside prepare/policy must block the handler."""
+    flag = {"cancel": False}
+
+    class TriggerPolicy:
+        def __init__(self):
+            self._inner = WorkspaceToolPolicy()
+
+        def decide(self, effect, tool_name, normalized_args, call_id):
+            if tool_name == "write_file":
+                flag["cancel"] = True
+            return self._inner.decide(effect, tool_name, normalized_args, call_id)
+
+    first = make_tool_call("write_file", {"path": "cancelled.txt", "content": "x"})
+    second = make_tool_call("write_file", {"path": "cancelled2.txt", "content": "y"})
+    model = ScriptedModel([turn(calls=[first, second])])
+    loop, sink, _model = build_loop(
+        tmp_path, model, policy=TriggerPolicy(), cancelled=lambda: flag["cancel"]
+    )
+    result = loop.run("task")
+    assert result.status is RunStatus.INTERRUPTED
+    assert result.stop_reason is StopReason.INTERRUPTED
+    assert not (tmp_path / "cancelled.txt").exists()
+    assert not (tmp_path / "cancelled2.txt").exists()
+    contents = tool_contents(loop.history)
+    assert len(contents) == 2
+    assert all("ABORTED_BEFORE_DISPATCH" in content for content in contents)
+    assert result.tool_call_count == 2
+    assert len(model.requests) == 1
+    assert history_is_paired(loop.history)
+    assert_valid_event_stream(sink.events)
+    # Neither call was ever dispatched, so no tool lifecycle events fired.
+    assert "tool_started" not in sink.types()
 
 
 def test_cancel_during_run_command_returns_interrupted(tmp_path):

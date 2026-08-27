@@ -254,6 +254,50 @@ def test_read_file_rejects_symlink_escape(env):
     assert outcome.error.code == PATH_NOT_ALLOWED
 
 
+def test_grep_does_not_read_file_symlink_escape(env):
+    root, _tracker, executor = env
+    outside = root.parent / (root.name + "-outside")
+    outside.mkdir(exist_ok=True)
+    (outside / "secret.txt").write_text("needle outside\n", encoding="utf-8")
+    try:
+        (root / "link.txt").symlink_to(outside / "secret.txt")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is not available on this platform")
+    outcome = run(executor, "g1", "grep", {"pattern": "needle"})
+    assert outcome.ok is True
+    assert outcome.data["match_count"] == 0
+    assert outcome.data["matches"] == []
+
+
+def test_glob_does_not_return_file_symlink_escape(env):
+    root, _tracker, executor = env
+    outside = root.parent / (root.name + "-outside")
+    outside.mkdir(exist_ok=True)
+    (outside / "secret.txt").write_text("outside\n", encoding="utf-8")
+    try:
+        (root / "link.txt").symlink_to(outside / "secret.txt")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is not available on this platform")
+    outcome = run(executor, "g1", "glob", {"pattern": "*.txt"})
+    assert outcome.ok is True
+    assert outcome.data["matches"] == []
+
+
+def test_grep_and_glob_do_not_follow_directory_symlink_escape(env):
+    root, _tracker, executor = env
+    outside = root.parent / (root.name + "-outside-dir")
+    outside.mkdir(exist_ok=True)
+    (outside / "secret.txt").write_text("needle outside\n", encoding="utf-8")
+    try:
+        (root / "linked-dir").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is not available on this platform")
+    grep_outcome = run(executor, "g1", "grep", {"pattern": "needle"})
+    assert grep_outcome.data["match_count"] == 0
+    glob_outcome = run(executor, "g2", "glob", {"pattern": "**/*.txt"})
+    assert glob_outcome.data["matches"] == []
+
+
 def test_read_file_observation_required_for_writes(env):
     root, tracker, executor = env
     (root / "a.py").write_text("old\n", encoding="utf-8")

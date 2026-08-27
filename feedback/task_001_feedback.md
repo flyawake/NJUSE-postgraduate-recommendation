@@ -81,3 +81,54 @@
 - 最终交付前由项目负责人核验公开仓库创建时间合规性。
 
 ## 7. 状态：已完成
+
+## 8. Master 首次验收记录（2026-08-27）
+
+**结论：需整改。** A1-A4、A6-A7、A9-A15 的现有证据可接受；A5 与 A8 未完全通过，task_001 保持“进行中”，不得归档或开始后续实现任务。
+
+独立复验结果：
+
+- `uv sync --all-groups`：通过。
+- `uv run ruff format --check .`：通过，51 files already formatted。
+- `uv run ruff check .`：通过。
+- `uv run pytest -q`：通过，126 passed, 1 skipped。
+- 两种 help 入口：均退出 0。
+- 依赖树：运行时仅 `openai`；未跟踪 PDF/真实 `.env`，未发现有效密钥。
+
+未通过证据：
+
+1. `grep_tool.py` 对 `os.walk` 产出的每个文件直接 `open(full, "rb")`，没有逐候选调用 workspace containment 守卫；因此文件符号链接可读取 workspace 外内容，与 plan 3.3 及 A5 冲突。当前 Windows 环境无法创建 symlink，原测试也因此 skip，但实现缺口可由控制流直接确认。
+2. 最小复现 `read_file({"path":"./a.txt"})` 成功并返回 `./a.txt`，随后 `edit_file` 使用同一个 `./a.txt` 却得到 `FILE_NOT_OBSERVED`。原因是 read 以未规范化字符串写观察账本，而 edit/write 使用规范化键。
+3. 最小复现在 ToolPolicy 决策时置取消标记：最终 RunResult 为 INTERRUPTED，但 `write_file` handler 仍执行并创建 `cancelled.txt`。AgentLoop 只在 prepare 前检查取消，prepare 后到 handler 前没有第二道守卫，不符合半组取消“未分派不得产生副作用”的 A8 要求。
+
+整改范围和复验用例已写入 `guide/task_001/plan.md` 第 9 节及 `acceptance.md` 的 R1-R3。Dev 应只修这三项及对应测试/README，完成后在本文件追加整改结果并把反馈索引重新置为“待评估”。
+
+## 9. 整改结果（2026-08-27）
+
+三项整改全部完成，未改变 tool schema、状态机、验收口径，未新增依赖。
+
+**R1 搜索符号链接逃逸**
+- 实现：`tools/paths.py` 新增 `is_within_workspace(root, candidate)`（`candidate.resolve(strict=False)` + `relative_to(root)`，解析失败或循环一律拒绝）；`grep_tool` 在 `open()` 之前、`glob_tool` 在收集结果之前，对 `os.walk` 的**每个候选文件**调用该守卫。`os.walk(followlinks=False)` 不进入目录链接，目录链接外的文件因此不可被发现；即使平台把目录链接当文件产出，逐候选守卫仍会拒绝解析后位于 workspace 外的路径。
+- 测试：`test_grep_does_not_read_file_symlink_escape`、`test_glob_does_not_return_file_symlink_escape`、`test_grep_and_glob_do_not_follow_directory_symlink_escape`（`tests/test_tools_read_search.py`）。Windows 无法创建符号链接时按验收规则 skip，守卫代码本身不依赖测试平台。
+
+**R2 观察资源键规范化**
+- 实现：`read_file_tool._handle` 先 `rel = normalize_rel(args["path"])`，再解析文件、写观察账本并返回 `data["path"]`；与 write/edit 的规范化键完全一致。
+- 测试：`test_read_normalizes_observation_key_for_write_and_edit`（`tests/test_tools_write_edit.py`）：`read_file("./a.txt")` 返回 `path == "a.txt"`；随后 `edit_file("./a.txt")` 与 `write_file("a.txt")` 均成功，不再出现 `FILE_NOT_OBSERVED`。
+
+**R3 policy/prepare 后取消守卫**
+- 实现：`agent.py` 的 `_handle_executing` 在 `prepare()`（含 policy 决策）返回后、发出 `tool_started`/调用 handler 前再次检查取消；已取消时当前及剩余调用均写入 `ABORTED_BEFORE_DISPATCH`（不执行 handler），状态 `INTERRUPTED`。同时把 `tool_call_count` 的递增点移到“真正分派”与各中止分支的单个结果处，保证每个模型调用只计一次。
+- 测试：`test_cancel_during_policy_prevents_write_side_effect`（`tests/test_agent.py`）：policy 对 write_file 决策时置取消标记，两个 WRITE 调用均未执行、目标文件不存在、结果配对为 2 个 `ABORTED_BEFORE_DISPATCH`、`tool_call_count == 2`、无 `tool_started` 事件、状态 `INTERRUPTED`。原半组取消测试更新为“第二次 policy 决策时取消”，继续验证第一个调用已执行、第二个被中止的既有语义。
+
+**整改后标准命令（实际执行结果）**
+
+```powershell
+uv sync --all-groups                 # exit 0，解析/审计 26 包
+uv run ruff format --check .         # exit 0，53 files already formatted
+uv run ruff check .                  # exit 0，All checks passed
+uv run pytest -q                     # exit 0，128 passed, 4 skipped
+uv run coding-agent --help           # exit 0
+uv run python -m coding_agent --help # exit 0
+git diff --check                     # exit 0
+```
+
+4 个 skip 均为“平台无法创建符号链接”的符号链接用例（原 1 个 + 整改新增 3 个）；其余全部通过。`feedback/INDEX.md` 已重新置为 `待评估`。

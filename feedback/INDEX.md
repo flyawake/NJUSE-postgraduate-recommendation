@@ -6,4 +6,4 @@
 
 | 反馈文件 | 对应任务 | 状态 | 是否已评估 | 备注 |
 | --- | --- | --- | --- | --- |
-| [task_001_feedback.md](task_001_feedback.md) | task_001 | 待评估 | 否 | 首次实现反馈：sync/ruff/pytest/help 全部通过（126 passed, 1 skipped）；live smoke 为 N/A（无外部凭据） |
+| [task_001_feedback.md](task_001_feedback.md) | task_001 | 待评估 | 否 | 首次验收整改完成（R1 搜索符号链接守卫、R2 观察键规范化、R3 policy 后取消守卫）；标准命令 128 passed, 4 skipped |

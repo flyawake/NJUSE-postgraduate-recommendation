@@ -88,6 +88,7 @@ assistant ToolCall
   -> Registry lookup
   -> ToolSpec 参数校验与规范化
   -> ToolPolicy(effect, normalized_args) => ALLOW | DENY
+  -> 再次检查取消（policy 后、handler 前，已取消则记 ABORTED_BEFORE_DISPATCH）
   -> 发出 tool_started
   -> handler.execute
   -> ToolOutcome 归一化与领域化保留
@@ -109,7 +110,7 @@ assistant ToolCall
 
 所有结果统一为 `{"ok": true, "data": ...}` 或 `{"ok": false, "error": {"code", "message", "retryable", "recovery_hint"?}}`，错误 code 稳定且属于本项目。
 
-文件安全机制：拒绝绝对路径、`..` 越界和符号链接逃逸；只有成功 `read_file` 才建立观察，覆盖/编辑前重新计算 SHA-256，未观察返回 `FILE_NOT_OBSERVED`、版本变化返回 `FILE_STALE`；写入走同目录临时文件 + flush/close + `os.replace`，成功后刷新观察。该机制是单进程下的尽力新鲜度防护，**不是跨进程 CAS 或沙箱**。
+文件安全机制：拒绝绝对路径、`..` 越界和符号链接逃逸；搜索工具对 `os.walk` 的每个候选文件做逐候选 canonical containment 检查，`grep` 不读取、`glob` 不返回解析后位于 workspace 外的符号链接文件，也不跟随目录链接。只有成功 `read_file` 才建立观察（路径键统一规范化，`./a.txt` 与 `a.txt` 视为同一文件），覆盖/编辑前重新计算 SHA-256，未观察返回 `FILE_NOT_OBSERVED`、版本变化返回 `FILE_STALE`；写入走同目录临时文件 + flush/close + `os.replace`，成功后刷新观察。该机制是单进程下的尽力新鲜度防护，**不是跨进程 CAS 或沙箱**。
 
 ### 上下文投影
 
@@ -131,7 +132,7 @@ assistant ToolCall
 
 - canonical history 只追加，上下文裁剪只作用于每步临时派生的 request view。
 - 下一次模型请求之前，每个 assistant tool call 恰有一个同 ID 的 tool result；重复/空 call ID 属协议错误并终止，且为诊断起见补齐全部结果。
-- Ctrl+C 会尝试终止当前 `run_command` 拥有的子进程，当前调用返回 `TOOL_ABORTED`，同组未分派调用返回 `ABORTED_BEFORE_DISPATCH`，随后以 `INTERRUPTED` 结束，CLI 退出码 130。
+- Ctrl+C 会尝试终止当前 `run_command` 拥有的子进程，当前调用返回 `TOOL_ABORTED`，同组未分派调用返回 `ABORTED_BEFORE_DISPATCH`，随后以 `INTERRUPTED` 结束，CLI 退出码 130。取消不仅在每次分派前检查，还在 policy/prepare 返回后、handler 启动前再次检查，保证已取消的 WRITE/EXECUTE 不产生副作用，且每个模型调用只计数一次。
 
 ## 测试
 

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Dict, List
 
 from .base import PATH_NOT_ALLOWED, ToolEffect, ToolExecutionError, ToolSpec
-from .paths import existing_directory, normalize_rel
+from .paths import existing_directory, is_within_workspace, normalize_rel
 from .search import matches_glob, should_skip_dir, validate_glob_pattern
 
 MAX_MATCHES = 100
@@ -56,6 +57,8 @@ def _handle(args: Dict, workspace_root) -> Dict[str, object]:
         dirs[:] = sorted(d for d in dirs if not should_skip_dir(d))
         for filename in sorted(files):
             full = os.path.join(root, filename)
+            if not is_within_workspace(workspace_root, Path(full)):
+                continue
             rel = os.path.relpath(full, base).replace(os.sep, "/")
             if matches_glob(rel, filename, pattern):
                 matches.append(rel if rel_base == "." else f"{rel_base}/{rel}")

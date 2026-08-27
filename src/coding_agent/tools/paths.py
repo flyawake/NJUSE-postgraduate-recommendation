@@ -99,3 +99,21 @@ def existing_file(root: Path, rel: str) -> Path:
     if path.is_dir():
         raise PathIsDirectoryError(f"path is a directory: {rel}")
     return path
+
+
+def is_within_workspace(root: Path, candidate: Path) -> bool:
+    """Canonical containment check for already-discovered candidate paths.
+
+    Used by search tools on every ``os.walk`` result: a file symlink that
+    resolves outside the workspace (or a symlink loop) must be skipped, never
+    read or reported.
+    """
+    try:
+        resolved = candidate.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return False
+    return True

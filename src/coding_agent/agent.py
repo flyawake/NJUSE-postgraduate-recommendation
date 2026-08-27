@@ -322,15 +322,23 @@ class AgentLoop:
         reminder_due = False
         any_success = False
         for index, call in enumerate(calls):
-            self._tool_call_count += 1
             if self._is_cancelled():
                 interrupted = True
                 self._append_remaining_aborted(calls[index:])
                 break
 
             prepared = self._tool_executor.prepare(call)
+            # Second cancel guard: policy/prepare ran without side effects,
+            # but cancellation may have arrived during them. The handler must
+            # not start once the group is being aborted.
+            if self._is_cancelled():
+                interrupted = True
+                self._append_remaining_aborted(calls[index:])
+                break
+
             self._update_repeat(prepared.signature)
             if self._repeat_count >= self._repeat_abort_at:
+                self._tool_call_count += 1
                 self._append_error_result(
                     call,
                     REPEATED_TOOL_CALL,
@@ -346,6 +354,7 @@ class AgentLoop:
             if self._repeat_count == self._repeat_remind_at:
                 reminder_due = True
 
+            self._tool_call_count += 1
             self._emit(
                 event_types.EVENT_TOOL_STARTED,
                 step=self._step_count,

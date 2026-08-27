@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 from typing import Dict, List
 
 from .base import (
@@ -13,7 +14,7 @@ from .base import (
     ToolExecutionError,
     ToolSpec,
 )
-from .paths import existing_directory, normalize_rel
+from .paths import existing_directory, is_within_workspace, normalize_rel
 from .search import matches_glob, should_skip_dir, validate_glob_pattern
 
 MAX_MATCHES = 200
@@ -83,6 +84,10 @@ def _handle(args: Dict, workspace_root) -> Dict[str, object]:
         dirs[:] = sorted(d for d in dirs if not should_skip_dir(d))
         for filename in sorted(files):
             full = os.path.join(root, filename)
+            # Per-candidate canonical containment guard: a file symlink that
+            # resolves outside the workspace is never opened.
+            if not is_within_workspace(workspace_root, Path(full)):
+                continue
             rel = os.path.relpath(full, base).replace(os.sep, "/")
             if include and not matches_glob(rel, filename, include):
                 continue
