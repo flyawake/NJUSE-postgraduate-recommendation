@@ -28,3 +28,33 @@
 - [ ] T3. 2000 条混合作用域记忆数据集下无越界召回，性能与资源占用通过 task_008 的发布预算。
 - [ ] T4. task_001-task_006 全量回归、构建、安全、打包和生产静态资源检查通过。
 
+## 数据、索引与排序证据
+
+- [ ] I1. 中英文、代码标识符、路径词、大小写和 CJK bigram fixtures 有固定 analyzer 输出；FTS 与 fallback 对核心查询返回同一正确 top result。
+- [ ] I2. candidate/superseded/rejected/deleted 不出现在 active retrieval；同一 supersede chain/近重复 content 只注入一条。
+- [ ] I3. 稳定排序在同分时以 entry id 收敛；重复运行、重启和 FTS rebuild 后 top-k 顺序相同。
+- [ ] I4. FTS index 与 facts 人为制造不一致后 self-check 能重建；不修改 canonical Conversation 数据。
+
+## 故障与攻击测试
+
+- [ ] F1. memory content 包含伪 XML 闭合、system 指令、越界命令、私钥块、高熵 token 和 `.env` assignment 时无法逃逸数据边界或进入数据库/模型请求。
+- [ ] F2. create/edit/approve/delete/reset 在每个写点失败都保持 entry、索引、source、event 一致；stale version 不覆盖新事实。
+- [ ] F3. turn 首次检索后立即编辑/delete 相关 memory，本 turn 保持已审计 snapshot，下一 turn 才使用新状态；UI 能解释该时序。
+- [ ] F4. candidate extractor timeout、非法 JSON、模型拒绝和服务不可用不改变主 turn 终态，也不产生 confirmed memory。
+
+## 定量门槛
+
+- [ ] B1. 默认 top-k≤6、单条注入≤1,200 字符、总 memory projection≤6,000 字符；超限按 rank 整条省略并记录数量。
+- [ ] B2. 2,000 entries 混合作用域 fixture 的 warm query p95≤50 ms、cold query p95≤150 ms（约定测试机/SQLite backend），结果无跨 scope。
+- [ ] B3. 每 turn 的数据库检索调用数≤1；2,000 个 SSE/model/tool event 不增加调用数。
+- [ ] B4. hard delete/reset 完成后 facts content、source excerpt、terms、FTS、runtime cache 中的正文匹配数为 0。
+
+## 交付证据矩阵
+
+| 证据 | 必须包含 |
+| --- | --- |
+| schema/生命周期 | scope、status、version chain、source、usage、delete 行为 |
+| retrieval report | analyzer、backend、query、候选、rank reason、budget、耗时 |
+| request audit | 注入 block、转义、优先级说明、off 模式无 block |
+| UI E2E | 显式保存、跨会话召回、来源、编辑/supersede、删除、不可再召回 |
+| security audit | secret patterns、prompt injection、日志/DOM/DB 扫描结果 |

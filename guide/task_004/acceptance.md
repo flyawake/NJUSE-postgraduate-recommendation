@@ -33,3 +33,27 @@
 - [ ] Q2. Vitest/RTL 与 production Playwright 覆盖两会话三轮对话、后台切换、刷新/重启、归档/恢复/删除。
 - [ ] Q3. task_001-task_003 全套、Ruff、API types、typecheck、lint、build、E2E、audit、wheel、diff check 全部通过。
 
+## 数据不变量与故障注入
+
+- [ ] F1. 对 start turn 的每个事务写点注入异常，数据库不存在“有 active turn 但无 user canonical item”或 ordinal 重复。
+- [ ] F2. 在 assistant tool-call 写入后、每个 tool result 前后和 terminal compare-and-set 前终止进程；恢复后 provider history 始终配对，未知副作用被明确标记且不重放。
+- [ ] F3. 同一个 idempotency key 并发发送两次只创建一个 turn；两个不同请求争用同 conversation 只有一个进入 active。
+- [ ] F4. rename/archive/delete 的 stale version 返回 409 `version_conflict`，不会静默覆盖另一客户端的新状态。
+- [ ] F5. migration 任一步失败保留原 DB 与备份，schema version 不半升级；损坏 canonical payload fail-closed 为 `data_error`。
+
+## API 与分页证据
+
+- [ ] A1. Conversation/Turn DTO、状态枚举、cursor 与错误码写入 OpenAPI，生成的 TS 类型无手写漂移。
+- [ ] A2. 201 条会话/turn fixture 以 limit 50 翻完所有页，无重复/遗漏；中途插入一条新记录仍满足文档化 cursor 语义。
+- [ ] A3. 旧 `/api/runs` 仅调用 ConversationService compatibility path，源码中不存在第二个 worker/history/event 实现。
+- [ ] A4. 所有 mutation 继续通过 session token、Host/Origin 与 loopback 防护；跨 conversation ID 不可读写他人状态（本地单用户边界内仍须校验资源归属）。
+
+## 交付证据
+
+| 证据 | 必须说明 |
+| --- | --- |
+| schema 图/迁移清单 | 表、FK、unique/partial constraint、version、备份位置 |
+| 三轮模型请求夹具 | 每轮 canonical 输入摘要、tool pairing、conversation 隔离 |
+| 并发测试 | 同 conversation、同 workspace、不同 workspace、全局 worker 上限 |
+| 重启 E2E | running→interrupted、SSE 恢复、无命令重放 |
+| UI 截图 | 新建、两会话切换、后台 running、归档、删除确认、窄屏 |

@@ -79,6 +79,81 @@ Memory（独立服务）
 
 只有一个任务处于“进行中”。每项必须经源码逻辑复验和生产 E2E 验收后，下一项才进入实施，避免多个开发者同时改写 Conversation/AgentLoop/Composer 的共同边界。
 
+## 用户需求—任务追踪矩阵
+
+| 用户要求 | 主任务 | 前置/补充 | 完成证据 |
+| --- | --- | --- | --- |
+| 移除开发说明、面向用户的布局和文案 | task_003 | task_008 视觉/a11y 复核 | 文案清单、各状态 production 截图、键盘路径 |
+| Start/Stop 合并且按钮靠右 | task_003 | task_006 扩展 busy 状态 | Composer FSM、重复 click 幂等 E2E |
+| Codex 风格平面工作过程 | task_003 | task_005 加 Think/streaming | 投影 contract、2,000-event DOM/性能证据 |
+| 输入或 event 导致 workspace 重复校验 | task_003 | task_008 性能回归 | Network 请求计数、render 隔离、源码依赖审计 |
+| 模型 think 流式展示、可折叠 | task_005 | task_004 持久事实、task_008 live smoke | 两 wire fixtures、canonical audit、Think UI |
+| 每次输入不再新任务、支持多轮 | task_004 | task_005/006 建立其上的 stream/inbox | 两会话三轮请求、上下文隔离、重启 E2E |
+| 会话切换、命名、归档、删除 | task_004 | task_008 数据/隐私复核 | SQLite/API lifecycle、UI 与硬删除证据 |
+| 运行中消息 Queue/手动 Steer | task_006 | task_004/005 | race tests、三条 FIFO、一条 Steer、降级证据 |
+| 跨会话记忆和知识共享 | task_007 | task_004；task_008 安全/性能 | 显式保存、B 会话召回、来源、删除不可召回 |
+| 其他不完善与最终可演示性 | task_008 | 汇总全部任务 | fixed eval、真实模型、clean install、材料 |
+
+## 跨任务统一架构决策
+
+### ADR-01：保持自研内核，框架只承担通用基础设施
+
+- Python 继续使用 dataclass/Protocol、FastAPI、标准库 sqlite3/threading/concurrent futures；不引入 ORM 或 agent framework。
+- React/TanStack Query 负责低频 server state；React 自带 external-store 能力承载高频 event projection；不为此次改造新增全局状态框架。
+- OpenAI SDK 只存在 provider adapter；AgentLoop、Conversation、Memory、UI DTO 不接触 SDK 类型。
+
+### ADR-02：事实源与展示投影分离
+
+- canonical history、Conversation/Turn、Inbox、Memory 的持久事实位于 SQLite/内部 typed model。
+- public event/SSE/React transcript 是脱敏投影，可以 reset/rebuild，不能反向成为模型历史。
+- streaming delta 可 checkpoint，但只有完整校验后的 assistant response 才成为 canonical item。
+
+### ADR-03：所有高风险行为以显式状态机和事务表达
+
+- Composer、WorkspaceValidation、Conversation/Turn、ModelAttempt、Inbox、Memory 都有列明状态和允许 transition。
+- start/terminal/claim/delete/migration 使用数据库事务、幂等键和 compare-and-set；不靠前端 loading boolean 保证正确性。
+- AgentLoop 历史只由自身同步安全点修改；Web/SSE/Steer 不能从其他线程直接 append。
+
+### ADR-04：能力协商代替品牌分支
+
+- profile 由 `wire_api + capability + endpoint/model/credential reference` 描述；不在 AgentLoop 判断“是不是 DeepSeek/OpenAI”。
+- UI 只展示服务端与 profile capability 的交集；不支持的 reasoning/Steer/adapter 必须隐藏或诚实降级。
+- 新 provider 只能增加 adapter/preset/contract fixtures，不能复制 AgentLoop。
+
+### ADR-05：记忆是低信任、有来源、可删除的数据
+
+- Conversation history 默认不跨会话共享；只有 active confirmed Memory 进入检索。
+- 模型候选必须经用户批准；Memory 不授予工具权限，不覆盖 system/ToolPolicy。
+- hard delete 同时清理正文、来源摘录、索引和缓存，usage audit 不保留正文。
+
+## 实施与交接规范
+
+每个任务按其 plan 中 A/B/C/D 批次开发。Developer feedback 除标准命令外必须提交：
+
+1. **改动映射**：acceptance ID → 文件/类型/函数 → 测试/截图/日志证据。
+2. **架构说明**：状态所有权、事务边界、线程/并发边界、public/canonical 数据流。
+3. **失败证据**：race/failpoint/非法协议/断连等负向场景，不只报告 happy path。
+4. **性能数据**：fixture、环境、样本、median/p95/max 与最终常量；禁止只写“无明显卡顿”。
+5. **依赖与迁移**：新增依赖、license/audit/bundle；schema/config/OpenAPI migration 和回滚入口。
+6. **产品证据**：production build 的 zh-CN/en-US、light/dark、宽/窄屏关键状态。
+
+Master 复验顺序固定为：源码不变量 → 单元/contract → API/schema → production E2E → 人工视觉/键盘 → 全量回归。单纯“测试全绿”不能替代源码逻辑复验。
+
+## 依赖交付物与禁止并行冲突
+
+| 上游任务 | 下游依赖的稳定交付物 | 下游开始条件 |
+| --- | --- | --- |
+| task_003 | ContextBar/Transcript/Composer slots；Run meta/event state boundary | validation/render/视觉验收通过 |
+| task_004 | ConversationRepository、run_turn、RuntimeRegistry、SQLite migration、conversation API | 三轮/隔离/重启/删除通过 |
+| task_005 | ModelStreamEvent、Attempt、checkpoint/SSE、Think UI、capability | fragments/cancel/reconnect/canonical audit 通过 |
+| task_006 | InboxService、safe-point port、QueueDock/Composer busy FSM | race/FIFO/Steer/demotion 通过 |
+| task_007 | MemoryService、retriever/projection、Memory Center | scope/security/delete/recall 通过 |
+
+- task_004 未稳定前不得让 task_005/006/007 各自创建数据库或会话事实源。
+- task_005 与 task_006 都修改 AgentLoop；必须串行，task_006 只能接入 task_005 已稳定的 attempt/safe boundary。
+- task_003 和 task_006 都修改 Composer；task_003 只预留 busy control group，task_006 在既有 FSM 上扩展，禁止整组件重写回退产品布局。
+- task_008 可以修复发现的问题，但语义性整改必须回写原任务 guide/feedback，避免发布任务成为无边界开发。
+
 ## 统一非功能预算
 
 - workspace 路径不变时，task 输入、模型 delta、工具事件和详情展开均产生 **0 次** validation 请求；路径稳定后只校验一次，显式重试除外。
@@ -103,4 +178,3 @@ Memory（独立服务）
 - task_003-task_006 是产品核心 P0/P1；task_007 以“可控、可删、可解释”的最小范围交付，不为了展示而引入云向量库。
 - task_008 的真实模型 smoke 是最终 release blocker；如果外部服务不可用，应保留 Fake Model 演示但不得宣称真实 provider 已通过。
 - 建议 2026-09-01 前冻结 release candidate，至少预留一天完成远端时间合规核验、README.txt、录屏、压缩包和回退。
-

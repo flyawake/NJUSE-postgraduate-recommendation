@@ -34,3 +34,19 @@
 2. 对照用户提供截图检查连续正文、浅色动作行和展开详情，不接受逐 step 大卡片换皮。
 3. 只用键盘完成 workspace 选择、任务输入、Start、Stop、展开动作和打开高级详情。
 
+## 实现证据矩阵
+
+| 证据 | 必须包含 | 不接受 |
+| --- | --- | --- |
+| workspace 请求测试 | 初次有效 1 次；50 字 draft 0 次；50 SSE 0 次；locale/theme/profile 0 次；真实路径变化 1 次 | 只 mock hook、关闭 StrictMode |
+| render 隔离测试 | Event append 前后 WorkspaceField/ProfileSelector/Composer 的 render 增量；Activity projector 处理条数 | 只说“用了 memo” |
+| 长列表测试 | 2,000 events 的 mounted row/DOM 上限、加载更早、顺序、底部跟随 | 直接截断并丢弃历史 |
+| 视觉证据 | 1280×720 idle/running/error/success、窄屏、dark、en-US | 只给局部组件截图 |
+| 源码说明 | 状态所有权、effect 依赖、event projector、Start/Stop transition | 只报告测试通过 |
+
+## 定量门槛
+
+- [ ] B1. 初始可验证路径稳定后，除显式 retry 外，同一 `requestKey` 在组件 remount/StrictMode 下最多产生一个在途或一次有效网络请求。
+- [ ] B2. 2,000-event fixture 初始只挂载不超过 350 个 transcript item；每次“加载更早”增加不超过 250 个且顺序严格递增。
+- [ ] B3. 一次包含 50 个新事件的 batch 不得触发 50 次全 feed 重建；projector contract 证明只处理新增 batch，tool finish 原位更新对应 row。
+- [ ] B4. running→cancelling 的重复 Stop 点击只产生一次 cancel mutation；terminal/idle 不渲染可点击 Stop。

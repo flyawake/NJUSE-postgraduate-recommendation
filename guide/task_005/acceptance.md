@@ -32,3 +32,27 @@
 - 有合法 DeepSeek/OpenAI 凭据时按 profile capability 至少跑一次真实 streaming/reasoning/tool-use；只记录脱敏 host/model/wire API/终态。
 - 无合法凭据可标记 N/A，但不能省略两种 wire adapter 的离线协议夹具与浏览器闭环。
 
+## 协议边界与故障注入
+
+- [ ] F1. 每种 stream event 的非法顺序、重复 start/done、未知 tool index、finish 后 delta、缺 id/name 均 fail-closed 为稳定 protocol error。
+- [ ] F2. Unicode、JSON escape 和 tool arguments 在任意 chunk 边界聚合后逐字节/字符等价，不因 O(n²) 重建截断。
+- [ ] F3. 在首 chunk 前、reasoning 中、text 中、tool arguments 中和 done 后注入 timeout/cancel；attempt、canonical、partial UI 终态符合文档。
+- [ ] F4. reasoning mode off 时 provider request、public SSE、snapshot、DOM 和导出都不含 reasoning display text。
+- [ ] F5. opaque/encrypted provider reasoning 只用于允许的 continuation，不经过 `str()`、日志、DTO 或错误信息泄漏。
+
+## 定量门槛
+
+- [ ] B1. 2,000 个瞬时 1-character fake chunks 经 coalescing 后，持久化 checkpoint 不超过 100 次、React delta commit 不超过 100 次；terminal 内容完整。
+- [ ] B2. coalescer 正常前台刷新频率不超过 20 次/秒；terminal/error/cancel 最后一次更新不等待普通 timer。
+- [ ] B3. snapshot + cursor 恢复后的 `reasoning/text` 与服务端 accumulator 完全一致，重复连接 3 次仍无重复字符。
+- [ ] B4. cancel 请求被 Host 接受后不再接纳新的 provider delta；adapter stream/context manager 被关闭，worker 有明确有界退出证据。
+
+## 交付证据矩阵
+
+| 证据 | 必须包含 |
+| --- | --- |
+| adapter contract | 两种 wire API 的事件映射表、capability、错误/finish mapping |
+| fixture tests | text、raw visible reasoning、summary、refusal、单/并行 tool fragments、usage、异常顺序 |
+| canonical audit | partial/abandoned 不入模型历史，成功 assistant 只 append 一次，tool pairing 完整 |
+| 性能报告 | 原始 chunk 数、coalesced event、DB checkpoint、React commit、最终字符数 |
+| UI 截图/视频 | collapsed/expanded Think、streaming text、cancel、retry abandoned、no-reasoning fallback |
