@@ -56,7 +56,7 @@ Python 代码必须通过 Ruff format、Ruff lint 和 pytest。task_002 前端�
 
 截至 2026-08-27，`task_001` 可靠内核已通过 Master 整改复验并归档。首验发现的 grep 符号链接边界、read 观察键规范化和 policy 后取消竞态三项 A5/A8 缺口均已修复；独立复现与标准命令通过，结果为 128 passed、4 skipped（均因当前 Windows 无符号链接创建权限，符合既定 skip 规则）。方案已研究本机 DeepSeek Harness，并对照 Codex、OpenCode、Gemini CLI、OpenHands、SWE-agent 与 Aider 的公开架构资料，吸收工具管线、事件生命周期、策略边界、历史投影和完成验证方面的设计经验。项目不依赖或复制这些 agent 框架，而以普通模型客户端和自研内核实现明确、可测试的语义。
 
-`task_002` 已完成技术方案、UI 规格和验收设计，task_001 前置条件已经满足，但任务状态仍为“未开始”，等待正式启动。该任务采用 React/TypeScript/Vite 本地 Web GUI：主页面覆盖 workspace/profile 选择、任务输入、开始/取消、实时 Agent/工具/验证活动流和最终结果，设置页管理 provider profile 与凭据。Python 后端继续复用既有 AgentLoop，并以 RunController、SSE 和脱敏 DTO 适配界面；配置层采用“ProviderCatalog + 用户级 profile store + CredentialService + ModelClientFactory”。普通配置只保存 credential reference，密钥由环境变量或独立用户凭据文件提供且界面永不回显。第一阶段仍只支持现有 `openai_chat_completions` wire API，不夸大为已支持 Anthropic/Responses 等原生协议。
+`task_002` 已进入实现与整改复验阶段：React/TypeScript/Vite 本地 GUI、FastAPI/RunController/SSE、provider profile、独立 credential store、生产静态资源打包及 Fake Model 图形闭环均已落地，标准 Python/前端/Playwright 门禁可运行。第二次 Master 源码复验结论仍为“需整改”，当前唯一入口是 `guide/task_002/acceptance.md` 的 R3.1-R3.8，重点闭环命令 inline-value 脱敏、实时 phase/inspector、跨 step 活动分组、SSE 单调恢复与终止、严格 config/Host 解析、credential/start 语义及真实一致的演示截图。第一阶段仍只支持现有 `openai_chat_completions` wire API，不夸大为已支持 Anthropic/Responses 等原生协议。
 
 可运行、可测试的端到端 Coding Agent 内核首版已经通过验收。下一阶段推进本地图形应用与多服务商配置、真实模型加固、仓库智能、隔离执行、评测与最终交付，不以完成考核材料作为项目能力建设的终点。
 

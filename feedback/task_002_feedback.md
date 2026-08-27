@@ -306,3 +306,51 @@ git diff --check 49db10c..HEAD             # 0
 ```
 
 4 个 skip 均为平台无法创建符号链接的用例；截图、trace、日志、DOM 的 sentinel 检查零命中。
+
+## 13. Master 第二次独立复验结论（2026-08-27）
+
+**结论：需整改。** R2 提交的构建与既有自动化均通过，GUI 也能从生产入口启动；但 R2.1-R2.8 中仍有测试未覆盖且可稳定复现的逻辑/安全缺口，任务保持“进行中”，不得归档。
+
+### 13.1 独立复验结果
+
+| 整改项 | 结论 | 独立证据 |
+| --- | --- | --- |
+| R2.1 公开事件脱敏 | 未通过 | `redact_command_arg` 对键名未命中敏感正则的 `key=value` 原样返回。Master 把 sentinel 放入 `FOO=<secret>` 与 `--header=Bearer-<secret>` 后，`tool_started.arguments` 和 `redact_verification_summary` 均命中 secret。既有测试只覆盖独立的 `--api-key <secret>`，没有覆盖 inline value。 |
+| R2.2 运行中事实 | 未通过 | live 计数已实现，但 current phase 不准确：真实 AgentLoop 的模型请求受控阻塞时，snapshot 为 `state=running, step=1, attempts=1, phase=READY`。截图 `02-running.png` 还显示 feed 已出现“第 2 步”，inspector 仍为 1/1/1 和旧阶段，证明 UI 只依赖 4 秒轮询的 snapshot，没有随 SSE 同步 inspector。 |
+| R2.3 活动流时序 | 未通过 | `buildFeed` 在非工具事件出现时不关闭 `currentGroup`。现有“preserves true event order”测试实际期望单个 group 同时含 step 1/2 工具，entry 次序为 `task, step, group, step, terminal`；渲染后 step 2 工具位于 Step 2 标签之前。 |
+| R2.4 刷新/SSE 恢复 | 未通过 | SSE effect 的 reconnect 闭包不依赖最新 reducer state，反复使用建连时的旧 `lastEventId`；reset 后 HTTP snapshot 可覆盖已 replay 的新事件；`subscribeToRunEvents` 收到显式 `end` 后仍在 EOF 调 `onError`。`03-verified-final.png` 的 terminal 页面实际显示“实时连接中断，正在重连…”，与闭环要求冲突。刷新 E2E 通过不足以覆盖这些竞态。 |
+| R2.5 配置与 URL | 部分通过，整体未通过 | legacy URL 共用 validator、远程 HTTP 拒绝与 ProfileStore copy-on-write 已通过。严格根类型仍失败：`version: true` 被 Python 当作 1 接受；JSON 根为 `null`/array 时分别泄漏 `TypeError`/`AttributeError`，不是稳定配置错误。 |
+| R2.6 same-origin/Host | 未通过 | 不同端口 Origin、非法数字端口、IPv6 与禁用外链 docs 已通过；但 `_parse_authority` 没有拒绝 Host 的 userinfo/path/query/fragment。Master 实测 `user@localhost`、`localhost/path`、`localhost?x=y`、`localhost#frag` 全部被接受；HTTPS 请求的默认端口还被固定当作 80，错误接受 `Origin: https://localhost:80`。 |
+| R2.7 双语与关键交互 | 部分通过，整体未通过 | error-code i18n、继承 active 显示、password input 与移除 `aria-hidden` 已落实。空 credential ref 的 UI 却宣称可使用环境变量，而 resolver 对选中/active profile 明确直接报未配置凭据；同时 `InlineError.onRetry` 直接调用未自检 readiness 的 `handleStart`，可绕过 composer 按钮/快捷键门禁发请求。 |
+| R2.8 文档与证据 | 未通过 | `.env.example` 已诚实说明不会自动加载，running 截图也有非零计数且不含用户名目录；但 `03-verified-final.png` 实际显示“失败 / 达到最大步数 / 20 次工具调用”，不是反馈声称的 VERIFIED 最终成功，且带断线横幅。README 对命令“其余参数一律脱敏”、精确 Host、当前 event ID 和真实活动顺序的描述也超出了实现。 |
+
+### 13.2 独立执行的质量门禁
+
+以下命令均 exit 0：
+
+```text
+uv sync --locked
+uv run ruff format --check .                    # 72 files
+uv run ruff check .
+uv run pytest -q                                # 221 passed, 4 skipped
+uv run coding-agent --help
+uv run python -m coding_agent --help
+uv run coding-agent ui --help
+uv run coding-agent config --help
+npm ci
+npm run typecheck
+npm run lint
+npm test -- --run                               # 24 passed
+npm run check:api
+npm run build
+npm run test:e2e                                # 4 passed
+npm audit --omit=dev --registry=https://registry.npmjs.org  # 0 vulnerabilities
+uv build                                        # sdist + wheel
+git diff --check 49db10c..HEAD
+```
+
+wheel 独立检查：包含 `web/static/index.html` 和 JS asset，无 `.map`。生产 GUI 独立启动检查：无配置时 `/api/health=200/idle`、`/=200`、`/docs=404`、`/api/openapi.json=200`，CSP 已返回。
+
+### 13.3 下一步唯一指令
+
+Developer Agent 继续读取 `guide/task_002/`，只处理 `acceptance.md` 的 R3.1-R3.8。优先级为：R3.1/R3.4/R3.6（安全与事件恢复）→ R3.2/R3.3（演示核心事实与时序）→ R3.5/R3.7（配置和交互）→ R3.8（最后重新取证）。必须为 Master 上述每个反例增加自动化覆盖，不得只扩展原有 happy-path 断言。

@@ -93,3 +93,18 @@ npm audit --omit=dev --registry=https://registry.npmjs.org
 uv build
 git diff --check 49db10c..HEAD
 ```
+
+## 第二次整改复验追加要求（R3，2026-08-27）
+
+R2 提交的标准自动化门禁全部通过，但 Master 通过源码审查和独立反例确认，R2.1-R2.8 尚未闭环。下列要求是本任务下一轮唯一整改入口，不改变 task_002 的既定产品范围：
+
+- [ ] R3.1 **命令事件按值 fail-closed 脱敏**：`run_command` 的 `argv[1:]` 中，除不携带值且独立验证为安全的 option flag 外，任何 operand/value 都不得原样公开。`NAME=value`、`--header=value`、`--option=value` 只能保留键/旗标并把值改为 `***`，不能以“键名未命中敏感正则”为由保留整个参数。验证命令使用同一逻辑。新增真实 AgentLoop → snapshot/SSE → DOM 测试，sentinel 至少分别放入普通 `NAME=value`、非敏感命名的 `--flag=value`、独立 argv operand，以及成功/失败验证命令；README 的“其余参数一律脱敏”必须与实现一致。
+- [ ] R3.2 **当前 phase 与 inspector 同步而非轮询旧快照**：controller 必须表示 Agent 实际正在进行的阶段；模型请求已阻塞时不能仍为 `READY`。前端收到 SSE step/tool 等事件后，inspector 的 step/attempt/tool/phase 必须同步推进，不得出现 feed 已到 Step 2 而 inspector 仍是 1/1/1、旧 phase 的 4 秒窗口。增加“第二次模型请求受控阻塞”的 controller/API/组件/E2E 中间态断言，明确期待 `REQUESTING_MODEL`、step=2、attempt=2。
+- [ ] R3.3 **工具组不得跨非工具事件吞并时序**：遇到 `step_started`、`model_retry`、`completion_deferred`、terminal 等非工具边界时结束当前连续工具组。跨两步的轨迹必须渲染为 `task → step1 → group(step1) → step2 → group(step2) → terminal`，不能把 step2 工具放进位于 Step 2 之前的旧 group。修正现有测试中把 `[1,2]` 两步工具放在单组仍当作“真实顺序”的错误断言，并覆盖 retry/completion 边界。
+- [ ] R3.4 **SSE reconnect/reset/终止状态单调**：重连必须读取最新 `lastEventId`（使用同步 ref 或等价机制），不得从只依赖 `[runId, snapshot.state]` 的陈旧闭包读取初始 ID。收到显式 `end` 后的正常 EOF 不得再触发 `onError`、断线横幅或重连。reset 后重取 snapshot 与随后 replay 必须单调合并，较旧 HTTP 响应不得覆盖已经到达的 SSE 事件。增加可控 deferred fetch/SSE 的前端测试，以及终态无“实时连接中断”与 retained-tail 重置的浏览器断言。
+- [ ] R3.5 **严格 config 根类型与版本类型**：`config.json` 根必须是 object，`version` 必须是非 bool 的整数 1；`null`、array、`true` 等类型错误统一转换为稳定、可恢复的 `ProfileError/config_corrupt`，不得泄漏 `TypeError/AttributeError` 或被当作 version 1 接受。保留已经完成的 CRUD copy-on-write 与 legacy URL 共用 validator，并新增文件加载/API 级反例测试。
+- [ ] R3.6 **Host/Origin authority 真正严格解析**：Host 本身必须拒绝 userinfo、path、query、fragment、空白和其他非 authority 形态；不能接受 `user@localhost`、`localhost/path`、`localhost?x=y` 或 `localhost#frag`。effective port 必须按 scheme 计算（HTTP=80、HTTPS=443），`https://localhost` 不得与 `https://localhost:80` 判为同源。保留 IPv4/IPv6/localhost 正常分支及 Swagger/ReDoc 禁用，补齐 TestClient/API 反例。
+- [ ] R3.7 **credential 空引用语义与所有 start 入口一致**：不得再提示“credential_ref 留空即可使用环境变量”，除非 resolver 对该 profile 确实实现并测试了确定、无歧义的环境变量映射；否则 onboarding/profile form 应引导用户填写 ref，且能从空 ref 状态继续编辑并完成可运行配置。`handleStart` 本身必须复核 task/workspace/profile/credential readiness，使 InlineError 的“重试”等旁路也不能在无效状态发送 `POST /api/runs`。新增英文界面与请求计数测试。
+- [ ] R3.8 **重新生成真实一致的演示证据**：`03-verified-final.png` 必须实际显示 SUCCESS/FINAL_ANSWER/VERIFIED、正确工具数与最终答复，不能是 ERROR/MAX_STEPS/20 次工具调用；终态不得带断线重连横幅。深色和英文截图也不得用一个失败/错配状态冒充交付结果。反馈逐张描述必须与画面一致，并继续保证 1280×720、无用户名目录、secret/trace/log/DOM 零命中。
+
+R3 复验继续执行 R2 的全部标准命令，并额外提交上述每个独立反例的原始输出或自动化测试名。仅“原测试仍全绿”不能替代这些反例。
