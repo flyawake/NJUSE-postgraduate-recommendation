@@ -27,6 +27,7 @@ const CODE_KEYS: Record<string, string> = {
   bad_host: "error.code.bad_host",
   bad_origin: "error.code.bad_origin",
   invalid_session_token: "error.code.invalid_session_token",
+  picker_unavailable: "error.code.picker_unavailable",
 };
 
 /**

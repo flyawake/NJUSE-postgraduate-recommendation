@@ -32,6 +32,7 @@ const zhCN = {
   "setup.bothBadges": "工作区与模型配置",
 
   "workspace.label": "工作区",
+  "workspace.browse": "浏览…",
   "workspace.placeholder": "E:\\demo\\repo 或 /home/user/repo",
   "workspace.validate": "校验",
   "workspace.checking": "校验中…",
@@ -155,6 +156,7 @@ const zhCN = {
   "error.code.bad_host": "请求 Host 不合法（仅允许 loopback）",
   "error.code.bad_origin": "请求 Origin 与本地服务不同源",
   "error.code.invalid_session_token": "会话令牌缺失或不匹配",
+  "error.code.picker_unavailable": "无法打开系统文件夹选择窗口，请手动输入路径",
 
   "settings.title": "模型设置",
   "settings.subtitle": "管理 provider profile 与凭据；凭据只写入本地文件，永不回显。",

@@ -9,6 +9,7 @@ export type ProviderPreset = components["schemas"]["ProviderPresetDTO"];
 export type CredentialInfo = components["schemas"]["CredentialInfoDTO"];
 export type ErrorDetail = components["schemas"]["ErrorDetail"];
 export type WorkspaceValidate = components["schemas"]["WorkspaceValidateResponse"];
+export type WorkspacePick = components["schemas"]["WorkspacePickResponse"];
 export type RunStartRequest = components["schemas"]["RunStartRequest"];
 export type ProfileInput = components["schemas"]["ProfileInput"];
 
@@ -86,6 +87,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ path }),
     }),
+
+  /** Open the OS-native folder picker on the server machine. */
+  pickWorkspace: () =>
+    apiFetch<WorkspacePick>("/api/workspace/pick", { method: "POST" }),
 
   startRun: (request: RunStartRequest) =>
     apiFetch<RunSnapshot>("/api/runs", { method: "POST", body: JSON.stringify(request) }),

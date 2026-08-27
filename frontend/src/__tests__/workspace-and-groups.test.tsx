@@ -16,6 +16,7 @@ vi.mock("@/api/client", () => {
     },
     api: {
       validateWorkspace: vi.fn(),
+      pickWorkspace: vi.fn(),
     },
   };
 });
@@ -23,6 +24,7 @@ vi.mock("@/api/client", () => {
 import { api } from "@/api/client";
 
 const mockedValidate = api.validateWorkspace as ReturnType<typeof vi.fn>;
+const mockedPick = api.pickWorkspace as ReturnType<typeof vi.fn>;
 
 function ControlledWorkspaceField() {
   const [value, setValue] = useState("");
@@ -57,6 +59,51 @@ describe("WorkspaceField", () => {
     await waitFor(() => expect(screen.getByText("工作区路径无效或不可访问")).toBeInTheDocument(), {
       timeout: 3000,
     });
+  });
+
+  it("fills the path from the native browse picker and validates it", async () => {
+    mockedValidate.mockResolvedValue({ valid: true, resolved_path: "C:/picked", error: null });
+    mockedPick.mockResolvedValue({
+      cancelled: false,
+      path: "C:/picked",
+      error: null,
+    });
+    const user = userEvent.setup();
+    render(<ControlledWorkspaceField />);
+    await user.click(screen.getByRole("button", { name: "浏览…" }));
+    await waitFor(() => expect(screen.getByLabelText("工作区")).toHaveValue("C:/picked"), {
+      timeout: 3000,
+    });
+    await waitFor(() => expect(screen.getByText("工作区可用")).toBeInTheDocument(), {
+      timeout: 3000,
+    });
+  });
+
+  it("keeps the current value when the picker is cancelled", async () => {
+    mockedPick.mockResolvedValue({ cancelled: true, path: null, error: null });
+    const user = userEvent.setup();
+    render(<ControlledWorkspaceField />);
+    await user.click(screen.getByRole("button", { name: "浏览…" }));
+    await waitFor(() => expect(mockedPick).toHaveBeenCalled());
+    expect(screen.getByLabelText("工作区")).toHaveValue("");
+  });
+
+  it("shows a stable i18n message when the picker is unavailable", async () => {
+    mockedPick.mockResolvedValue({
+      cancelled: false,
+      path: null,
+      error: { code: "picker_unavailable", message: "无法打开系统文件夹", field: null },
+    });
+    const user = userEvent.setup();
+    render(<ControlledWorkspaceField />);
+    await user.click(screen.getByRole("button", { name: "浏览…" }));
+    await waitFor(
+      () =>
+        expect(
+          screen.getByText("无法打开系统文件夹选择窗口，请手动输入路径")
+        ).toBeInTheDocument(),
+      { timeout: 3000 }
+    );
   });
 });
 

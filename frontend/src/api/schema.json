@@ -682,6 +682,39 @@
         "title": "VerificationDTO",
         "type": "object"
       },
+      "WorkspacePickResponse": {
+        "description": "Result of the OS-native folder picker hosted by the local server.",
+        "properties": {
+          "cancelled": {
+            "default": false,
+            "title": "Cancelled",
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          }
+        },
+        "title": "WorkspacePickResponse",
+        "type": "object"
+      },
       "WorkspaceValidateRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1242,6 +1275,25 @@
           }
         },
         "summary": "Run Events"
+      }
+    },
+    "/api/workspace/pick": {
+      "post": {
+        "description": "Open the OS-native folder dialog on the server machine.\n\nA sync endpoint: Starlette runs it in a threadpool, so the modal\ndialog never blocks the HTTP event loop (SSE keeps streaming).",
+        "operationId": "workspace_pick_api_workspace_pick_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspacePickResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Workspace Pick"
       }
     },
     "/api/workspace/validate": {

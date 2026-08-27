@@ -39,6 +39,7 @@ from ..provider_config import (
 )
 from ..storage import StorageError
 from .controller import RunController, RunControllerError
+from .picker import PickerUnavailableError, PickFolder, pick_folder
 from .schemas import (
     BootstrapDTO,
     CapabilitiesDTO,
@@ -53,6 +54,7 @@ from .schemas import (
     RunSnapshotDTO,
     RunStartRequest,
     UIPreferencesDTO,
+    WorkspacePickResponse,
     WorkspaceValidateRequest,
     WorkspaceValidateResponse,
 )
@@ -116,10 +118,12 @@ def create_app(
     static_dir: Path,
     session_token: Optional[str] = None,
     version: Optional[str] = None,
+    folder_picker: Optional[PickFolder] = None,
 ) -> FastAPI:
     token = session_token or new_session_token()
     resolved_version = version or __version__
     catalog = ProviderCatalog()
+    picker = folder_picker or pick_folder
 
     app = FastAPI(
         title="Coding Agent Local GUI",
@@ -241,6 +245,26 @@ def create_app(
                 error=ErrorDetail(code=exc.code, message=str(exc), field=exc.field),
             )
         return WorkspaceValidateResponse(valid=True, resolved_path=str(path))
+
+    @app.post("/api/workspace/pick", response_model=WorkspacePickResponse)
+    def workspace_pick() -> WorkspacePickResponse:
+        """Open the OS-native folder dialog on the server machine.
+
+        A sync endpoint: Starlette runs it in a threadpool, so the modal
+        dialog never blocks the HTTP event loop (SSE keeps streaming).
+        """
+        try:
+            selected = picker()
+        except PickerUnavailableError as exc:
+            logger.warning("folder picker unavailable: %s", type(exc).__name__)
+            return WorkspacePickResponse(
+                cancelled=False,
+                path=None,
+                error=ErrorDetail(code="picker_unavailable", message=str(exc)),
+            )
+        if not selected:
+            return WorkspacePickResponse(cancelled=True, path=None)
+        return WorkspacePickResponse(cancelled=False, path=str(selected))
 
     # ------------------------------------------------------------ runs
 

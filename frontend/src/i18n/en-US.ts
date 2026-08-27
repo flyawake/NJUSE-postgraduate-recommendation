@@ -34,6 +34,7 @@ const enUS: typeof zhCN = {
   "setup.bothBadges": "Workspace and model configuration",
 
   "workspace.label": "Workspace",
+  "workspace.browse": "Browse…",
   "workspace.placeholder": "E:\\demo\\repo or /home/user/repo",
   "workspace.validate": "Validate",
   "workspace.checking": "Checking…",
@@ -157,6 +158,7 @@ const enUS: typeof zhCN = {
   "error.code.bad_host": "Invalid Host header (loopback only)",
   "error.code.bad_origin": "The request Origin is not same-origin with the local service",
   "error.code.invalid_session_token": "The session token is missing or invalid",
+  "error.code.picker_unavailable": "Cannot open the native folder picker; enter the path manually",
 
   "settings.title": "Model Settings",
   "settings.subtitle": "Manage provider profiles and credentials; credentials are write-only and never echoed back.",

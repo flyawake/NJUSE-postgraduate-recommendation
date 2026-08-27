@@ -373,6 +373,58 @@ class TestProfileAndCredentialApi:
         assert response.json()["error"]["code"] == "credential_env_readonly"
 
 
+class TestWorkspacePicker:
+    def make_app_and_client(self, workspace, picker):
+        controller = RunController(home=workspace / "home", env={})
+        app = create_app(
+            controller=controller,
+            static_dir=workspace,
+            session_token="test-session-token",
+            folder_picker=picker,
+        )
+        return TestClient(app, base_url="http://127.0.0.1")
+
+    def test_pick_returns_path(self, workspace):
+        client = self.make_app_and_client(workspace, lambda: str(workspace / "src"))
+        headers = auth_headers(client)
+        response = client.post("/api/workspace/pick", json={}, headers=headers)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["cancelled"] is False
+        assert body["path"] == str(workspace / "src")
+        assert body["error"] is None
+
+    def test_pick_cancelled(self, workspace):
+        client = self.make_app_and_client(workspace, lambda: None)
+        headers = auth_headers(client)
+        response = client.post("/api/workspace/pick", json={}, headers=headers)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["cancelled"] is True
+        assert body["path"] is None
+
+    def test_pick_unavailable_is_a_stable_error(self, workspace):
+        from coding_agent.web.picker import PickerUnavailableError
+
+        def unavailable():
+            raise PickerUnavailableError(
+                "当前环境无法打开系统文件夹选择窗口（缺少 tkinter）"
+            )
+
+        client = self.make_app_and_client(workspace, unavailable)
+        headers = auth_headers(client)
+        response = client.post("/api/workspace/pick", json={}, headers=headers)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["error"]["code"] == "picker_unavailable"
+
+    def test_pick_requires_session_token(self, workspace):
+        client = self.make_app_and_client(workspace, lambda: str(workspace))
+        response = client.post("/api/workspace/pick", json={})
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "invalid_session_token"
+
+
 class TestRunApi:
     def _start(self, client, workspace, headers, legacy=True):
         return client.post(

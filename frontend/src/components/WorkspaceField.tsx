@@ -15,13 +15,16 @@ export interface WorkspaceFieldProps {
 }
 
 /**
- * Path input with debounced server-side validation.
+ * Path input with debounced server-side validation and an OS-native
+ * "browse" button (the local server hosts the dialog — browsers cannot
+ * reveal absolute local paths on their own).
  * Contract states: empty / checking / valid / invalid.
  */
 export function WorkspaceField({ value, onChange, onValidated, id }: WorkspaceFieldProps) {
   const { t } = useI18n();
   const [state, setState] = useState<WorkspaceState>(value ? "checking" : "empty");
   const [error, setError] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestSeq = useRef(0);
 
@@ -64,6 +67,25 @@ export function WorkspaceField({ value, onChange, onValidated, id }: WorkspaceFi
     };
   }, [value, t, onValidated]);
 
+  const handleBrowse = async () => {
+    if (picking) return;
+    setPicking(true);
+    setError(null);
+    try {
+      const result = await api.pickWorkspace();
+      if (result.cancelled) return;
+      if (result.error) {
+        setError(errorCodeText(result.error.code, t));
+        return;
+      }
+      if (result.path) onChange(result.path);
+    } catch (err) {
+      setError(apiErrorText(err, t, "workspace.invalid"));
+    } finally {
+      setPicking(false);
+    }
+  };
+
   const Icon =
     state === "checking"
       ? Loader2
@@ -72,6 +94,13 @@ export function WorkspaceField({ value, onChange, onValidated, id }: WorkspaceFi
         : state === "invalid"
           ? XCircle
           : FolderOpen;
+
+  const hintText =
+    state === "valid"
+      ? t("workspace.valid")
+      : state === "invalid" || error
+        ? (error ?? t("workspace.invalid"))
+        : t("workspace.help");
 
   return (
     <div>
@@ -86,8 +115,10 @@ export function WorkspaceField({ value, onChange, onValidated, id }: WorkspaceFi
             className={cx("input pr-9", state === "invalid" && "border-danger")}
             placeholder={t("workspace.placeholder")}
             value={value}
-            onChange={(event) => onChange(event.target.value)}
-            aria-invalid={state === "invalid"}
+            onChange={(event) => {
+              onChange(event.target.value);
+            }}
+            aria-invalid={state === "invalid" || error !== null}
             aria-describedby={id ? `${id}-hint` : "workspace-hint"}
             autoComplete="off"
             spellCheck={false}
@@ -104,13 +135,30 @@ export function WorkspaceField({ value, onChange, onValidated, id }: WorkspaceFi
             <Icon size={16} className={state === "checking" ? "animate-spin" : ""} />
           </span>
         </div>
+        <button
+          type="button"
+          className="btn-secondary shrink-0"
+          onClick={handleBrowse}
+          disabled={picking}
+          aria-label={t("workspace.browse")}
+          data-testid="workspace-browse"
+        >
+          {picking ? (
+            <Loader2 aria-hidden size={14} className="animate-spin" />
+          ) : (
+            <FolderOpen aria-hidden size={14} />
+          )}
+          {t("workspace.browse")}
+        </button>
       </div>
-      <p id={id ? `${id}-hint` : "workspace-hint"} className="mt-1.5 text-xs text-muted">
-        {state === "valid"
-          ? t("workspace.valid")
-          : state === "invalid"
-            ? (error ?? t("workspace.invalid"))
-            : t("workspace.help")}
+      <p
+        id={id ? `${id}-hint` : "workspace-hint"}
+        className={cx(
+          "mt-1.5 text-xs",
+          state === "valid" ? "text-success" : error ? "text-danger" : "text-muted"
+        )}
+      >
+        {hintText}
       </p>
       {state === "invalid" ? <p className="sr-only">{t("workspace.invalid")}</p> : null}
     </div>

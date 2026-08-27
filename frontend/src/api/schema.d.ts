@@ -178,6 +178,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspace/pick": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Workspace Pick
+         * @description Open the OS-native folder dialog on the server machine.
+         *
+         *     A sync endpoint: Starlette runs it in a threadpool, so the modal
+         *     dialog never blocks the HTTP event loop (SSE keeps streaming).
+         */
+        post: operations["workspace_pick_api_workspace_pick_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspace/validate": {
         parameters: {
             query?: never;
@@ -421,6 +444,20 @@ export interface components {
             command?: string | null;
             /** Exit Code */
             exit_code?: number | null;
+        };
+        /**
+         * WorkspacePickResponse
+         * @description Result of the OS-native folder picker hosted by the local server.
+         */
+        WorkspacePickResponse: {
+            /**
+             * Cancelled
+             * @default false
+             */
+            cancelled: boolean;
+            error?: components["schemas"]["ErrorDetail"] | null;
+            /** Path */
+            path?: string | null;
         };
         /** WorkspaceValidateRequest */
         WorkspaceValidateRequest: {
@@ -853,6 +890,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    workspace_pick_api_workspace_pick_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspacePickResponse"];
                 };
             };
         };

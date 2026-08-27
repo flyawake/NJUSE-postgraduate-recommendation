@@ -64,6 +64,14 @@ class WorkspaceValidateResponse(BaseModel):
     error: Optional[ErrorDetail] = None
 
 
+class WorkspacePickResponse(BaseModel):
+    """Result of the OS-native folder picker hosted by the local server."""
+
+    cancelled: bool = False
+    path: Optional[str] = None
+    error: Optional[ErrorDetail] = None
+
+
 class CredentialInfoDTO(BaseModel):
     configured: bool
     source: Optional[str]  # "env" | "local_file" | null
