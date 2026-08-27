@@ -13,11 +13,18 @@ from typing import Any, Callable, Dict, Optional, Sequence
 
 from .agent import AgentLoop
 from .completion import CompletionPolicy
-from .config import Config, load_config
+from .config import (
+    Config,
+    load_config,
+    load_config_from_connection,
+    resolve_connection,
+)
 from .context import ContextManager
+from .credentials import CredentialError, CredentialService
 from .errors import ConfigError
 from .model_client import OpenAIModelClient
 from .models import AgentEvent, RunStatus, VerificationStatus
+from .provider_config import ProfileError, ProfileStore, default_home
 from .tools import build_default_tools
 from .tools.executor import ToolExecutor
 from .tools.observation import FileObservationTracker
@@ -62,7 +69,43 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Maximum logical model steps (1-50, default 20).",
     )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        help="Profile ID from the user-level profile store; overrides the active profile and env fallback.",
+    )
     parser.add_argument("task", help="The programming task for the agent.")
+    return parser
+
+
+def build_ui_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="coding-agent ui",
+        description="Start the local Coding Agent GUI (loopback only).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="Port to listen on (default 0 = pick a free port).",
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not open the system browser automatically.",
+    )
+    return parser
+
+
+def build_config_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="coding-agent config",
+        description="Inspect the user-level profile store (read-only).",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("list", help="List saved profiles and their credential state.")
+    show = sub.add_parser("show", help="Show one profile descriptor.")
+    show.add_argument("profile_id", help="Profile ID to show.")
     return parser
 
 
@@ -208,21 +251,116 @@ def _print_result(result) -> None:
         )
 
 
+def _resolve_config(args) -> Config:
+    """Legacy CLI: explicit profile > active profile > legacy OPENAI_* env.
+
+    ``--model``/``--base-url`` only override this run and never write back.
+    """
+    workspace = args.workspace
+    if args.profile:
+        home = default_home()
+        store = ProfileStore(home)
+        credentials = CredentialService(home)
+        profiles = store.load().profiles
+        connection = resolve_connection(
+            profiles=profiles,
+            active_profile=store.load().active_profile,
+            explicit_profile=args.profile,
+            env=dict(__import__("os").environ),
+            credential_resolver=credentials.resolve,
+        )
+        return load_config_from_connection(
+            workspace,
+            connection,
+            model=args.model,
+            base_url=args.base_url,
+            max_steps=args.max_steps,
+        )
+    return load_config(
+        workspace=workspace,
+        model=args.model,
+        base_url=args.base_url,
+        max_steps=args.max_steps,
+    )
+
+
+def _run_config_command(args) -> int:
+    home = default_home()
+    store = ProfileStore(home)
+    credentials = CredentialService(home)
+    try:
+        config = store.load()
+    except (ProfileError, ConfigError) as exc:
+        print(f"配置错误：{exc}", file=sys.stderr)
+        return EXIT_ERROR
+    if args.command == "list":
+        profiles = sorted(config.profiles.values(), key=lambda p: p.id)
+        if not profiles:
+            print("没有已保存的 profile。请运行 `coding-agent ui` 在设置页创建。")
+            return EXIT_OK
+        for profile in profiles:
+            info = (
+                credentials.info(profile.credential_ref)
+                if profile.credential_ref
+                else None
+            )
+            active = " *" if profile.id == config.active_profile else ""
+            credential_state = "未配置"
+            if info is not None:
+                if not info.configured:
+                    credential_state = "缺凭据"
+                elif info.source == "env":
+                    credential_state = "环境变量（只读）"
+                else:
+                    credential_state = "本地（可写）"
+            print(
+                f"{profile.id:<32} {profile.provider_id:<10} "
+                f"{profile.model:<28} {credential_state}{active}"
+            )
+        return EXIT_OK
+    if args.command == "show":
+        profile = config.profiles.get(args.profile_id)
+        if profile is None:
+            print(f"profile 不存在：{args.profile_id}", file=sys.stderr)
+            return EXIT_ERROR
+        info = (
+            credentials.info(profile.credential_ref) if profile.credential_ref else None
+        )
+        descriptor = profile.to_dict()
+        descriptor["credential"] = (
+            {
+                "configured": info.configured,
+                "source": info.source,
+                "writable": info.writable,
+            }
+            if info
+            else {"configured": False, "source": None, "writable": True}
+        )
+        descriptor["active"] = profile.id == config.active_profile
+        print(__import__("json").dumps(descriptor, ensure_ascii=False, indent=2))
+        return EXIT_OK
+    return EXIT_ERROR
+
+
 def main(
     argv: Optional[Sequence[str]] = None,
     *,
     agent_factory: Optional[AgentFactory] = None,
 ) -> int:
+    argv_list = list(sys.argv[1:] if argv is None else argv)
+    if argv_list and argv_list[0] in ("ui", "config"):
+        if argv_list[0] == "ui":
+            from .web.server import run_ui
+
+            args = build_ui_parser().parse_args(argv_list[1:])
+            return run_ui(port=args.port, no_browser=args.no_browser)
+        args = build_config_parser().parse_args(argv_list[1:])
+        return _run_config_command(args)
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(argv_list)
     try:
-        config = load_config(
-            workspace=args.workspace,
-            model=args.model,
-            base_url=args.base_url,
-            max_steps=args.max_steps,
-        )
-    except ConfigError as exc:
+        config = _resolve_config(args)
+    except (ConfigError, ProfileError, CredentialError) as exc:
         print(f"配置错误：{exc}", file=sys.stderr)
         return EXIT_ERROR
 

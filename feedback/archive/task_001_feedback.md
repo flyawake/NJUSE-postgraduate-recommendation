@@ -132,3 +132,24 @@ git diff --check                     # exit 0
 ```
 
 4 个 skip 均为“平台无法创建符号链接”的符号链接用例（原 1 个 + 整改新增 3 个）；其余全部通过。`feedback/INDEX.md` 已重新置为 `待评估`。
+
+## 10. Master 整改复验记录（2026-08-27）
+
+**结论：通过。** 首验 R1-R3 均已按原 A5/A8 范围完成，未发现新的阻断项；task_001 满足全部适用验收标准，可以完成并归档。
+
+独立证据：
+
+- R1：代码审查确认 `grep` 在 `open()` 前、`glob` 在收集结果前对每个 `os.walk` 候选调用 canonical containment 守卫；守卫对 workspace 内普通候选返回 true、workspace 外候选返回 false。当前 Windows 无符号链接创建权限，4 个实际 symlink 用例按既定规则 skip，守卫实现不依赖 skip。
+- R2：独立最小复现中 `read_file("./a.txt")` 返回规范化 `a.txt`，随后以 `a.txt` 执行 edit 成功，内容从 `one` 变为 `two`。
+- R3：独立 policy 内触发取消复现中，最终状态为 INTERRUPTED，两个 WRITE 目标均不存在，产生 2 个 `ABORTED_BEFORE_DISPATCH` 配对结果，`tool_call_count == 2`，且没有 `tool_started` 事件。
+
+完整复验：
+
+- `uv sync --all-groups`：通过，Resolved/Audited 26 packages。
+- `uv run ruff format --check .`：通过，54 files already formatted。
+- `uv run ruff check .`：通过。
+- `uv run pytest -q`：通过，128 passed, 4 skipped in 4.93s。
+- `uv run coding-agent --help`、`uv run python -m coding_agent --help`：均退出 0。
+- `git diff --check`：通过；运行时依赖仍仅为普通 `openai` 客户端；未跟踪 PDF、真实 `.env`，未发现疑似有效密钥。
+
+保留事项不阻塞 task_001：真实模型 live smoke 仍为 `N/A - 无外部凭据`，必须在最终演示录制前完成；公开仓库创建时间合规性仍需项目负责人确认。这两项已有后续去向，不改变本次离线内核验收结论。

@@ -20,5 +20,14 @@ htmlcov/
 .venv/
 venv/
 
+# Node (frontend build tooling only; built static assets are committed)
+node_modules/
+playwright-report/
+test-results/
+frontend/coverage/
+
 # Original task materials (must never be committed)
 *.pdf
+
+# Handoff / scratch materials (must never be committed)
+tmp/

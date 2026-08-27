@@ -1,0 +1,208 @@
+"""Profile store and provider catalog tests (offline, tmp home)."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from coding_agent.provider_config import (
+    CONFIG_VERSION,
+    ProfileError,
+    ProfileStore,
+    ProviderCatalog,
+    validate_profile,
+    validate_provider_url,
+)
+
+
+def make_profile(profile_id="deepseek-main", **overrides):
+    values = {
+        "profile_id": profile_id,
+        "provider_id": "deepseek",
+        "display_name": "DeepSeek 主账号",
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-chat",
+        "wire_api": "openai_chat_completions",
+        "credential_ref": "deepseek",
+    }
+    values.update(overrides)
+    return validate_profile(**values)
+
+
+# ---------------------------------------------------------------- URL rules
+
+
+class TestProviderUrlValidation:
+    def test_accepts_https_any_host(self):
+        assert (
+            validate_provider_url("https://api.deepseek.com")
+            == "https://api.deepseek.com"
+        )
+        assert (
+            validate_provider_url("https://vpn.example.net/v1/")
+            == "https://vpn.example.net/v1/"
+        )
+
+    def test_accepts_loopback_http(self):
+        assert (
+            validate_provider_url("http://127.0.0.1:8080/v1")
+            == "http://127.0.0.1:8080/v1"
+        )
+        assert (
+            validate_provider_url("http://localhost:11434/v1")
+            == "http://localhost:11434/v1"
+        )
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "",
+            "   ",
+            "api.deepseek.com",
+            "ftp://api.deepseek.com",
+            "/relative/path",
+            "https://user:pass@api.deepseek.com",
+            "https://api.deepseek.com?x=1",
+            "https://api.deepseek.com#frag",
+            "http://192.168.1.10/v1",
+            "http://example.com/v1",
+        ],
+    )
+    def test_rejects_bad_urls(self, url):
+        with pytest.raises(ProfileError):
+            validate_provider_url(url)
+
+
+class TestProfileValidation:
+    def test_validates_fields(self):
+        profile = make_profile()
+        assert profile.id == "deepseek-main"
+        assert profile.credential_ref == "deepseek"
+
+    def test_rejects_unknown_provider(self):
+        with pytest.raises(ProfileError, match="provider"):
+            make_profile(provider_id="anthropic")
+
+    def test_rejects_unsupported_wire_api(self):
+        with pytest.raises(ProfileError, match="wire_api"):
+            make_profile(wire_api="anthropic_messages")
+
+    def test_rejects_empty_model(self):
+        with pytest.raises(ProfileError, match="model"):
+            make_profile(model="  ")
+
+    def test_rejects_bad_profile_id(self):
+        with pytest.raises(ProfileError):
+            make_profile(profile_id="bad id")
+        with pytest.raises(ProfileError):
+            make_profile(profile_id="-leading")
+
+    def test_optional_credential_ref(self):
+        profile = make_profile(credential_ref=None)
+        assert profile.credential_ref is None
+
+
+class TestCatalog:
+    def test_presets_are_chat_completions_only(self):
+        catalog = ProviderCatalog()
+        presets = catalog.presets()
+        assert [p.provider_id for p in presets] == ["openai", "deepseek", "custom"]
+        assert catalog.preset("openai").default_base_url == "https://api.openai.com/v1"
+        assert catalog.preset("custom").default_base_url == ""
+
+
+class TestProfileStore:
+    @pytest.fixture
+    def store(self, tmp_path):
+        return ProfileStore(tmp_path / "home")
+
+    def test_create_list_activate(self, store):
+        store.create(make_profile(profile_id="openai-main", provider_id="openai"))
+        store.create(make_profile(profile_id="deepseek-main"))
+        profiles = store.list_profiles()
+        assert [p.id for p in profiles] == ["deepseek-main", "openai-main"]
+        # first created profile becomes active automatically
+        assert store.load().active_profile == "openai-main"
+        store.activate("deepseek-main")
+        assert store.load().active_profile == "deepseek-main"
+
+    def test_config_json_shape(self, store):
+        store.create(make_profile(profile_id="deepseek-main"))
+        raw = json.loads((store.path).read_text("utf-8"))
+        assert raw["version"] == CONFIG_VERSION
+        assert raw["active_profile"] == "deepseek-main"
+        assert "profiles" in raw
+        assert "credential_ref" in raw["profiles"]["deepseek-main"]
+        assert "api_key" not in json.dumps(raw)
+
+    def test_update_keeps_id_and_persists(self, store):
+        store.create(make_profile(profile_id="deepseek-main"))
+        updated = make_profile(
+            profile_id="deepseek-main",
+            display_name="改名",
+            model="deepseek-v4",
+            credential_ref=None,
+        )
+        store.update("deepseek-main", updated)
+        assert store.get("deepseek-main").display_name == "改名"
+        with pytest.raises(ProfileError, match="不可修改"):
+            store.update("deepseek-main", make_profile(profile_id="other-id"))
+
+    def test_delete_resets_active(self, store):
+        store.create(make_profile(profile_id="deepseek-main"))
+        store.delete("deepseek-main")
+        assert store.load().active_profile is None
+        assert store.get("deepseek-main") is None
+
+    def test_corrupt_config_raises_and_is_preserved(self, store):
+        store.path.parent.mkdir(parents=True)
+        store.path.write_text("{ not json", encoding="utf-8")
+        with pytest.raises(ProfileError, match="损坏"):
+            store.list_profiles()
+        with pytest.raises(ProfileError, match="损坏"):
+            store.create(make_profile(profile_id="other"))
+        # original file must be untouched after the failed write attempt
+        assert store.path.read_text("utf-8") == "{ not json"
+
+    def test_unknown_version_raises_and_preserves(self, store):
+        store.path.parent.mkdir(parents=True)
+        store.path.write_text(
+            json.dumps({"version": 99, "active_profile": None, "profiles": {}}),
+            encoding="utf-8",
+        )
+        with pytest.raises(ProfileError, match="版本"):
+            store.list_profiles()
+
+    def test_active_profile_must_exist(self, store):
+        store.path.parent.mkdir(parents=True)
+        store.path.write_text(
+            json.dumps(
+                {
+                    "version": CONFIG_VERSION,
+                    "active_profile": "ghost",
+                    "profiles": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ProfileError, match="不存在"):
+            store.list_profiles()
+
+    def test_rejects_traversal_like_field_injection(self, store):
+        with pytest.raises(ProfileError):
+            make_profile(profile_id="../../evil")
+
+    def test_atomic_save_keeps_old_file_on_injection_failure(self, store):
+        store.create(make_profile(profile_id="deepseek-main"))
+        # Make the replace step fail cross-platform: config.json becomes a
+        # directory, so os.replace(tmp, path) cannot succeed.
+        store.path.unlink()
+        store.path.mkdir()
+        with pytest.raises(Exception):
+            store.create(make_profile(profile_id="second"))
+        assert store.path.is_dir()
+        # The original content was not clobbered: a directory now sits where
+        # the file was, and the temp file was cleaned up.
+        leftovers = list(store.path.parent.glob(".config.json.*.tmp"))
+        assert leftovers == []

@@ -6,4 +6,5 @@
 
 | 反馈文件 | 对应任务 | 状态 | 是否已评估 | 备注 |
 | --- | --- | --- | --- | --- |
-| [task_001_feedback.md](task_001_feedback.md) | task_001 | 待评估 | 否 | 首次验收整改完成（R1 搜索符号链接守卫、R2 观察键规范化、R3 policy 后取消守卫）；标准命令 128 passed, 4 skipped |
+| [task_001_feedback.md](archive/task_001_feedback.md) | task_001 | 已归档 | 是 | Master 整改复验通过：R1-R3 独立复现通过，标准命令 128 passed, 4 skipped；live smoke 留待后续 |
+| [task_002_feedback.md](task_002_feedback.md) | task_002 | 待评估 | 否 | GUI 闭环/配置/安全/质量门禁完成：pytest 199 passed/4 skipped，Vitest 18 passed，Playwright 3 passed；真实模型 live smoke 为 N/A - 无外部凭据 |

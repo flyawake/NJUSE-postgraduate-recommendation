@@ -16,12 +16,34 @@ from openai import (
     RateLimitError,
 )
 
-from .errors import ModelRequestError
+from .config import ResolvedModelConnection
+from .errors import ConfigError, ModelRequestError
 from .models import AssistantTurn, ToolCall
+from .provider_config import WIRE_API_CHAT_COMPLETIONS
 
 
 class ModelClient(Protocol):
     def request(self, messages: List[dict], tools: List[dict]) -> AssistantTurn: ...
+
+
+class ModelClientFactory:
+    """Dispatch a resolved connection to the right model client adapter.
+
+    The factory is the only place that maps ``wire_api`` to a concrete
+    client; AgentLoop and every provider-neutral layer never branch on
+    provider names. Adding a native wire API later only extends this table.
+    """
+
+    @staticmethod
+    def create(connection: ResolvedModelConnection) -> ModelClient:
+        wire_api = connection.wire_api
+        if wire_api == WIRE_API_CHAT_COMPLETIONS:
+            return OpenAIModelClient(
+                api_key=connection.api_key,
+                model=connection.model,
+                base_url=connection.base_url,
+            )
+        raise ConfigError(f"不支持的 wire_api：{wire_api!r}")
 
 
 def normalize_response(response: Any) -> AssistantTurn:
