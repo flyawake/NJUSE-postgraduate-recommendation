@@ -106,6 +106,14 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     "def greet(name):\n    # TODO: return greeting\n    pass\n",
     "utf-8"
   );
+  // A pristine workspace for tests that run after the closed-loop test has
+  // already edited the shared workspace.
+  const freshWorkspace = mkdtempSync(path.join(os.tmpdir(), "ca-e2e-ws-fresh-"));
+  writeFileSync(
+    path.join(freshWorkspace, "hello.py"),
+    "def greet(name):\n    # TODO: return greeting\n    pass\n",
+    "utf-8"
+  );
 
   const fake = spawn("python", ["-u", path.join(root, "frontend", "e2e", "fake_model_server.py"), "--port", String(fakePort)], {
     cwd: root,
@@ -131,7 +139,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   const bootstrap = await (await fetch(`${baseUrl}/api/bootstrap`)).json() as {
     session_token: string;
   };
-  const secret = "fake-key-value-123456";
+  const secret = "E2E-SENTINEL-9f3c1";
   await createProfile(baseUrl, bootstrap.session_token, {
     display_name: "本地假模型",
     base_url: `http://127.0.0.1:${fakePort}/v1`,
@@ -156,6 +164,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   };
   process.env.E2E_BASE_URL = baseUrl;
   process.env.E2E_WORKSPACE = workspace;
+  process.env.E2E_WORKSPACE_FRESH = freshWorkspace;
 
   console.log(`[e2e] backend=${baseUrl} fake=http://127.0.0.1:${fakePort} workspace=${workspace}`);
 

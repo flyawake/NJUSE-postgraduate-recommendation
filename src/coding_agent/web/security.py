@@ -3,11 +3,15 @@
 The app is a local single-user tool, but any web page can attempt cross-site
 requests to localhost. Defense in depth:
 
-- ``Host`` header must be a loopback host (anti-DNS-rebinding).
+- ``Host`` must be a syntactically valid loopback host with a numeric port;
+  malformed headers (including ``localhost:not-a-port``) are rejected, and
+  IPv4/IPv6 literals are parsed structurally (no string-prefix tricks).
 - State-changing requests must send the random per-process session token in
   ``X-Coding-Agent-Token``; browsers cannot attach this header from another
   origin without a CORS preflight, which we never grant.
-- When an ``Origin`` header is present it must be same-origin loopback.
+- When an ``Origin`` header is present it must equal the request's effective
+  scheme/host/port exactly; a different loopback port is a cross-origin
+  request and is rejected.
 - Responses carry a strict CSP that forbids external scripts, plus standard
   hardening headers. No wide CORS is ever configured.
 """
@@ -15,11 +19,13 @@ requests to localhost. Defense in depth:
 from __future__ import annotations
 
 import secrets
-from typing import Callable
+from typing import Callable, Optional, Tuple
 from urllib.parse import urlparse
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+
+from ..netutil import is_loopback_host
 
 SESSION_TOKEN_HEADER = "x-coding-agent-token"
 
@@ -37,15 +43,29 @@ CSP = (
 )
 
 
-def _extract_host(request: Request) -> str:
-    host = request.headers.get("host", "")
-    return host.split(":")[0].strip("[]").lower() if host else ""
+def _parse_authority(value: str) -> Optional[Tuple[str, Optional[int]]]:
+    """Parse a Host/Origin authority into ``(host, port)``.
+
+    ``localhost:not-a-port`` and similar malformed values return None; IPv6
+    literals must be bracketed like ``[::1]:8000``.
+    """
+    if not value:
+        return None
+    try:
+        parsed = urlparse("//" + value)
+    except ValueError:
+        return None
+    if parsed.hostname is None:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    return parsed.hostname, port
 
 
-def _is_loopback_host(host: str) -> bool:
-    from ..netutil import is_loopback_host
-
-    return is_loopback_host(host)
+def _effective_port(host: str, port: Optional[int]) -> int:
+    return port if port is not None else 80
 
 
 def new_session_token() -> str:
@@ -54,15 +74,28 @@ def new_session_token() -> str:
 
 def guard_request(request: Request, session_token: str) -> None:
     """Raise ValueError with a stable code when the request is illegitimate."""
-    host = _extract_host(request)
-    if not _is_loopback_host(host):
+    request_authority = _parse_authority(request.headers.get("host", ""))
+    if request_authority is None or not is_loopback_host(request_authority[0]):
         raise ValueError("bad_host")
+    request_host, request_port = request_authority
 
     if request.method in ("POST", "PUT", "PATCH", "DELETE"):
         origin = request.headers.get("origin")
         if origin:
-            parsed = urlparse(origin)
-            if parsed.scheme != "http" or not _is_loopback_host(parsed.hostname or ""):
+            parsed_origin = urlparse(origin)
+            origin_authority = _parse_authority(parsed_origin.netloc)
+            if (
+                parsed_origin.scheme != request.url.scheme
+                or parsed_origin.username is not None
+                or parsed_origin.password is not None
+                or parsed_origin.path not in ("", "/")
+                or parsed_origin.query
+                or parsed_origin.fragment
+                or origin_authority is None
+                or origin_authority[0] != request_host
+                or _effective_port(*origin_authority)
+                != _effective_port(request_host, request_port)
+            ):
                 raise ValueError("bad_origin")
         token = request.headers.get(SESSION_TOKEN_HEADER, "")
         if not secrets.compare_digest(token, session_token):

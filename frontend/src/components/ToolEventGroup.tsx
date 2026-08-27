@@ -104,22 +104,19 @@ export function ToolCard({ item }: { item: ToolItem }) {
 
 export interface ToolEventGroupProps {
   group: ToolGroup;
-  defaultOpen: boolean;
-  /** Keep the group open while the run is streaming (collapse at terminal). */
-  streamOpen?: boolean;
 }
 
 /**
- * A run of consecutive tool calls. While the run streams, groups stay open
- * (the current action stays visible); at terminal, completed groups collapse
- * into one summary row ("已完成 N 项操作"). Groups containing the current
- * running action or an error/aborted item always stay expanded.
+ * A run of consecutive tool calls. While the run streams, only the current
+ * running group and groups containing errors/aborted items stay expanded;
+ * completed success groups collapse into one summary row immediately. In the
+ * terminal state every group can still be inspected by the user.
  */
-export function ToolEventGroup({ group, defaultOpen, streamOpen }: ToolEventGroupProps) {
+export function ToolEventGroup({ group }: ToolEventGroupProps) {
   const { t } = useI18n();
   const forceOpen = group.running || group.containsError;
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
-  const isOpen = forceOpen || (userOpen ?? (streamOpen || defaultOpen));
+  const isOpen = forceOpen || (userOpen ?? false);
   const hasError = group.containsError;
   const Icon = hasError ? ShieldX : group.aborted ? Square : group.running ? Loader2 : Wrench;
 

@@ -65,11 +65,17 @@ export function Onboarding({ onDone }: OnboardingProps) {
           })}
         </ol>
 
-        {created && created.credential_ref ? (
+        {created ? (
           <div className="space-y-4">
-            <div className="rounded-md border border-border bg-surface-2 p-4">
-              <CredentialField profile={created} />
-            </div>
+            {created.credential_ref ? (
+              <div className="rounded-md border border-border bg-surface-2 p-4">
+                <CredentialField profile={created} />
+              </div>
+            ) : (
+              <p className="text-sm text-muted" role="status">
+                {t("onboarding.noCredentialRef")}
+              </p>
+            )}
             <div className="flex items-center justify-between">
               <p className="text-xs text-faint">{t("onboarding.resume")}</p>
               <button type="button" className="btn-primary" onClick={onDone} data-testid="onboarding-done">

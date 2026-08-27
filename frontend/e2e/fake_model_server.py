@@ -20,7 +20,10 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 GREET_OLD = "# TODO: return greeting\n    pass"
-GREET_NEW = '    return f"Hello, {name}!"'
+# The sentinel is deliberately embedded in the tool payload; the UI/API
+# redaction must keep it out of the DOM even though it reaches the file.
+E2E_SENTINEL = "E2E-SENTINEL-9f3c1"
+GREET_NEW = f'    return f"Hello, {{name}}!"  # {E2E_SENTINEL}'
 FINAL_ANSWER = "已完成：greet 已实现并通过 py_compile 验证。"
 
 
@@ -165,6 +168,32 @@ def next_response(messages: list[dict]) -> dict:
     )
 
 
+def next_shot_response(messages: list[dict]) -> dict:
+    """Variant for screenshot capture: first tool is a slow run_command so the
+    running screenshot shows EXECUTING_TOOLS with non-zero counters."""
+    kind = _classify_last_tool_result(messages)
+    if kind is None:
+        return _assistant_with_calls(
+            [
+                _tool_call(
+                    "shot_1",
+                    "run_command",
+                    {
+                        "argv": ["python", "-c", "import time; time.sleep(3)"],
+                        "cwd": ".",
+                        "timeout_seconds": 10,
+                        "purpose": "inspect",
+                    },
+                )
+            ]
+        )
+    if kind == "run_command":
+        return _assistant_with_calls(
+            [_tool_call("shot_2", "glob", {"pattern": "**/*.py", "path": "."})]
+        )
+    return next_response(messages)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):  # noqa: A002 - stdlib signature
         # Keep server logs small and secret-free during tests.
@@ -192,7 +221,9 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._send({"error": "bad request"}, 400)
             return
-        if self.path.endswith("/v1-slow/chat/completions"):
+        if self.path.endswith("/v1-shot/chat/completions"):
+            time.sleep(0.5)
+        elif self.path.endswith("/v1-slow/chat/completions"):
             time.sleep(4.0)
         elif not self.path.endswith("/chat/completions"):
             self._send({"error": "not found"}, 404)
@@ -202,6 +233,9 @@ class Handler(BaseHTTPRequestHandler):
             # while keeping the whole closed loop under ~8 seconds.
             time.sleep(0.5)
         messages = body.get("messages") or []
+        if self.path.endswith("/v1-shot/chat/completions"):
+            self._send(_choice(next_shot_response(messages), "stop"))
+            return
         self._send(_choice(next_response(messages), "stop"))
 
 

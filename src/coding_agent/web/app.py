@@ -124,7 +124,10 @@ def create_app(
     app = FastAPI(
         title="Coding Agent Local GUI",
         version=resolved_version,
-        docs_url="/api/docs",
+        # Disable the default Swagger/ReDoc UI: their HTML loads scripts from
+        # cdn.jsdelivr.net, which violates the no-external-resources CSP.
+        docs_url=None,
+        redoc_url=None,
         openapi_url="/api/openapi.json",
     )
     install_security(app, token)

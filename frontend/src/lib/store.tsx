@@ -59,7 +59,9 @@ export function runReducer(state: RunStoreState, action: Action): RunStoreState 
       return {
         ...state,
         events: trimmed,
-        lastEventId: trimmed.length ? trimmed[trimmed.length - 1].id : state.lastEventId,
+        // An empty reset must clear the baseline too: otherwise replayed
+        // events with ids <= the old lastEventId would be filtered out.
+        lastEventId: trimmed.length ? trimmed[trimmed.length - 1].id : 0,
         sseStatus: "connected",
       };
     }
@@ -168,7 +170,10 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
 
     const connect = () => {
       if (disposed) return;
+      // Subscribe from the current baseline so a reconnect resumes after the
+      // last event the client actually has.
       subscribeToRunEvents(runId, {
+        lastEventId: state.lastEventId || null,
         signal: controller.signal,
         onEvent: (message) => {
           if (message.event === "hello") {
@@ -176,9 +181,12 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
             return;
           }
           if (message.event === "reset") {
-            // Server retained tail is the new truth; clear the client list,
-            // the following events are replayed in order.
+            // Server retained tail is the new truth: clear the baseline and
+            // refetch the snapshot so the reducer reinitializes from it, then
+            // the replayed events that follow are appended by id.
+            initializedRunIdRef.current = null;
             dispatch({ type: "RESET_EVENTS", events: [] });
+            queryClient.invalidateQueries({ queryKey: ["run", runId] });
             return;
           }
           if (message.event === "end") {

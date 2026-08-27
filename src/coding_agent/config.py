@@ -169,6 +169,9 @@ def load_config_from_connection(
     resolved_base_url = connection.base_url
     if base_url:
         resolved_base_url = validate_provider_url(base_url)
+    elif resolved_base_url is not None:
+        # Legacy and profile-provided URLs share the exact same validator.
+        resolved_base_url = validate_provider_url(resolved_base_url)
     return Config(
         workspace=_resolve_workspace(workspace),
         api_key=connection.api_key,
@@ -202,6 +205,10 @@ def load_config(
     resolved_base_url = (
         base_url or environment.get("OPENAI_BASE_URL") or ""
     ).strip() or None
+    if resolved_base_url is not None:
+        from .provider_config import validate_provider_url
+
+        resolved_base_url = validate_provider_url(resolved_base_url)
 
     missing = []
     if not key:

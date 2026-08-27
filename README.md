@@ -54,9 +54,9 @@ uv run coding-agent ui --no-browser    # 仅打印地址（自动化测试用）
 1. 启动 `coding-agent ui`，如无 profile 会自动出现 onboarding；选择 provider → 填写 URL/model → 写入凭据引用与凭据 → 保存。
 2. 在新任务页输入工作区路径（校验通过后显示“工作区可用”）、选择或继承 profile。
 3. 输入编程任务，点击“开始运行”（或 `Ctrl+Enter`）。
-4. 实时观察活动流：工具调用按连续组显示，当前执行项保持展开，成功的连续操作完成后折叠为“已完成 N 项操作”；右侧运行详情展示状态、逻辑步数、模型请求数、工具调用数、耗时、验证状态与变更文件。
+4. 实时观察活动流：工具调用按连续组显示，**运行中已完成**的成功组会立即折叠为“已完成 N 项操作”，只有当前执行组与失败/中止组强制展开，终态下仍可展开查看全部详情；右侧运行详情在运行中即显示逻辑步数、模型请求数、工具调用数、当前 phase 与“尚未验证”，而不是全 0 占位。
 5. 运行中出现问题可点击“取消运行”（变为“正在取消…”，幂等）。运行完成后顶部显示 `VERIFIED / NOT_APPLICABLE / FAILED / NOT_RUN`，最终答复位于活动流末端，页面可再次开始新任务（当前版本不承诺多轮会话）。
-6. 页面任意时刻刷新或断线重连后，会从服务端快照与事件流恢复。
+6. 页面任意时刻刷新或断线重连后，会从服务端快照初始化事件并按当前 event ID 续订；落后于服务端保留尾时以 reset 契约清空并重取快照，流在未收到 `end` 即中断时进入断线重连。
 
 页面默认简体中文，可在右上角切换完整英文；主题支持跟随系统/浅色/深色。
 
@@ -131,7 +131,7 @@ assistant ToolCall
   -> 发出 tool_finished
 ```
 
-同一个调用有三种分离表示：内部 `ToolOutcome` 保留结构化语义；`model_content` 以稳定 JSON 发给模型；事件/CLI 只展示脱敏短摘要。
+同一个调用有三种分离表示：内部 `ToolOutcome` 保留结构化语义；`model_content` 以稳定 JSON 发给模型；公开事件/CLI 经**字段级脱敏**——`write_file.content`、`edit_file.old_string/new_string` 永不进入事件，`run_command.argv` 只保留可执行名与安全旗标、其余参数以 `***` 呈现，worker 异常文本一律不进入 API。
 
 | 工具 | effect | 关键语义 |
 | --- | --- | --- |
@@ -161,11 +161,11 @@ FastAPI local app server (loopback only)
 ```
 
 - `RunController` 在受控 worker 线程中运行同步的 `AgentLoop.run`，HTTP 事件循环不被模型/工具调用阻塞；取消只设置既有 cancellation seam，最终产生唯一 terminal snapshot；重复 start 返回稳定 `run_already_active` 冲突，不创建第二个 AgentLoop。
-- 事件存储有数量与字符双重上限；事件 ID 单调，快照为事实基线，SSE 断线重连按 ID 去重、落后于保留尾时强制 reset 并重取快照。
+- 事件存储有数量与字符双重上限；事件 ID 单调，快照为事实基线，SSE 断线重连按 ID 去重；客户端落后于保留尾时服务端发送 reset，前端清空 baseline 并重取快照后再按序重放；运行中快照随事件实时更新计数与 phase。
 - API 错误使用稳定 `code` + 用户可读 `message` + 不含 secret 的 `field`；前端从不解析 message 判断逻辑。
 - Profile 存取：`config.json` 顶层固定 `version:1/active_profile/profiles`；profile ID 创建后不可改名；`wire_api` 当前唯一允许 `openai_chat_completions`；ModelClientFactory 按 wire API 分派，AgentLoop 中不存在 provider 名称分支。
 - 凭据：`credentials.json` 与 config 分离，只有 `ref -> secret`，读取接口只返回 `configured/source/writable`；写入用同目录临时文件 + flush/fsync + `os.replace`（POSIX 目录 0700 / 文件 0600，尽力而为）；损坏文件拒绝写入并保留原文件。
-- 安全：仅监听 loopback；校验 Host/Origin；状态变更必须携带随机会话令牌（`X-Coding-Agent-Token`，由 `/api/bootstrap` 下发，前端仅在内存中保存）；不配置宽泛 CORS；CSP `default-src 'self'` 禁止外部脚本与 CDN；profile 的 base URL 仅接受绝对 HTTP(S)（HTTP 仅限 loopback、无 userinfo/query/fragment）；workspace 在启动 run 前解析为已存在目录并交给既有路径守卫。
+- 安全：仅监听 loopback；Host 必须为语法合法的 loopback 主机（IPv4/IPv6 字面量或 localhost，端口必须为数字，畸形 Host 直接 403）；Origin 必须与当前请求的 scheme/host/effective port **精确一致**，另一个 loopback 端口、userinfo 或 path 均被拒绝；状态变更必须携带随机会话令牌（`X-Coding-Agent-Token`，由 `/api/bootstrap` 下发，前端仅在内存中保存）；不配置宽泛 CORS；CSP `default-src 'self'` 禁止外部脚本与 CDN，默认 Swagger/ReDoc UI 已禁用（OpenAPI JSON 仍保留）；profile 的 base URL 与 legacy `OPENAI_BASE_URL` 走同一个 validator（仅绝对 HTTP(S)、HTTP 仅限 loopback、无 userinfo/query/fragment、端口必须合法）；workspace 在启动 run 前解析为已存在目录并交给既有路径守卫。
 - 前端：TypeScript + React + Vite + Tailwind（全部视觉值来自 design tokens）+ Radix Primitives（Dialog/Select/Tabs/Collapsible/AlertDialog）+ Lucide；TanStack Query 负责 snapshot/config，SSE 增量事件进入独立 reducer；i18n 资源完整 zh-CN/en-US；面板随视口切换（窄屏检查器为抽屉）；状态（空闲/运行中/完成/失败/取消、验证通过/失败/未验证/无需验证）均配图标与文字，不只依赖颜色。
 
 ### 上下文投影
@@ -182,7 +182,7 @@ FastAPI local app server (loopback only)
 
 ### 事件
 
-每个事件含 run 内单调递增 `sequence`、`run_id`、类型、step 和脱敏 payload。至少八类：`run_started / step_started / model_retry / assistant_received / tool_started / tool_finished / completion_deferred / run_finished`；`run_finished` 在每个已开始 run 中恰好出现一次且 sequence 最大。事件中不含 API key 或完整大工具输出。
+每个事件含 run 内单调递增 `sequence`、`run_id`、类型、step 和字段级脱敏 payload。至少八类：`run_started / step_started / model_retry / assistant_received / tool_started / tool_finished / completion_deferred / run_finished`；`run_finished` 在每个已开始 run 中恰好出现一次且 sequence 最大。写文件内容、编辑字符串与命令敏感参数不会进入事件，worker 异常文本不会进入 API。
 
 ### 消息不变量
 
@@ -223,7 +223,7 @@ npm run test:e2e     # Playwright + Fake Model：生产 build 闭环、取消/�
 - `glob`/`grep` 使用标准库，性能不与 ripgrep 等同；ripgrep 后端属于后续路线。
 - SHA-256 观察是单进程尽力新鲜度防护，存在跨进程 TOCTOU 窗口；不宣称事务或 CAS。
 - `run_command` 无安全沙箱：任意可执行文件可能访问工作区外资源。只应在可信或一次性工作区使用。
-- 本地 GUI 服务只监听 `127.0.0.1`：任何本机进程/网页仍可能发起请求，因此状态变更要求随机会话令牌且页面使用 CSP；普通网页无法可靠返回本机目录绝对路径，工作区使用路径输入加后端校验。
+- 本地 GUI 服务只监听 `127.0.0.1`：任何本机进程/网页仍可能发起请求，因此状态变更要求随机会话令牌、Host/Origin 精确同源校验且页面使用 CSP；普通网页无法可靠返回本机目录绝对路径，工作区使用路径输入加后端校验。
 - 凭据文件是用户目录内的本地明文 JSON（Windows 上没有 OS 密钥串级别的加密），推荐使用环境变量；不宣称加密存储。
 - GUI 仅支持一个 provider 协议：`openai_chat_completions`（OpenAI/DeepSeek/自定义网关皆为 Chat Completions 兼容）；不支持 Anthropic Messages、OpenAI Responses 或 OAuth。
 - 首版每个应用进程只允许一个 active run；“最近运行”仅限当前进程内有界记录，不承诺跨进程历史。

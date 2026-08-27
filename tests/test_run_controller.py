@@ -7,6 +7,7 @@ tmp_path directories and the profile store/credentials live under CODING_AGENT_H
 from __future__ import annotations
 
 import sys
+import threading
 import time
 
 import pytest
@@ -99,6 +100,30 @@ class BlockingModel:
     def request(self, messages, tools):
         self.finished = True
         time.sleep(self.delay)
+        return turn(text="done")
+
+
+class ToolThenBlockModel:
+    """One slow tool step, then block so running-time facts can be observed."""
+
+    def __init__(self) -> None:
+        self.first = True
+        self.block = threading.Event()
+        self.tool_call = make_tool_call(
+            "run_command",
+            {
+                # PATH-resolved executable keeps events machine-path-free.
+                "argv": ["python", "-c", "import time; time.sleep(2)"],
+                "purpose": "inspect",
+                "timeout_seconds": 10,
+            },
+        )
+
+    def request(self, messages, tools):
+        if self.first:
+            self.first = False
+            return turn(calls=[self.tool_call])
+        self.block.wait(timeout=30)
         return turn(text="done")
 
 
@@ -208,6 +233,42 @@ class TestStartAndTerminal:
         assert snap.state == "running"
         _wait_terminal(controller)
         assert controller.snapshot().status == "SUCCESS"
+
+    def test_running_snapshot_reflects_live_facts(self, seeded):
+        model = ToolThenBlockModel()
+        controller = make_controller(seeded, factory=lambda _connection: model)
+        controller._env["OPENAI_API_KEY"] = "sk-test"
+        controller._env["OPENAI_MODEL"] = "fake-model"
+        controller.start(RunStartRequest(workspace=str(seeded), task="t"))
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            snap = controller.snapshot()
+            if (
+                snap.tool_call_count >= 1
+                and snap.state == "running"
+                and snap.phase == "EXECUTING_TOOLS"
+            ):
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("tool execution never became visible in snapshot")
+
+        assert snap.state == "running"
+        assert snap.tool_call_count == 1
+        assert snap.step_count >= 1
+        assert snap.provider_attempt_count >= 1
+        assert snap.phase == "EXECUTING_TOOLS"
+        # No verification conclusion exists yet; NOT_APPLICABLE would be false.
+        assert snap.verification_status == "NOT_RUN"
+        assert snap.status is None
+
+        model.block.set()
+        _wait_terminal(controller)
+        terminal = controller.snapshot()
+        assert terminal.status == "SUCCESS"
+        assert terminal.tool_call_count == 1
+        assert terminal.verification_status == "NOT_APPLICABLE"
 
     def test_terminal_snapshot_is_unique(self, seeded):
         factory, _ = _scripted_loop_model(turn(text="done"))

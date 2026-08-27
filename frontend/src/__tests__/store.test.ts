@@ -41,10 +41,11 @@ describe("runReducer", () => {
     expect(next.lastEventId).toBe(5);
   });
 
-  it("RESET_EVENTS clears stale events on server tail reset", () => {
+  it("RESET_EVENTS clears stale events and the baseline on server tail reset", () => {
     const base = state({ events: [event(1)], lastEventId: 1 });
     const next = runReducer(base, { type: "RESET_EVENTS", events: [] });
     expect(next.events).toEqual([]);
+    expect(next.lastEventId).toBe(0);
   });
 
   it("CANCEL_FAILED restores the cancelling flag so cancel can be retried", () => {

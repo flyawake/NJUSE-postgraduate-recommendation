@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildFeed } from "@/lib/toolgroups";
+import { buildFeed, type ToolGroup } from "@/lib/toolgroups";
 import type { ToolEvent } from "@/api/client";
 
 function event(
@@ -12,22 +12,49 @@ function event(
 }
 
 describe("buildFeed tool grouping", () => {
-  it("groups consecutive completed tools and collapses them", () => {
+  it("groups consecutive completed tools and interleaves with step events", () => {
     const events = [
       event(1, "run_started", {}, 0),
-      event(2, "tool_started", { call_id: "a", name: "glob", arguments: '{"pattern":"**/*.py"}' }),
-      event(3, "tool_finished", { call_id: "a", name: "glob", ok: true, error_code: null, summary: "glob ok: path=." }),
-      event(4, "tool_started", { call_id: "b", name: "read_file", arguments: '{"path":"src/app.py"}' }),
-      event(5, "tool_finished", { call_id: "b", name: "read_file", ok: true, error_code: null, summary: "read_file ok: path=src/app.py" }),
-      event(6, "run_finished", { status: "SUCCESS", stop_reason: "FINAL_ANSWER", verification_status: "VERIFIED" }),
+      event(2, "step_started", { char_count: 10, budget: 120000 }, 1),
+      event(3, "tool_started", { call_id: "a", name: "glob", arguments: '{"pattern":"**/*.py"}' }),
+      event(4, "tool_finished", { call_id: "a", name: "glob", ok: true, error_code: null, summary: "glob ok: path=." }),
+      event(5, "tool_started", { call_id: "b", name: "read_file", arguments: '{"path":"src/app.py"}' }),
+      event(6, "tool_finished", { call_id: "b", name: "read_file", ok: true, error_code: null, summary: "read_file ok: path=src/app.py" }),
+      event(7, "run_finished", { status: "SUCCESS", stop_reason: "FINAL_ANSWER", verification_status: "VERIFIED" }),
     ];
-    const { items, groups } = buildFeed(events, "fix it");
-    expect(items.map((item) => item.kind)).toEqual(["task", "terminal"]);
+    const { entries, groups } = buildFeed(events, "fix it");
+    expect(entries.map((entry) => entry.kind)).toEqual(["task", "step", "group", "terminal"]);
     expect(groups).toHaveLength(1);
     expect(groups[0].items).toHaveLength(2);
     expect(groups[0].running).toBe(false);
     expect(groups[0].containsError).toBe(false);
     expect(groups[0].items[0].status).toBe("success");
+  });
+
+  it("preserves true event order across steps and groups", () => {
+    const events = [
+      event(1, "run_started", {}, 0),
+      event(2, "step_started", { char_count: 1, budget: 2 }, 1),
+      event(3, "tool_started", { call_id: "a", name: "glob", arguments: "{}" }),
+      event(4, "tool_finished", { call_id: "a", name: "glob", ok: true, error_code: null, summary: "s" }),
+      event(5, "step_started", { char_count: 1, budget: 2 }, 2),
+      event(6, "tool_started", { call_id: "b", name: "grep", arguments: "{}" }, 2),
+      event(7, "tool_finished", { call_id: "b", name: "grep", ok: true, error_code: null, summary: "s" }, 2),
+      event(8, "run_finished", { status: "SUCCESS", stop_reason: "FINAL_ANSWER", verification_status: "VERIFIED" }),
+    ];
+    const { entries } = buildFeed(events, "task");
+    expect(entries.map((entry) => entry.kind)).toEqual([
+      "task",
+      "step",
+      "group",
+      "step",
+      "terminal",
+    ]);
+    const groupSteps = entries
+      .filter((entry) => entry.kind === "group")
+      .map((entry) => (entry as { group: ToolGroup }).group.items.map((item) => item.step))
+      .flat();
+    expect(groupSteps).toEqual([1, 2]);
   });
 
   it("keeps the running group expanded (still running)", () => {

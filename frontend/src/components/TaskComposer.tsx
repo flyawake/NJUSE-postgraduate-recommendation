@@ -28,11 +28,12 @@ export function TaskComposer({
 }: TaskComposerProps) {
   const { t } = useI18n();
   const running = state === "running" || state === "cancelling";
+  const canStart = state === "ready";
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
       event.preventDefault();
-      if (!running && task.trim()) onStart();
+      if (canStart) onStart();
     }
   };
 
@@ -65,7 +66,7 @@ export function TaskComposer({
           type="button"
           className="btn-primary"
           onClick={onStart}
-          disabled={running || !task.trim()}
+          disabled={!canStart}
           aria-label={t("composer.start")}
         >
           <Play aria-hidden size={16} />

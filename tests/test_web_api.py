@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from coding_agent.web.app import create_app
 from coding_agent.web.controller import RunController
+from conftest import make_tool_call, turn
 from test_run_controller import _scripted_loop_model, _seed_workspace, _verify_turns
 
 FAKE_SECRET = "sk-fake-secret-12345"
@@ -145,6 +146,39 @@ class TestSecurity:
             "/api/workspace/validate", json={"path": ".", "extra": "1"}, headers=headers
         )
         assert response.status_code == 422  # extra field forbidden
+
+    def test_different_loopback_port_origin_rejected(self, controller, workspace):
+        app = create_app(
+            controller=controller,
+            static_dir=workspace,
+            session_token="test-session-token",
+        )
+        port_client = TestClient(app, base_url="http://127.0.0.1:8000")
+        headers = auth_headers(port_client)
+        headers["Origin"] = "http://127.0.0.1:9999"
+        response = port_client.post(
+            "/api/workspace/validate", json={"path": "."}, headers=headers
+        )
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "bad_origin"
+
+    def test_origin_with_path_or_userinfo_rejected(self, client):
+        for origin in ("http://127.0.0.1/path", "http://user@127.0.0.1"):
+            headers = auth_headers(client)
+            headers["Origin"] = origin
+            response = client.post(
+                "/api/workspace/validate", json={"path": "."}, headers=headers
+            )
+            assert response.status_code == 403
+            assert response.json()["error"]["code"] == "bad_origin"
+
+    def test_malformed_host_port_rejected(self, client):
+        response = client.get("/api/health", headers={"Host": "localhost:not-a-port"})
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "bad_host"
+
+    def test_ipv6_loopback_host_accepted(self, client):
+        assert client.get("/api/health", headers={"Host": "[::1]"}).status_code == 200
 
     def test_get_needs_no_token(self, client):
         assert client.get("/api/health").status_code == 200
@@ -450,3 +484,102 @@ class TestRunApi:
         assert "run_finished" in kinds
         assert kinds[-1] == "end"
         assert ids == sorted(ids)
+
+
+class TestEventRedaction:
+    SENTINEL = "SENTINEL-SECRET-DO-NOT-LEAK"
+
+    def _wait_terminal(self, client, run_id):
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            snap = client.get(f"/api/runs/{run_id}").json()
+            if snap["state"] == "terminal":
+                return snap
+            time.sleep(0.05)
+        raise AssertionError("run did not reach terminal state")
+
+    def test_sentinel_never_reaches_snapshot_or_events(self, workspace):
+        factory, _ = _scripted_loop_model(
+            turn(
+                calls=[
+                    make_tool_call(
+                        "write_file",
+                        {"path": "leak.txt", "content": self.SENTINEL},
+                    )
+                ]
+            ),
+            turn(
+                calls=[
+                    make_tool_call(
+                        "run_command",
+                        {
+                            "argv": ["python", "--api-key", self.SENTINEL],
+                            "purpose": "inspect",
+                        },
+                    )
+                ]
+            ),
+            turn(text="done"),
+        )
+        controller = RunController(
+            home=workspace / "home",
+            env={"OPENAI_API_KEY": "sk-test", "OPENAI_MODEL": "fake"},
+            client_factory=factory,
+        )
+        client = TestClient(
+            create_app(controller=controller, static_dir=workspace),
+            base_url="http://127.0.0.1",
+        )
+        headers = auth_headers(client)
+        snap = client.post(
+            "/api/runs",
+            json={"workspace": str(workspace), "task": "t"},
+            headers=headers,
+        ).json()
+        terminal = self._wait_terminal(client, snap["run_id"])
+        payload = json.dumps(terminal, ensure_ascii=False)
+        assert self.SENTINEL not in payload
+        # The redacted write arguments keep the path but hide the content.
+        write_started = next(
+            event
+            for event in terminal["events"]
+            if event["kind"] == "tool_started"
+            and event["payload"].get("name") == "write_file"
+        )
+        assert "leak.txt" in write_started["payload"]["arguments"]
+        assert self.SENTINEL not in write_started["payload"]["arguments"]
+        run_finished = next(
+            event
+            for event in terminal["events"]
+            if event["kind"] == "tool_finished"
+            and event["payload"].get("name") == "run_command"
+        )
+        assert self.SENTINEL not in json.dumps(run_finished, ensure_ascii=False)
+
+    def test_worker_assertion_text_is_never_exposed(self, workspace):
+        sentinel = self.SENTINEL
+
+        class BrokenLoop:
+            def run(self, task):
+                raise AssertionError(f"boom {sentinel}")
+
+        controller = RunController(
+            home=workspace / "home",
+            env={"OPENAI_API_KEY": "sk-test", "OPENAI_MODEL": "fake"},
+        )
+        controller._loop_builder = lambda **_kwargs: BrokenLoop()
+        client = TestClient(
+            create_app(controller=controller, static_dir=workspace),
+            base_url="http://127.0.0.1",
+        )
+        headers = auth_headers(client)
+        snap = client.post(
+            "/api/runs",
+            json={"workspace": str(workspace), "task": "t"},
+            headers=headers,
+        ).json()
+        terminal = self._wait_terminal(client, snap["run_id"])
+        assert terminal["status"] == "ERROR"
+        assert terminal["error"]["code"] == "internal_error"
+        assert self.SENTINEL not in json.dumps(terminal, ensure_ascii=False)
+        assert "boom" not in terminal["error"]["message"]

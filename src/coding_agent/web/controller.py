@@ -47,6 +47,7 @@ from ..tools.executor import ToolExecutor
 from ..tools.observation import FileObservationTracker
 from ..tools.paths import Workspace
 from ..tools.policy import WorkspaceToolPolicy
+from .redaction import redact_public_payload, redact_verification_summary
 from .schemas import (
     EVENT_PAYLOAD_KEYS,
     KNOWN_EVENT_KINDS,
@@ -161,6 +162,14 @@ class RunController:
         self._result: Optional[RunResult] = None
         self._terminal_error: Optional[ErrorDetail] = None
         self._finished_flag = False
+        # Live counters updated from the event stream so the inspector shows
+        # real running-time facts instead of all-zero placeholders.
+        self._live_step = 0
+        self._live_provider_attempts = 0
+        self._live_tool_count = 0
+        self._live_verification: Optional[str] = None
+        self._exception_status: Optional[str] = None
+        self._exception_stop_reason: Optional[str] = None
 
     # ------------------------------------------------------------ read API
 
@@ -341,6 +350,12 @@ class RunController:
         self._result = None
         self._terminal_error = None
         self._finished_flag = False
+        self._live_step = 0
+        self._live_provider_attempts = 0
+        self._live_tool_count = 0
+        self._live_verification = None
+        self._exception_status = None
+        self._exception_stop_reason = None
 
     def _default_loop_builder(
         self,
@@ -390,8 +405,9 @@ class RunController:
             self._terminal_error = self._error_for_result(result)
 
     def _finish_with_exception(self, run_id: str, exc: Exception) -> None:
-        # Only the exception type is logged: exception text may originate
-        # from third-party SDKs and could contain secrets.
+        # Only the exception type is logged; exception text may originate
+        # from third-party SDKs and could contain secrets. It is also never
+        # copied into the public API, regardless of exception type.
         logger.warning(
             "run %s failed inside worker: %s",
             run_id[:8],
@@ -403,14 +419,13 @@ class RunController:
             self._finished_flag = True
             self._phase = LoopPhase.TERMINAL.value
             self._state = "terminal"
+            self._exception_status = "ERROR"
+            self._exception_stop_reason = "INTERNAL_ERROR"
             self._finished_wall = time.time()
             self._finished_mono = time.monotonic()
-            # Never leak exception text or traces into the API.
-            sanitized = str(exc)[:120] if isinstance(exc, AssertionError) else ""
             self._terminal_error = ErrorDetail(
                 code="internal_error",
-                message="AgentLoop 内部错误，运行已终止"
-                + (f"（{sanitized}）" if sanitized else ""),
+                message="AgentLoop 内部错误，运行已终止",
             )
 
     @staticmethod
@@ -433,6 +448,8 @@ class RunController:
             payload: Dict[str, Any] = {
                 key: value for key, value in event.payload.items() if key in keys
             }
+            payload = redact_public_payload(event.type, payload)
+            self._update_live_facts(event, payload)
             dto = ToolEventDTO(
                 id=self._event_seq,
                 kind=event.type,
@@ -442,6 +459,20 @@ class RunController:
             )
             self._append_event(dto)
             self._phase = event.phase.value
+
+    def _update_live_facts(self, event: AgentEvent, payload: Dict[str, Any]) -> None:
+        if event.type == "step_started":
+            self._live_step = event.step
+            self._live_provider_attempts += 1
+        elif event.type == "model_retry":
+            # A retry event means another provider attempt is about to start.
+            self._live_provider_attempts += 1
+        elif event.type == "tool_started":
+            self._live_tool_count += 1
+        elif event.type == "completion_deferred":
+            value = payload.get("verification_status")
+            if isinstance(value, str):
+                self._live_verification = value
 
     def _append_event(self, dto: ToolEventDTO) -> None:
         self._events.append(dto)
@@ -458,10 +489,13 @@ class RunController:
 
     def _build_snapshot_locked(self) -> RunSnapshotDTO:
         result = self._result
+        running = self._state == "running"
         last_verification = None
         if result is not None and result.last_verification is not None:
             last_verification = VerificationDTO(
-                command=str(result.last_verification.get("command") or ""),
+                command=redact_verification_summary(
+                    result.last_verification.get("command")
+                ),
                 exit_code=result.last_verification.get("exit_code"),
             )
         elapsed = None
@@ -469,18 +503,37 @@ class RunController:
             end = self._finished_mono or time.monotonic()
             elapsed = int((end - self._started_mono) * 1000)
         head_id = self._events[0].id if self._events else self._event_seq + 1
+        verification = None
+        if result is not None:
+            verification = result.verification_status.value
+        elif running:
+            # No verification conclusion exists yet during a run; showing
+            # NOT_APPLICABLE here would be a false "nothing to verify".
+            verification = self._live_verification or "NOT_RUN"
         return RunSnapshotDTO(
             run_id=self._run_id or "",
             state=self._state,
-            status=result.status.value if result else None,
+            status=(
+                result.status.value if result is not None else self._exception_status
+            ),
             phase=self._phase,
-            stop_reason=result.stop_reason.value if result else None,
-            verification_status=result.verification_status.value if result else None,
+            stop_reason=(
+                result.stop_reason.value
+                if result is not None
+                else self._exception_stop_reason
+            ),
+            verification_status=verification,
             final_text=result.final_text if result else None,
             task=self._task,
-            step_count=result.step_count if result else 0,
-            provider_attempt_count=result.provider_attempt_count if result else 0,
-            tool_call_count=result.tool_call_count if result else 0,
+            step_count=(result.step_count if result else self._live_step),
+            provider_attempt_count=(
+                result.provider_attempt_count
+                if result
+                else self._live_provider_attempts
+            ),
+            tool_call_count=(
+                result.tool_call_count if result else self._live_tool_count
+            ),
             mutated_paths=list(result.mutated_paths) if result else [],
             last_verification=last_verification,
             started_at=self._started_wall,

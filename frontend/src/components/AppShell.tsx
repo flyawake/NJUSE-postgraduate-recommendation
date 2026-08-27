@@ -47,7 +47,7 @@ export function AppShell({
       />
       <div className="flex min-h-0 flex-1">
         <Sidebar view={view} collapsed={sidebarCollapsed} onNavigate={onNavigate} badge={badge} />
-        <main className="relative flex min-w-0 flex-1 flex-col" aria-live="polite">
+        <main className="relative flex min-w-0 flex-1 flex-col">
           {children}
         </main>
         <aside className="hidden w-72 shrink-0 overflow-hidden border-l border-border bg-bg p-3 lg:block">
@@ -79,8 +79,10 @@ export function AppShell({
         </Dialog.Root>
       </div>
 
-      {/* Floating controls: sidebar toggle (narrow) + inspector (narrow). */}
-      <div className="pointer-events-none fixed bottom-4 right-4 z-30 flex gap-2 lg:hidden" aria-hidden>
+      {/* Floating controls: sidebar toggle (narrow) + inspector (narrow).
+          The container ignores pointer events, but its buttons stay
+          focusable, so it must NOT be aria-hidden. */}
+      <div className="pointer-events-none fixed bottom-4 right-4 z-30 flex gap-2 lg:hidden">
         <button
           type="button"
           className="btn-secondary pointer-events-auto shadow-md"

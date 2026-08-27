@@ -54,7 +54,7 @@ describe("WorkspaceField", () => {
     const user = userEvent.setup();
     render(<ControlledWorkspaceField />);
     await user.type(screen.getByLabelText("工作区"), "C:/nope");
-    await waitFor(() => expect(screen.getByText("工作区不是目录")).toBeInTheDocument(), {
+    await waitFor(() => expect(screen.getByText("工作区路径无效或不可访问")).toBeInTheDocument(), {
       timeout: 3000,
     });
   });
@@ -91,7 +91,7 @@ describe("ToolEventGroup", () => {
   it("collapses completed groups into one summary row", () => {
     render(
       <I18nProvider>
-        <ToolEventGroup group={group} defaultOpen={false} />
+        <ToolEventGroup group={group} />
       </I18nProvider>
     );
     expect(screen.getByText("已完成 2 项操作")).toBeInTheDocument();
@@ -101,7 +101,7 @@ describe("ToolEventGroup", () => {
   it("expands groups containing errors", () => {
     render(
       <I18nProvider>
-        <ToolEventGroup group={{ ...group, containsError: true }} defaultOpen={false} />
+        <ToolEventGroup group={{ ...group, containsError: true }} />
       </I18nProvider>
     );
     expect(screen.getByText("glob")).toBeInTheDocument();
@@ -110,7 +110,7 @@ describe("ToolEventGroup", () => {
   it("expands running groups", () => {
     render(
       <I18nProvider>
-        <ToolEventGroup group={{ ...group, running: true }} defaultOpen={false} />
+        <ToolEventGroup group={{ ...group, running: true }} />
       </I18nProvider>
     );
     expect(screen.getByText("正在执行 2 项操作")).toBeInTheDocument();

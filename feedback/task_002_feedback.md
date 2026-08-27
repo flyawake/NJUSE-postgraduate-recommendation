@@ -240,3 +240,69 @@ git diff --check 49db10c..HEAD     # 0
 ### 流程记录
 
 - `543131f` 混入了 Master 管理资料，且 Task 2 实现提交后 `guide/INDEX.md` 仍停留“未开始”。Master 本轮已补记任务为“进行中”；后续整改提交只允许包含实现、测试、README 和 Developer feedback，不得修改 `guide/`、`AGENT_*` 或 `PROJECT_CONTEXT.md`。
+
+## 12. R2.1-R2.8 整改结果（2026-08-27）
+
+本轮提交仅包含实现、测试、README/`.env.example` 与 feedback，未修改 `guide/`、`AGENT_*`、`PROJECT_CONTEXT.md`。
+
+**R2.1 公开事件真正脱敏**
+- 新增 `web/redaction.py` 集中字段级脱敏：`write_file.content`、`edit_file.old_string/new_string` 只留 `***`；`run_command.argv` 只保留 `argv[0]` 与安全旗标，其余参数一律 `***`；`tool_finished.summary` 对 run_command 重建为通用摘要；验证命令 summary 在 snapshot 前结构化解析并同样脱敏。
+- worker 异常路径不再把任何 `str(exc)` 写入 API（`AssertionError` 不再例外），日志只记异常类型；terminal 快照状态置为 ERROR/INTERNAL_ERROR。
+- 测试：`tests/test_web_api.py::TestEventRedaction`（真实 AgentLoop 中 write content 与 `--api-key` sentinel 经 snapshot/SSE 路径零命中；worker AssertionError sentinel 不进 API）+ e2e 的 `E2E-SENTINEL-9f3c1`（edit 内容真实写入文件，DOM/截图零命中）。
+
+**R2.2 运行中事实准确**
+- `RunController` 从事件流维护 live step/attempt/tool 计数与 phase；运行中 snapshot 直接返回这些值，验证状态在无结论时返回 `NOT_RUN`（不再误显 NOT_APPLICABLE）。
+- 测试：`test_running_snapshot_reflects_live_facts`（慢 run_command 执行中 phase=EXECUTING_TOOLS、计数非零、verification=NOT_RUN）；e2e 在运行中断言逻辑步数/模型请求数非零且“尚未验证”。
+
+**R2.3 活动流时序与折叠**
+- `buildFeed` 输出单一有序 `entries`（step/retry/group 按真实事件顺序交错）；`ActivityFeed` 按序渲染。
+- `ToolEventGroup`：运行中已完成成功组默认折叠，仅当前执行组与失败/中止组强制展开；终态用户可展开查看全部。
+- 测试：`toolgroups.test.ts` 新增交错顺序与步骤归属断言；e2e 展开“已完成 5 项操作”后按序验证 5 个工具且无重复。
+
+**R2.4 刷新/SSE 恢复闭环**
+- 订阅携带当前 `lastEventId`；`RESET_EVENTS([])` 同时把 baseline 清零（修复空 reset 过滤重放事件的 bug）；收到 reset 时清空并重取 snapshot 再按序重放；SSE 未收到 `end` 就 EOF 时进入断线重连。
+- Playwright 新增“第一个工具完成后刷新”用例：最终按序看到全部 5 个工具、无丢失/重复；`test_empty_retained_tail_resets_behind_clients` 覆盖落后于 retained tail。
+
+**R2.5 配置/URL 一致与写回滚**
+- legacy `OPENAI_BASE_URL` 与 profile 共用 `validate_provider_url`；`load_config_from_connection` 也校验连接 URL。
+- `ProfileStore` create/update/delete/activate 改为 copy-on-write + `_commit`（写失败不改变内存视图）；严格解析拒绝顶层/内嵌未知字段、类型错误与内嵌 id 不一致。
+- 测试：legacy URL 拒绝远程 HTTP/userinfo；CRUD 注入失败回滚；strict parse 三类拒绝。
+
+**R2.6 精确 same-origin/Host**
+- `security.py` 用结构化 authority 解析 Host/Origin（IPv4/IPv6 字面量 + 数字端口，畸形端口 403）；Origin 必须与请求 scheme/host/effective port 完全一致，另端口/userinfo/path/query/fragment 均拒绝。
+- 关闭默认 Swagger/ReDoc UI（OpenAPI JSON 保留，typecheck/check:api 不受影响）。
+- 测试：跨 loopback 端口 Origin、带 path/userinfo Origin、畸形 Host 端口 403；`[::1]` Host 200；IPv6 与精确同源分支覆盖。
+
+**R2.7 完整双语与交互状态**
+- `errorCodeText/apiErrorText` 按稳定 code 映射 zh-CN/en-US，不再显示后端中文 message；补充 24 个 error code 双语资源。
+- TaskComposer：`state !== "ready"` 时按钮禁用、Ctrl+Enter 不启动；ProfileSelector 继承 active profile 时显示真实选中项；Onboarding 空 credential ref 有可完成路径；credential input 恒为 password（移除明文切换）；窄屏浮动按钮移除祖先 `aria-hidden`；主区域去掉过宽的 `aria-live`，保留局部 status 播报。
+- 测试：现有组件测试更新 + i18n 键一致性测试继续通过。
+
+**R2.8 证据与文档一致**
+- README 重写脱敏、实时计数、运行中折叠、重连/reset、精确 same-origin、Swagger 关闭等描述；`.env.example` 明确“本项目不会自动读取 .env”，只给环境变量示例。
+- 截图脚本改用仓库内 `tmp/demo-workspace`（不含用户名/用户目录）；running 帧用 shot 模式慢工具，带 DOM 断言（计数非零、active profile 可见）后截图；六张 1280×720 截图字节扫描无 sentinel/`C:\Users`。
+
+**整改后全量验证（实际执行，全部 exit 0）**
+
+```powershell
+uv sync --all-groups                       # 0
+uv run ruff format --check .               # 0（72 files）
+uv run ruff check .                        # 0
+uv run pytest -q                           # 0（221 passed, 4 skipped；1 个 starlette TestClient 弃用 warning）
+uv run coding-agent --help                 # 0
+uv run python -m coding_agent --help       # 0
+uv run coding-agent ui --help              # 0
+uv run coding-agent config --help          # 0
+npm run typecheck                          # 0
+npm run lint                               # 0
+npm test -- --run                          # 0（24 passed）
+npm run build                              # 0（产物重建后工作树与提交一致）
+npm run check:api                          # 0
+npm run test:e2e                           # 0（4 passed：闭环/设置/首个工具后刷新/取消恢复）
+npm audit --omit=dev --registry=https://registry.npmjs.org  # 0 vulnerabilities
+uv build                                   # 通过（wheel 含 static，无 source map）
+git diff --check                           # 0
+git diff --check 49db10c..HEAD             # 0
+```
+
+4 个 skip 均为平台无法创建符号链接的用例；截图、trace、日志、DOM 的 sentinel 检查零命中。

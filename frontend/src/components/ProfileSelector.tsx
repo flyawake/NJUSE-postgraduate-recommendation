@@ -32,7 +32,10 @@ export function ProfileSelector({
 }: ProfileSelectorProps) {
   const { t } = useI18n();
   const loading = profiles === undefined;
-  const selected = profiles?.find((profile) => profile.id === value) ?? null;
+  // When the user has not made an explicit choice, the inherited active
+  // profile is the real selection and must be shown in the trigger.
+  const effectiveValue = value ?? activeProfileId;
+  const selected = profiles?.find((profile) => profile.id === effectiveValue) ?? null;
 
   return (
     <div>

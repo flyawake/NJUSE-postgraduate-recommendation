@@ -43,6 +43,36 @@ def test_cli_overrides_model_and_base_url(tmp_path):
     assert config.base_url == "http://localhost:9999/v1"
 
 
+def test_legacy_base_url_uses_same_url_validator(tmp_path):
+    with pytest.raises(ConfigError):
+        load_config(
+            str(tmp_path),
+            env={
+                "OPENAI_API_KEY": "sk-test",
+                "OPENAI_MODEL": "m",
+                "OPENAI_BASE_URL": "http://api.example.com/v1",
+            },
+        )
+    with pytest.raises(ConfigError):
+        load_config(
+            str(tmp_path),
+            env={
+                "OPENAI_API_KEY": "sk-test",
+                "OPENAI_MODEL": "m",
+                "OPENAI_BASE_URL": "https://user:pass@api.example.com/v1",
+            },
+        )
+    config = load_config(
+        str(tmp_path),
+        env={
+            "OPENAI_API_KEY": "sk-test",
+            "OPENAI_MODEL": "m",
+            "OPENAI_BASE_URL": "https://api.example.com/v1",
+        },
+    )
+    assert config.base_url == "https://api.example.com/v1"
+
+
 @pytest.mark.parametrize("max_steps", [0, 51, 100])
 def test_max_steps_out_of_range_rejected(tmp_path, max_steps):
     with pytest.raises(ConfigError):

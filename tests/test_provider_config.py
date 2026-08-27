@@ -221,7 +221,79 @@ class TestProfileStore:
         with pytest.raises(Exception):
             store.create(make_profile(profile_id="second"))
         assert store.path.is_dir()
+        # The in-memory view was not corrupted by the failed write either.
+        assert store.get("second") is None
+        assert store.get("deepseek-main") is not None
         # The original content was not clobbered: a directory now sits where
         # the file was, and the temp file was cleaned up.
         leftovers = list(store.path.parent.glob(".config.json.*.tmp"))
         assert leftovers == []
+
+    def test_crud_failures_roll_back_in_memory(self, store, monkeypatch):
+        p1 = store.create(make_profile(profile_id="p1"))
+        store.create(make_profile(profile_id="p2"))
+        original_active = store.load().active_profile
+
+        import coding_agent.provider_config as module
+
+        def boom(_path, _data):
+            raise module.StorageError("injected write failure")
+
+        monkeypatch.setattr(module, "atomic_write_json", boom)
+
+        with pytest.raises(module.StorageError):
+            store.create(make_profile(profile_id="p3"))
+        assert store.get("p3") is None
+
+        with pytest.raises(module.StorageError):
+            store.update(
+                "p1",
+                make_profile(profile_id="p1", model="changed-model"),
+            )
+        assert store.get("p1").model == p1.model
+
+        with pytest.raises(module.StorageError):
+            store.delete("p2")
+        assert store.get("p2") is not None
+
+        with pytest.raises(module.StorageError):
+            store.activate("p2")
+        assert store.load().active_profile == original_active
+
+    def test_strict_parse_rejects_unknown_and_mismatched_fields(self, store):
+        base = make_profile(profile_id="p1")
+        raw = {
+            "version": CONFIG_VERSION,
+            "active_profile": None,
+            "profiles": {
+                "p1": {**base.to_dict(), "extra_field": "nope"},
+            },
+        }
+        store.path.parent.mkdir(parents=True)
+        store.path.write_text(json.dumps(raw), encoding="utf-8")
+        with pytest.raises(ProfileError, match="未知字段"):
+            store.list_profiles()
+
+        mismatched = {**base.to_dict(), "id": "other-id"}
+        store.path.write_text(
+            json.dumps(
+                {
+                    "version": CONFIG_VERSION,
+                    "active_profile": None,
+                    "profiles": {"p1": mismatched},
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ProfileError, match="不一致"):
+            store.list_profiles()
+
+        top_unknown = {
+            "version": CONFIG_VERSION,
+            "active_profile": None,
+            "profiles": {},
+            "surprise": True,
+        }
+        store.path.write_text(json.dumps(top_unknown), encoding="utf-8")
+        with pytest.raises(ProfileError, match="未知字段"):
+            store.list_profiles()

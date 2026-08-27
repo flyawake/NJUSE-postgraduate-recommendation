@@ -32,21 +32,21 @@ export type FeedItem =
   | { kind: "completion_deferred"; step: number; verificationStatus?: string }
   | { kind: "terminal"; status?: string; stopReason?: string; verificationStatus?: string };
 
+export type FeedEntry = FeedItem | { kind: "group"; group: ToolGroup };
+
 export interface FeedGrouping {
-  items: FeedItem[];
+  entries: FeedEntry[];
   groups: ToolGroup[];
 }
 
 /**
- * Build the display order of the activity feed from the event list.
- *
- * Tool starts/finishes are paired by call_id and merged into consecutive
- * groups. A group is "open" (shown expanded) while any of its items has no
- * finished event yet, and stays expanded when it contains an error/aborted
- * item; fully completed groups collapse by default.
+ * Build one ordered activity feed. Step/retry/completion entries and tool
+ * groups are interleaved in their true event order: a tool group occupies
+ * the exact position where its first tool started, instead of being rendered
+ * after all non-tool events.
  */
 export function buildFeed(events: ToolEvent[], task: string): FeedGrouping {
-  const items: FeedItem[] = [];
+  const entries: FeedEntry[] = [];
   const groups: ToolGroup[] = [];
   const started: Map<string, ToolItem> = new Map();
   let currentGroup: ToolGroup | null = null;
@@ -61,6 +61,7 @@ export function buildFeed(events: ToolEvent[], task: string): FeedGrouping {
         aborted: false,
       };
       groups.push(currentGroup);
+      entries.push({ kind: "group", group: currentGroup });
     }
     currentGroup.items.push(tool);
     if (tool.status === "error" || tool.status === "aborted") {
@@ -73,10 +74,10 @@ export function buildFeed(events: ToolEvent[], task: string): FeedGrouping {
   for (const event of events) {
     switch (event.kind) {
       case "run_started":
-        items.push({ kind: "task", text: task });
+        entries.push({ kind: "task", text: task });
         break;
       case "step_started":
-        items.push({
+        entries.push({
           kind: "step",
           step: event.step,
           charCount: typeof event.payload.char_count === "number" ? event.payload.char_count : undefined,
@@ -84,7 +85,7 @@ export function buildFeed(events: ToolEvent[], task: string): FeedGrouping {
         });
         break;
       case "model_retry":
-        items.push({
+        entries.push({
           kind: "retry",
           step: event.step,
           attempt: typeof event.payload.attempt === "number" ? event.payload.attempt : 0,
@@ -92,7 +93,7 @@ export function buildFeed(events: ToolEvent[], task: string): FeedGrouping {
         });
         break;
       case "assistant_received":
-        items.push({
+        entries.push({
           kind: "assistant",
           step: event.step,
           textChars: typeof event.payload.text_chars === "number" ? event.payload.text_chars : 0,
@@ -140,7 +141,7 @@ export function buildFeed(events: ToolEvent[], task: string): FeedGrouping {
         break;
       }
       case "completion_deferred":
-        items.push({
+        entries.push({
           kind: "completion_deferred",
           step: event.step,
           verificationStatus:
@@ -150,7 +151,7 @@ export function buildFeed(events: ToolEvent[], task: string): FeedGrouping {
         });
         break;
       case "run_finished":
-        items.push({
+        entries.push({
           kind: "terminal",
           status: typeof event.payload.status === "string" ? event.payload.status : undefined,
           stopReason:
@@ -166,5 +167,5 @@ export function buildFeed(events: ToolEvent[], task: string): FeedGrouping {
     }
   }
 
-  return { items, groups };
+  return { entries, groups };
 }

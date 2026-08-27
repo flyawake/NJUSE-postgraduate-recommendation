@@ -68,6 +68,11 @@ export async function subscribeToRunEvents(
         if (message) options.onEvent(message);
       }
     }
+    // A clean EOF without the server's `end` event means the connection
+    // dropped; let the caller enter the disconnected/reconnect state.
+    if (!options.signal.aborted) {
+      options.onError(new Error("SSE stream ended without terminal event"));
+    }
   } finally {
     reader.releaseLock();
   }

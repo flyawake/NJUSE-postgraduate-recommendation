@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, FolderOpen, Loader2, XCircle } from "lucide-react";
 import { api } from "@/api/client";
 import { useI18n } from "@/lib/i18n";
-import { apiErrorText } from "@/lib/errorText";
+import { apiErrorText, errorCodeText } from "@/lib/errorText";
 import { cx } from "@/lib/format";
 
 export type WorkspaceState = "empty" | "checking" | "valid" | "invalid";
@@ -45,7 +45,11 @@ export function WorkspaceField({ value, onChange, onValidated, id }: WorkspaceFi
           onValidated?.(result.resolved_path ?? null);
         } else {
           setState("invalid");
-          setError(result.error?.message ?? t("workspace.invalid"));
+          setError(
+            result.error?.code
+              ? errorCodeText(result.error.code, t)
+              : t("workspace.invalid")
+          );
           onValidated?.(null);
         }
       } catch (err) {

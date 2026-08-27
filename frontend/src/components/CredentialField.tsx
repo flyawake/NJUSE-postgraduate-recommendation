@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Eye, EyeOff, KeyRound, Trash2 } from "lucide-react";
+import { KeyRound, Trash2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import type { Profile } from "@/api/client";
@@ -22,7 +22,6 @@ export function CredentialField({ profile }: CredentialFieldProps) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [secret, setSecret] = useState("");
-  const [show, setShow] = useState(false);
   const [feedback, setFeedback] = useState<{ kind: "error" | "ok"; text: string } | null>(null);
 
   const credentialQuery = useQuery({
@@ -117,8 +116,8 @@ export function CredentialField({ profile }: CredentialFieldProps) {
           </label>
           <input
             id={`credential-${profile.id}`}
-            type={show ? "text" : "password"}
-            className={cx("input pr-20", envReadonly && "cursor-not-allowed opacity-60")}
+            type="password"
+            className={cx("input", envReadonly && "cursor-not-allowed opacity-60")}
             placeholder={t("settings.credential.placeholder")}
             value={secret}
             onChange={(event) => setSecret(event.target.value)}
@@ -126,15 +125,6 @@ export function CredentialField({ profile }: CredentialFieldProps) {
             autoComplete="new-password"
             spellCheck={false}
           />
-          <button
-            type="button"
-            className="btn-icon absolute right-1 top-1/2 -translate-y-1/2"
-            onClick={() => setShow((value) => !value)}
-            disabled={envReadonly}
-            aria-label={show ? t("settings.credential.hide") : t("settings.credential.show")}
-          >
-            {show ? <EyeOff aria-hidden size={14} /> : <Eye aria-hidden size={14} />}
-          </button>
         </div>
         <button
           type="button"

@@ -105,21 +105,17 @@ export function ActivityFeed({
             </p>
           ) : null}
 
-          {grouping.items.map((item, index) => (
-            <FeedItemView key={`${item.kind}-${index}`} item={item} />
-          ))}
+          {grouping.entries.map((entry, index) =>
+            entry.kind === "group" ? (
+              <ToolEventGroup key={entry.group.key} group={entry.group} />
+            ) : (
+              <FeedItemView key={`${entry.kind}-${index}`} item={entry} />
+            )
+          )}
 
           {grouping.groups.length === 0 && events.length > 0 ? (
             <p className="text-center text-xs text-faint">{t("feed.noEvents")}</p>
           ) : null}
-          {grouping.groups.map((group) => (
-            <ToolEventGroup
-              key={group.key}
-              group={group}
-              defaultOpen={group.running || group.containsError}
-              streamOpen={state === "running"}
-            />
-          ))}
 
           {state === "terminal" && terminalText ? (
             <section

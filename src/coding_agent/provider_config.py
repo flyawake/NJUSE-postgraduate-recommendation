@@ -284,6 +284,12 @@ class ProfileStore:
 
     @staticmethod
     def _parse(raw: Dict[str, Any]) -> ConfigData:
+        top_unknown = set(raw) - {"version", "active_profile", "profiles"}
+        if top_unknown:
+            raise ProfileError(
+                f"config 含未知字段：{', '.join(sorted(top_unknown))}",
+                field="config",
+            )
         version = raw.get("version")
         if version != CONFIG_VERSION:
             raise ProfileError(
@@ -294,6 +300,15 @@ class ProfileStore:
         if not isinstance(profiles_raw, dict):
             raise ProfileError("profiles 必须是对象", field="profiles")
         profiles: Dict[str, ProviderProfile] = {}
+        allowed_profile_keys = {
+            "id",
+            "provider_id",
+            "display_name",
+            "wire_api",
+            "base_url",
+            "model",
+            "credential_ref",
+        }
         for pid, item in profiles_raw.items():
             try:
                 validate_profile_id(pid)
@@ -304,6 +319,18 @@ class ProfileStore:
             if not isinstance(item, dict):
                 raise ProfileError(
                     f"profile {pid!r} 必须是对象", field=f"profiles.{pid}"
+                )
+            extra = set(item) - allowed_profile_keys
+            if extra:
+                raise ProfileError(
+                    f"profile {pid!r} 含未知字段：{', '.join(sorted(extra))}",
+                    field=f"profiles.{pid}",
+                )
+            embedded_id = item.get("id")
+            if embedded_id is not None and embedded_id != pid:
+                raise ProfileError(
+                    f"profile {pid!r} 内嵌 id 与键不一致：{embedded_id!r}",
+                    field=f"profiles.{pid}",
                 )
             missing = [
                 key
@@ -340,8 +367,14 @@ class ProfileStore:
                 )
         return ConfigData(profiles=profiles, active_profile=active)
 
-    def save(self) -> None:
-        atomic_write_json(self._path, self._data.to_dict())
+    def _commit(self, candidate: ConfigData) -> None:
+        """Persist a candidate and only then swap it into memory.
+
+        Any StorageError propagates before ``self._data`` changes, so the
+        in-memory view always matches the on-disk file.
+        """
+        atomic_write_json(self._path, candidate.to_dict())
+        self._data = candidate
         self._loaded = True
 
     # ------------------------------------------------------------- CRUD
@@ -358,10 +391,12 @@ class ProfileStore:
         self.load()
         if input_profile.id in self._data.profiles:
             raise ProfileError(f"profile 已存在：{input_profile.id}", field="id")
-        self._data.profiles[input_profile.id] = input_profile
-        if self._data.active_profile is None:
-            self._data.active_profile = input_profile.id
-        self.save()
+        profiles = dict(self._data.profiles)
+        profiles[input_profile.id] = input_profile
+        active = self._data.active_profile
+        if active is None:
+            active = input_profile.id
+        self._commit(ConfigData(profiles=profiles, active_profile=active))
         return input_profile
 
     def update(
@@ -373,23 +408,29 @@ class ProfileStore:
         # The ID is fixed: the incoming profile id must match the stored one.
         if input_profile.id != profile_id:
             raise ProfileError("profile ID 创建后不可修改", field="id")
-        self._data.profiles[profile_id] = input_profile
-        self.save()
+        profiles = dict(self._data.profiles)
+        profiles[profile_id] = input_profile
+        self._commit(
+            ConfigData(profiles=profiles, active_profile=self._data.active_profile)
+        )
         return input_profile
 
     def delete(self, profile_id: str) -> None:
         self.load()
         if profile_id not in self._data.profiles:
             raise ProfileError(f"profile 不存在：{profile_id}", field="id")
-        del self._data.profiles[profile_id]
-        if self._data.active_profile == profile_id:
-            self._data.active_profile = next(iter(sorted(self._data.profiles)), None)
-        self.save()
+        profiles = dict(self._data.profiles)
+        del profiles[profile_id]
+        active = self._data.active_profile
+        if active == profile_id:
+            active = next(iter(sorted(profiles)), None)
+        self._commit(ConfigData(profiles=profiles, active_profile=active))
 
     def activate(self, profile_id: str) -> ProviderProfile:
         self.load()
         if profile_id not in self._data.profiles:
             raise ProfileError(f"profile 不存在：{profile_id}", field="id")
-        self._data.active_profile = profile_id
-        self.save()
+        self._commit(
+            ConfigData(profiles=dict(self._data.profiles), active_profile=profile_id)
+        )
         return self._data.profiles[profile_id]

@@ -1,9 +1,12 @@
 import { expect, test } from "@playwright/test";
 
-const secret = "fake-key-value-123456";
+const secret = "E2E-SENTINEL-9f3c1";
 
-async function fillWorkspace(page: import("@playwright/test").Page): Promise<void> {
-  const workspace = process.env.E2E_WORKSPACE as string;
+async function fillWorkspace(
+  page: import("@playwright/test").Page,
+  override?: string
+): Promise<void> {
+  const workspace = override ?? (process.env.E2E_WORKSPACE as string);
   const input = page.getByLabel("工作区");
   await expect(input).toBeVisible();
   await input.fill(workspace);
@@ -20,12 +23,12 @@ test.describe("GUI closed loop with the Fake Model", () => {
     await page.getByLabel("任务描述").fill("修复 TODO 函数并用 py_compile 验证");
     await page.getByRole("button", { name: "开始运行" }).click();
 
-    // The activity feed streams real tool events from AgentLoop.
-    await expect(page.locator('[data-tool="glob"]')).toBeVisible({ timeout: 20_000 });
-    await expect(page.locator('[data-tool="grep"]')).toBeVisible();
-    await expect(page.locator('[data-tool="read_file"]')).toBeVisible();
-    await expect(page.locator('[data-tool="edit_file"]')).toBeVisible();
-    await expect(page.locator('[data-tool="run_command"]')).toBeVisible();
+    // Running-time facts update from the event stream: step/attempt become
+    // non-zero at the first step and verification has no conclusion yet.
+    await expect(page.getByTestId("run-inspector")).toContainText("运行中", { timeout: 15_000 });
+    await expect(page.getByTestId("count-逻辑步数")).not.toHaveText("0", { timeout: 15_000 });
+    await expect(page.getByTestId("count-模型请求数")).not.toHaveText("0", { timeout: 15_000 });
+    await expect(page.getByTestId("run-inspector")).toContainText("尚未验证");
 
     // Terminal state: VERIFIED badge + final answer + counters.
     await expect(page.getByTestId("run-inspector")).toContainText("验证通过", { timeout: 30_000 });
@@ -39,9 +42,15 @@ test.describe("GUI closed loop with the Fake Model", () => {
     await expect(page.getByTestId("changed-files")).toContainText("hello.py");
 
     // Completed tools collapse into a group summary ("已完成 5 项操作") and
-    // the individual cards hide behind the summary row.
+    // the individual cards hide behind the summary row; expanding the group
+    // reveals the full ordered trajectory.
     await expect(page.getByText("已完成 5 项操作")).toBeVisible();
     await expect(page.locator('[data-tool="glob"]')).not.toBeVisible();
+    await page.getByRole("button", { name: "已完成 5 项操作" }).click();
+    const names = await page.locator('[data-tool]').evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute("data-tool") ?? "")
+    );
+    expect(names).toEqual(["glob", "grep", "read_file", "edit_file", "run_command"]);
 
     // 1280x720: no horizontal scrolling.
     const noHorizontalScroll = await page.evaluate(
@@ -62,6 +71,36 @@ test.describe("GUI closed loop with the Fake Model", () => {
     const body = await page.locator("body").innerText();
     expect(body).toContain("本地假模型");
     expect(body).not.toContain(secret);
+  });
+
+  test("refresh after the first tool restores all five tools in order without duplicates", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByTestId("main-page")).toBeVisible();
+
+    // The slow profile gives a stable mid-run window for the refresh.
+    await page.getByRole("combobox", { name: "模型 profile" }).click();
+    await page.getByRole("option", { name: /慢速假模型/ }).click();
+
+    await fillWorkspace(page, process.env.E2E_WORKSPACE_FRESH as string);
+    await page.getByLabel("任务描述").fill("修复 TODO 函数并用 py_compile 验证");
+    await page.getByRole("button", { name: "开始运行" }).click();
+
+    // Wait until the first tool has completed (its completed group collapses
+    // into "已完成 1 项操作" while the next model request is still sleeping).
+    await expect(page.getByText("已完成 1 项操作")).toBeVisible({ timeout: 20_000 });
+    await page.reload();
+
+    // The snapshot/SSE recovery must restore the full, ordered event stream.
+    await expect(page.getByTestId("run-inspector")).toContainText("验证通过", { timeout: 60_000 });
+    await expect(page.getByText("已完成 5 项操作")).toBeVisible();
+    await page.getByRole("button", { name: "已完成 5 项操作" }).click();
+
+    const names = await page.locator('[data-tool]').evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute("data-tool") ?? "")
+    );
+    expect(names).toEqual(["glob", "grep", "read_file", "edit_file", "run_command"]);
+    expect(new Set(names).size).toBe(5);
+    expect(await page.locator("body").innerText()).not.toContain(secret);
   });
 
   test("cancel during a slow model run: cancel stays active, terminal INTERRUPTED, restart possible", async ({ page }) => {

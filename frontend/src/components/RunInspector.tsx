@@ -1,4 +1,5 @@
 import { useI18n } from "@/lib/i18n";
+import { errorCodeText } from "@/lib/errorText";
 import type { RunSnapshot } from "@/api/client";
 import { formatElapsed } from "@/lib/format";
 import { RunStatusBadge, runStatusKind } from "./RunStatusBadge";
@@ -112,7 +113,7 @@ export function RunInspector({ snapshot, onNewTask }: RunInspectorProps) {
           <InlineError
             kind={errorKind(error.code)}
             title={t("inspector.error")}
-            message={error.message}
+            message={errorCodeText(error.code, t)}
           />
         </div>
       ) : null}
