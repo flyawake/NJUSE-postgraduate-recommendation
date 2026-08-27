@@ -146,7 +146,11 @@ def create_app(
 
     @app.exception_handler(ProfileError)
     async def handle_profile_error(_request: Request, exc: ProfileError):
-        return error_response("invalid_config", str(exc), getattr(exc, "field", None))
+        return error_response(
+            getattr(exc, "code", "invalid_config"),
+            str(exc),
+            getattr(exc, "field", None),
+        )
 
     @app.exception_handler(CredentialError)
     async def handle_credential_error(_request: Request, exc: CredentialError):

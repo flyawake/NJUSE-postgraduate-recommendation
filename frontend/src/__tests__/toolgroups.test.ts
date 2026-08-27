@@ -48,6 +48,7 @@ describe("buildFeed tool grouping", () => {
       "step",
       "group",
       "step",
+      "group",
       "terminal",
     ]);
     const groupSteps = entries
@@ -55,6 +56,37 @@ describe("buildFeed tool grouping", () => {
       .map((entry) => (entry as { group: ToolGroup }).group.items.map((item) => item.step))
       .flat();
     expect(groupSteps).toEqual([1, 2]);
+    expect(
+      entries
+        .filter((entry) => entry.kind === "group")
+        .map((entry) => (entry as { group: ToolGroup }).group.items.map((item) => item.step))
+    ).toEqual([[1], [2]]);
+  });
+
+  it("ends a group at retry and completion boundaries", () => {
+    const events = [
+      event(1, "tool_started", { call_id: "a", name: "glob", arguments: "{}" }),
+      event(2, "tool_finished", { call_id: "a", name: "glob", ok: true, error_code: null, summary: "s" }),
+      event(3, "model_retry", { attempt: 1, next_attempt: 2, reason: "busy" }),
+      event(4, "tool_started", { call_id: "b", name: "grep", arguments: "{}" }),
+      event(5, "tool_finished", { call_id: "b", name: "grep", ok: true, error_code: null, summary: "s" }),
+      event(6, "completion_deferred", { verification_status: "NOT_RUN" }),
+      event(7, "tool_started", { call_id: "c", name: "run_command", arguments: "{}" }),
+      event(8, "tool_finished", { call_id: "c", name: "run_command", ok: true, error_code: null, summary: "s" }),
+    ];
+    const { entries, groups } = buildFeed(events, "task");
+    expect(entries.map((entry) => entry.kind)).toEqual([
+      "group",
+      "retry",
+      "group",
+      "completion_deferred",
+      "group",
+    ]);
+    expect(groups.map((group) => group.items.map((item) => item.callId))).toEqual([
+      ["a"],
+      ["b"],
+      ["c"],
+    ]);
   });
 
   it("keeps the running group expanded (still running)", () => {

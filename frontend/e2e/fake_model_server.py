@@ -150,8 +150,18 @@ def next_response(messages: list[dict]) -> dict:
                     "run_command",
                     {
                         # Use the PATH resolver (not the interpreter's
-                        # absolute path) so runs stay machine-agnostic.
-                        "argv": ["python", "-m", "py_compile", "hello.py"],
+                        # absolute path) so runs stay machine-agnostic. The
+                        # extra operands deliberately carry the sentinel;
+                        # Python ignores them while public argv redaction is
+                        # exercised all the way through the browser DOM.
+                        "argv": [
+                            "python",
+                            "-c",
+                            "import py_compile; py_compile.compile('hello.py', doraise=True)",
+                            f"FOO={E2E_SENTINEL}",
+                            f"--header=Bearer-{E2E_SENTINEL}",
+                            E2E_SENTINEL,
+                        ],
                         "cwd": ".",
                         "timeout_seconds": 30,
                         "purpose": "verify",
@@ -188,6 +198,23 @@ def next_shot_response(messages: list[dict]) -> dict:
             ]
         )
     if kind == "run_command":
+        # The screenshot trajectory has two commands: an initial sleep used
+        # to capture a truthful running frame, then the real py_compile
+        # verification. Only the first one should lead into the normal tool
+        # sequence; treating the verifier the same caused an endless
+        # glob/.../verify loop that ended at MAX_STEPS.
+        for message in reversed(messages):
+            if message.get("role") != "tool":
+                continue
+            try:
+                argv = (
+                    json.loads(message.get("content") or "{}").get("data") or {}
+                ).get("argv") or []
+            except json.JSONDecodeError:
+                argv = []
+            if any("py_compile" in str(part) for part in argv):
+                return _assistant_text(FINAL_ANSWER)
+            break
         return _assistant_with_calls(
             [_tool_call("shot_2", "glob", {"pattern": "**/*.py", "path": "."})]
         )

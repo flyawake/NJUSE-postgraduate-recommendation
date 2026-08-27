@@ -94,6 +94,7 @@ export function ProfileForm({ mode, presets, editing, onSaved, onCancel }: Profi
     const urlError = providerUrlError(baseUrl);
     if (urlError) next.baseUrl = t("error.validation");
     if (!model.trim()) next.model = t("error.validation");
+    if (!credentialRef.trim()) next.credentialRef = t("form.credentialRefRequired");
     setErrors(next);
     return Object.keys(next).length === 0;
   };

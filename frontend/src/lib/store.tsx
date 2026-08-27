@@ -24,6 +24,17 @@ export interface RunStoreState {
 
 const MAX_CLIENT_EVENTS = 2000;
 
+const LIVE_PHASE_AFTER_EVENT: Record<string, string> = {
+  run_started: "READY",
+  step_started: "REQUESTING_MODEL",
+  model_retry: "REQUESTING_MODEL",
+  assistant_received: "HANDLING_RESPONSE",
+  tool_started: "EXECUTING_TOOLS",
+  tool_finished: "EXECUTING_TOOLS",
+  completion_deferred: "READY",
+  run_finished: "TERMINAL",
+};
+
 const initialState: RunStoreState = {
   events: [],
   lastEventId: 0,
@@ -76,6 +87,49 @@ export function runReducer(state: RunStoreState, action: Action): RunStoreState 
   }
 }
 
+/**
+ * Reconcile the latest SSE facts over a possibly older polling snapshot.
+ * Counts use max(snapshot, retained events), so a bounded client tail never
+ * moves a counter backwards. Phase follows an event only when that event is
+ * at least as new as the snapshot's own retained tail.
+ */
+export function deriveLiveSnapshot(
+  snapshot: RunSnapshot | undefined,
+  events: ToolEvent[]
+): RunSnapshot | undefined {
+  if (!snapshot || snapshot.state !== "running" || events.length === 0) return snapshot;
+
+  const stepCount = events.reduce(
+    (count, event) => event.kind === "step_started" ? Math.max(count, event.step) : count,
+    0
+  );
+  // events_total is the server's monotonic sequence baseline. Only events
+  // newer than that snapshot should be added to its aggregate counters;
+  // counting a retained tail from zero undercounts after reset and double
+  // counting the whole tail overcounts after polling.
+  const newerEvents = events.filter((event) => event.id > snapshot.events_total);
+  const providerAttempts = snapshot.provider_attempt_count + newerEvents.reduce(
+    (count, event) => count + (event.kind === "step_started" || event.kind === "model_retry" ? 1 : 0),
+    0
+  );
+  const toolCalls = snapshot.tool_call_count + newerEvents.reduce(
+    (count, event) => count + (event.kind === "tool_started" ? 1 : 0),
+    0
+  );
+  const lastEvent = events[events.length - 1];
+  const eventPhase = lastEvent.id > snapshot.events_total
+    ? LIVE_PHASE_AFTER_EVENT[lastEvent.kind]
+    : undefined;
+
+  return {
+    ...snapshot,
+    step_count: Math.max(snapshot.step_count, stepCount),
+    provider_attempt_count: Math.max(snapshot.provider_attempt_count, providerAttempts),
+    tool_call_count: Math.max(snapshot.tool_call_count, toolCalls),
+    phase: eventPhase ?? snapshot.phase,
+  };
+}
+
 export interface RunStore {
   runId: string | null;
   snapshot?: RunSnapshot;
@@ -96,6 +150,7 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(runReducer, initialState);
   const runIdRef = useRef<string | null>(null);
   const initializedRunIdRef = useRef<string | null>(null);
+  const lastEventIdRef = useRef(0);
 
   // Bootstrap: session token (armed inside api.bootstrap) + profile baseline.
   const bootstrapQuery = useQuery({
@@ -130,8 +185,12 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
   // handled by the SSE `reset` contract instead.
   useEffect(() => {
     if (!runId || initializedRunIdRef.current === runId) return;
-    if (!snapshot?.events?.length) return;
-    dispatch({ type: "RESET_EVENTS", events: snapshot.events });
+    if (!snapshot) return;
+    const snapshotEvents = snapshot.events ?? [];
+    lastEventIdRef.current = snapshotEvents.length
+      ? snapshotEvents[snapshotEvents.length - 1].id
+      : 0;
+    dispatch({ type: "RESET_EVENTS", events: snapshotEvents });
     initializedRunIdRef.current = runId;
   }, [runId, snapshot]);
 
@@ -140,6 +199,7 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
     onSuccess: (snap) => {
       runIdRef.current = snap.run_id;
       initializedRunIdRef.current = null;
+      lastEventIdRef.current = 0;
       dispatch({ type: "CLEAR" });
       queryClient.setQueryData(["run", snap.run_id], snap);
       queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
@@ -155,10 +215,8 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
     onError: () => dispatch({ type: "CANCEL_FAILED" }),
   });
 
-  // SSE subscription lifecycle. Reconnects always resync from the server's
-  // bounded tail (the server sends `reset` with the full tail when the client
-  // is behind), so no client-side event-id bookkeeping is required across
-  // reconnects.
+  // SSE subscription lifecycle. A synchronous ref tracks the newest accepted
+  // id so a reconnect cannot capture an old reducer render in its closure.
   useEffect(() => {
     if (!runId) return;
     const signalState = snapshot?.state ?? "idle";
@@ -173,7 +231,7 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
       // Subscribe from the current baseline so a reconnect resumes after the
       // last event the client actually has.
       subscribeToRunEvents(runId, {
-        lastEventId: state.lastEventId || null,
+        lastEventId: lastEventIdRef.current || null,
         signal: controller.signal,
         onEvent: (message) => {
           if (message.event === "hello") {
@@ -181,10 +239,11 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
             return;
           }
           if (message.event === "reset") {
-            // Server retained tail is the new truth: clear the baseline and
-            // refetch the snapshot so the reducer reinitializes from it, then
-            // the replayed events that follow are appended by id.
-            initializedRunIdRef.current = null;
+            // Replay on this stream is the event truth. The snapshot refetch
+            // refreshes metadata only; keeping this run initialized prevents
+            // a slower HTTP response from overwriting newer replayed events.
+            initializedRunIdRef.current = runId;
+            lastEventIdRef.current = 0;
             dispatch({ type: "RESET_EVENTS", events: [] });
             queryClient.invalidateQueries({ queryKey: ["run", runId] });
             return;
@@ -197,7 +256,11 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
           if (message.id === undefined) return;
           const event = message.data as ToolEvent;
           if (!event || typeof event.id !== "number") return;
+          if (event.id > lastEventIdRef.current) lastEventIdRef.current = event.id;
           dispatch({ type: "APPEND", events: [event] });
+          if (event.kind === "run_finished") {
+            queryClient.invalidateQueries({ queryKey: ["run", runId] });
+          }
         },
         onError: () => {
           if (disposed) return;
@@ -240,6 +303,7 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
   const clear = useCallback(() => {
     runIdRef.current = null;
     initializedRunIdRef.current = null;
+    lastEventIdRef.current = 0;
     dispatch({ type: "CLEAR" });
     queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
   }, [queryClient]);
@@ -248,10 +312,15 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
     if (runId) queryClient.invalidateQueries({ queryKey: ["run", runId] });
   }, [queryClient, runId]);
 
+  const liveSnapshot = useMemo(
+    () => deriveLiveSnapshot(snapshot, state.events),
+    [snapshot, state.events]
+  );
+
   const value = useMemo<RunStore>(
     () => ({
       runId,
-      snapshot,
+      snapshot: liveSnapshot,
       snapshotLoading,
       events: state.events,
       sseStatus: state.sseStatus,
@@ -261,7 +330,7 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
       clear,
       refetchSnapshot,
     }),
-    [runId, snapshot, snapshotLoading, state.events, state.sseStatus, state.cancelling, startRun, cancelRun, clear, refetchSnapshot]
+    [runId, liveSnapshot, snapshotLoading, state.events, state.sseStatus, state.cancelling, startRun, cancelRun, clear, refetchSnapshot]
   );
 
   return <RunStoreContext.Provider value={value}>{children}</RunStoreContext.Provider>;

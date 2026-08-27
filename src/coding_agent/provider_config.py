@@ -283,7 +283,13 @@ class ProfileStore:
         return self.load()
 
     @staticmethod
-    def _parse(raw: Dict[str, Any]) -> ConfigData:
+    def _parse(raw: Any) -> ConfigData:
+        if not isinstance(raw, dict):
+            raise ProfileError(
+                "config 根必须是 JSON object",
+                field="config",
+                code="config_corrupt",
+            )
         top_unknown = set(raw) - {"version", "active_profile", "profiles"}
         if top_unknown:
             raise ProfileError(
@@ -291,10 +297,11 @@ class ProfileStore:
                 field="config",
             )
         version = raw.get("version")
-        if version != CONFIG_VERSION:
+        if type(version) is not int or version != CONFIG_VERSION:
             raise ProfileError(
                 f"不支持的 config 版本：{version!r}（当前支持 version=1）",
                 field="version",
+                code="config_corrupt",
             )
         profiles_raw = raw.get("profiles", {})
         if not isinstance(profiles_raw, dict):

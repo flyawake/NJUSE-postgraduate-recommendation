@@ -127,6 +127,23 @@ class ToolThenBlockModel:
         return turn(text="done")
 
 
+class ToolThenBlockSecondRequestModel:
+    """Complete step 1, then expose the phase while request 2 is blocked."""
+
+    def __init__(self) -> None:
+        self.request_count = 0
+        self.second_request_started = threading.Event()
+        self.release = threading.Event()
+
+    def request(self, messages, tools):
+        self.request_count += 1
+        if self.request_count == 1:
+            return turn(calls=[make_tool_call("glob", {"pattern": "src/**/*.py"})])
+        self.second_request_started.set()
+        self.release.wait(timeout=30)
+        return turn(text="done")
+
+
 @pytest.fixture
 def home(tmp_path):
     return tmp_path / "home"
@@ -269,6 +286,25 @@ class TestStartAndTerminal:
         assert terminal.status == "SUCCESS"
         assert terminal.tool_call_count == 1
         assert terminal.verification_status == "NOT_APPLICABLE"
+
+    def test_second_blocking_model_request_reports_current_phase(self, seeded):
+        model = ToolThenBlockSecondRequestModel()
+        controller = make_controller(seeded, factory=lambda _connection: model)
+        controller._env["OPENAI_API_KEY"] = "sk-test"
+        controller._env["OPENAI_MODEL"] = "fake-model"
+        controller.start(RunStartRequest(workspace=str(seeded), task="t"))
+
+        assert model.second_request_started.wait(timeout=10)
+        snap = controller.snapshot()
+        assert snap.state == "running"
+        assert snap.phase == "REQUESTING_MODEL"
+        assert snap.step_count == 2
+        assert snap.provider_attempt_count == 2
+        assert snap.tool_call_count == 1
+
+        model.release.set()
+        _wait_terminal(controller)
+        assert controller.snapshot().status == "SUCCESS"
 
     def test_terminal_snapshot_is_unique(self, seeded):
         factory, _ = _scripted_loop_model(turn(text="done"))

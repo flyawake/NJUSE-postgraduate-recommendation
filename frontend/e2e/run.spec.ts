@@ -41,16 +41,19 @@ test.describe("GUI closed loop with the Fake Model", () => {
     // Changed files list shows the edited file.
     await expect(page.getByTestId("changed-files")).toContainText("hello.py");
 
-    // Completed tools collapse into a group summary ("已完成 5 项操作") and
-    // the individual cards hide behind the summary row; expanding the group
-    // reveals the full ordered trajectory.
-    await expect(page.getByText("已完成 5 项操作")).toBeVisible();
+    // Each logical step is a separate group; no group may absorb tools from a
+    // later step and render them before that step's label.
+    const groupButtons = page.getByRole("button", { name: "已完成 1 项操作" });
+    await expect(groupButtons).toHaveCount(5);
     await expect(page.locator('[data-tool="glob"]')).not.toBeVisible();
-    await page.getByRole("button", { name: "已完成 5 项操作" }).click();
+    for (let index = 0; index < 5; index += 1) {
+      await groupButtons.nth(index).click();
+    }
     const names = await page.locator('[data-tool]').evaluateAll((nodes) =>
       nodes.map((node) => node.getAttribute("data-tool") ?? "")
     );
     expect(names).toEqual(["glob", "grep", "read_file", "edit_file", "run_command"]);
+    await expect(page.getByText("实时连接中断，正在重连…")).not.toBeVisible();
 
     // 1280x720: no horizontal scrolling.
     const noHorizontalScroll = await page.evaluate(
@@ -73,6 +76,25 @@ test.describe("GUI closed loop with the Fake Model", () => {
     expect(body).not.toContain(secret);
   });
 
+  test("invalid setup cannot send a run request from button or shortcut", async ({ page }) => {
+    let startRequests = 0;
+    page.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === "/api/runs") {
+        startRequests += 1;
+      }
+    });
+    await page.goto("/");
+    await expect(page.getByTestId("main-page")).toBeVisible();
+    await page.getByTestId("locale-toggle").click();
+    await page.getByRole("option", { name: "English" }).click();
+    await page.getByLabel("Task").fill("must not start");
+
+    await expect(page.getByRole("button", { name: "Start run" })).toBeDisabled();
+    await page.getByLabel("Task").press("Control+Enter");
+    await page.waitForTimeout(300);
+    expect(startRequests).toBe(0);
+  });
+
   test("refresh after the first tool restores all five tools in order without duplicates", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByTestId("main-page")).toBeVisible();
@@ -84,16 +106,26 @@ test.describe("GUI closed loop with the Fake Model", () => {
     await fillWorkspace(page, process.env.E2E_WORKSPACE_FRESH as string);
     await page.getByLabel("任务描述").fill("修复 TODO 函数并用 py_compile 验证");
     await page.getByRole("button", { name: "开始运行" }).click();
+    // Bootstrap may initially show the previous terminal run from another
+    // page; wait for the newly started run before inspecting its first group.
+    await expect(page.getByTestId("run-inspector")).toContainText("运行中", { timeout: 15_000 });
 
     // Wait until the first tool has completed (its completed group collapses
     // into "已完成 1 项操作" while the next model request is still sleeping).
-    await expect(page.getByText("已完成 1 项操作")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("button", { name: "已完成 1 项操作" }).first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("count-逻辑步数")).toHaveText("2", { timeout: 10_000 });
+    await expect(page.getByTestId("count-模型请求数")).toHaveText("2");
+    await expect(page.getByTestId("count-工具调用数")).toHaveText("1");
+    await expect(page.getByTestId("run-inspector")).toContainText("请求模型");
     await page.reload();
 
     // The snapshot/SSE recovery must restore the full, ordered event stream.
     await expect(page.getByTestId("run-inspector")).toContainText("验证通过", { timeout: 60_000 });
-    await expect(page.getByText("已完成 5 项操作")).toBeVisible();
-    await page.getByRole("button", { name: "已完成 5 项操作" }).click();
+    const restoredGroups = page.getByRole("button", { name: "已完成 1 项操作" });
+    await expect(restoredGroups).toHaveCount(5);
+    for (let index = 0; index < 5; index += 1) {
+      await restoredGroups.nth(index).click();
+    }
 
     const names = await page.locator('[data-tool]').evaluateAll((nodes) =>
       nodes.map((node) => node.getAttribute("data-tool") ?? "")
@@ -101,6 +133,7 @@ test.describe("GUI closed loop with the Fake Model", () => {
     expect(names).toEqual(["glob", "grep", "read_file", "edit_file", "run_command"]);
     expect(new Set(names).size).toBe(5);
     expect(await page.locator("body").innerText()).not.toContain(secret);
+    await expect(page.getByText("实时连接中断，正在重连…")).not.toBeVisible();
   });
 
   test("cancel during a slow model run: cancel stays active, terminal INTERRUPTED, restart possible", async ({ page }) => {

@@ -193,7 +193,7 @@ const zhCN = {
   "settings.credential.cleared": "凭据已清除",
   "settings.saved": "已保存",
   "settings.saving": "保存中…",
-  "settings.savedChanged": "设置已更新",
+  "settings.savedChanged": "保存修改",
 
   "form.providerId": "provider",
   "form.displayName": "名称",
@@ -204,7 +204,8 @@ const zhCN = {
   "form.model.placeholder": "deepseek-chat",
   "form.credentialRef": "凭据引用",
   "form.credentialRef.placeholder": "自定义引用名，例如：deepseek-1",
-  "form.credentialRefHint": "可选。留空则仅使用环境变量；填写后可在此页写入凭据。",
+  "form.credentialRefHint": "必填。凭据引用用于关联环境变量或本地只写凭据，例如 openai、deepseek-main。",
+  "form.credentialRefRequired": "请填写凭据引用；没有引用的 profile 无法解析凭据。",
   "form.providerId.help": "openai / deepseek / custom",
   "form.save": "保存 profile",
   "form.editMode": "编辑 profile",
@@ -218,7 +219,8 @@ const zhCN = {
   "onboarding.skip": "稍后再说",
   "onboarding.resume": "可在“模型设置”页继续配置",
   "onboarding.needSetup": "请先配置一个模型 profile 才能开始任务",
-  "onboarding.noCredentialRef": "该 profile 未设置凭据引用，将使用环境变量提供凭据；可稍后在模型设置中补写。",
+  "onboarding.noCredentialRef": "该 profile 没有凭据引用，当前无法运行。请先在下方补充引用。",
+  "onboarding.credentialRequired": "保存凭据后才能完成首次设置",
 
   "about.title": "关于与安全",
   "about.range": "能力范围",

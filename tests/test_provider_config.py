@@ -193,6 +193,26 @@ class TestProfileStore:
         with pytest.raises(ProfileError, match="版本"):
             store.list_profiles()
 
+    @pytest.mark.parametrize("raw", [None, [], True, "not-an-object"])
+    def test_config_root_must_be_object(self, store, raw):
+        store.path.parent.mkdir(parents=True)
+        store.path.write_text(json.dumps(raw), encoding="utf-8")
+        with pytest.raises(ProfileError) as exc:
+            store.list_profiles()
+        assert exc.value.code == "config_corrupt"
+        assert exc.value.field == "config"
+
+    def test_boolean_version_is_not_integer_version_one(self, store):
+        store.path.parent.mkdir(parents=True)
+        store.path.write_text(
+            json.dumps({"version": True, "active_profile": None, "profiles": {}}),
+            encoding="utf-8",
+        )
+        with pytest.raises(ProfileError) as exc:
+            store.list_profiles()
+        assert exc.value.code == "config_corrupt"
+        assert exc.value.field == "version"
+
     def test_active_profile_must_exist(self, store):
         store.path.parent.mkdir(parents=True)
         store.path.write_text(

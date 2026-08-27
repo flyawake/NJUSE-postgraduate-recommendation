@@ -195,7 +195,7 @@ const enUS: typeof zhCN = {
   "settings.credential.cleared": "Credential cleared",
   "settings.saved": "Saved",
   "settings.saving": "Saving…",
-  "settings.savedChanged": "Settings updated",
+  "settings.savedChanged": "Save changes",
 
   "form.providerId": "provider",
   "form.displayName": "Display name",
@@ -206,7 +206,8 @@ const enUS: typeof zhCN = {
   "form.model.placeholder": "deepseek-chat",
   "form.credentialRef": "Credential ref",
   "form.credentialRef.placeholder": "Custom ref name, e.g. deepseek-1",
-  "form.credentialRefHint": "Optional. Leave empty to use environment variables only; fill it to write a credential on this page.",
+  "form.credentialRefHint": "Required. The ref links this profile to an environment variable or a local write-only credential, for example openai or deepseek-main.",
+  "form.credentialRefRequired": "Enter a credential ref; a profile without one cannot resolve credentials.",
   "form.providerId.help": "openai / deepseek / custom",
   "form.save": "Save profile",
   "form.editMode": "Edit profile",
@@ -220,7 +221,8 @@ const enUS: typeof zhCN = {
   "onboarding.skip": "Later",
   "onboarding.resume": "You can continue in Model Settings",
   "onboarding.needSetup": "Configure a model profile before starting a task",
-  "onboarding.noCredentialRef": "This profile has no credential ref and will use environment variables; you can add a credential later in Model Settings.",
+  "onboarding.noCredentialRef": "This profile has no credential ref and cannot run. Add a ref below first.",
+  "onboarding.credentialRequired": "Save a credential to finish initial setup",
 
   "about.title": "About & Security",
   "about.range": "Capability range",

@@ -1,64 +1,26 @@
 """Field-level redaction for public run events and verification summaries.
 
-The kernel already produces short summaries, but "short" is not "secret-free":
-write/edit contents and command arguments can still contain tokens, passwords
-or keys. This module is the single gate between AgentLoop payloads and the
-public DTOs: every payload field that crosses the HTTP/SSE boundary passes
-through here, so a sentinel secret can never reach snapshot, SSE or the DOM.
+The kernel redacts sensitive tool fields before emitting any AgentEvent. This
+module applies the same provider-neutral helpers again at the HTTP/SSE boundary
+as defense in depth, including compatibility with older stored summaries.
 """
 
 from __future__ import annotations
 
 import json
-import re
-from typing import Any, Dict, List
+from typing import Any, Dict
 
-_SENSITIVE_PART_RE = re.compile(
-    r"(?i)(api[_-]?key|secret|token|password|passwd|authorization|bearer|credential|private[_-]?key)"
+from ..public_redaction import (
+    redact_command_summary,
+    redact_tool_arguments,
 )
-
-_SAFE_FLAG_RE = re.compile(r"^-{1,2}[A-Za-z0-9][A-Za-z0-9._-]*$")
-
-
-def redact_command_arg(part: str) -> str:
-    """Redact one argv element conservatively.
-
-    - ``argv[0]`` (the executable) is kept by the caller.
-    - Safe flags like ``-m``/``--verify`` are kept.
-    - ``key=value`` keeps the key and redacts the value when the key is
-      sensitive; a non-sensitive ``key=value`` keeps both.
-    - Everything else is replaced with ``***``.
-    """
-    if "=" in part:
-        key, value = part.split("=", 1)
-        if _SENSITIVE_PART_RE.search(key):
-            return f"{key}=***"
-        return part
-    if _SAFE_FLAG_RE.match(part):
-        return part
-    return "***"
-
-
-def redact_argv(argv: List[str]) -> List[str]:
-    if not argv:
-        return []
-    return [argv[0], *[redact_command_arg(part) for part in argv[1:]]]
-
-
-def redact_command_summary(argv: Any, cwd: Any = None) -> str:
-    parts = argv if isinstance(argv, list) else []
-    rendered = " ".join(str(part) for part in redact_argv([str(p) for p in parts]))
-    if cwd is not None:
-        rendered += f" (cwd={cwd})"
-    return rendered[:160]
 
 
 def redact_verification_summary(raw: Any) -> str:
     """Redact the kernel's rendered verification command summary.
 
-    The kernel stores ``json.dumps({"argv": [...], "cwd": ...})``; parse it
-    back to structured form and apply argv redaction. Anything unparseable is
-    never shown at all.
+    Current kernels store a redacted display string. Older snapshots stored
+    structured JSON, so retain a fail-closed parser for that legacy format.
     """
     text = str(raw or "")
     try:
@@ -81,16 +43,7 @@ def _redact_tool_arguments(tool_name: str, summary: str) -> str:
     if not isinstance(data, dict):
         return "<arguments redacted>"
 
-    redacted: Dict[str, Any] = {}
-    for key, value in data.items():
-        if tool_name == "write_file" and key == "content":
-            redacted[key] = "***"
-        elif tool_name == "edit_file" and key in ("old_string", "new_string"):
-            redacted[key] = "***"
-        elif key == "argv" and isinstance(value, list):
-            redacted[key] = redact_argv([str(part) for part in value])
-        else:
-            redacted[key] = value
+    redacted = redact_tool_arguments(tool_name, data)
     return json.dumps(
         redacted, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
@@ -104,7 +57,7 @@ def redact_public_payload(kind: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     if kind == "tool_started" and "arguments" in safe:
         safe["arguments"] = _redact_tool_arguments(tool_name, str(safe["arguments"]))
     if kind == "tool_finished" and tool_name == "run_command":
-        # The kernel summary can contain the raw argv; rebuild a redacted one.
+        # Defense in depth for events from older kernel versions.
         if safe.get("ok") is True:
             safe["summary"] = "run_command ok"
         else:

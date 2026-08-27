@@ -64,6 +64,9 @@ export function MainPage({
       : null;
 
   const handleStart = useCallback(async () => {
+    // Keep the mutation boundary guarded too: alternate entry points must not
+    // bypass the composer button/shortcut readiness checks.
+    if (!canStart || !task.trim()) return;
     setStartError(null);
     try {
       await store.startRun({ workspace: workspace.trim(), task, profileId: profileId ?? null });
@@ -86,7 +89,7 @@ export function MainPage({
         setStartError({ kind: "run_failure", message: t("error.runFailure") });
       }
     }
-  }, [store, workspace, task, profileId, onTaskChange, t]);
+  }, [canStart, store, workspace, task, profileId, onTaskChange, t]);
 
   const handleCancel = useCallback(async () => {
     setStartError(null);
@@ -147,7 +150,6 @@ export function MainPage({
               kind={startError.kind}
               message={startError.message}
               field={startError.field}
-              onRetry={handleStart}
             />
           ) : null}
           <TaskComposer

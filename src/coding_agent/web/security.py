@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import secrets
 from typing import Callable, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -49,13 +49,38 @@ def _parse_authority(value: str) -> Optional[Tuple[str, Optional[int]]]:
     ``localhost:not-a-port`` and similar malformed values return None; IPv6
     literals must be bracketed like ``[::1]:8000``.
     """
-    if not value:
+    if not value or any(char.isspace() for char in value):
         return None
+    # Authority headers never contain URL delimiters or userinfo. Reject them
+    # before urlsplit can reinterpret the suffix as a path/query/fragment.
+    if any(char in value for char in "/?#@\\"):
+        return None
+    if value.startswith("["):
+        closing = value.find("]")
+        if closing <= 1:
+            return None
+        suffix = value[closing + 1 :]
+        if suffix and (not suffix.startswith(":") or not suffix[1:].isdigit()):
+            return None
+    else:
+        if value.count(":") > 1:  # IPv6 literals must be bracketed.
+            return None
+        if ":" in value:
+            host_text, port_text = value.rsplit(":", 1)
+            if not host_text or not port_text.isdigit():
+                return None
     try:
-        parsed = urlparse("//" + value)
+        parsed = urlsplit("//" + value)
     except ValueError:
         return None
-    if parsed.hostname is None:
+    if (
+        parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
         return None
     try:
         port = parsed.port
@@ -64,8 +89,10 @@ def _parse_authority(value: str) -> Optional[Tuple[str, Optional[int]]]:
     return parsed.hostname, port
 
 
-def _effective_port(host: str, port: Optional[int]) -> int:
-    return port if port is not None else 80
+def _effective_port(scheme: str, port: Optional[int]) -> Optional[int]:
+    if port is not None:
+        return port
+    return {"http": 80, "https": 443}.get(scheme.lower())
 
 
 def new_session_token() -> str:
@@ -82,19 +109,19 @@ def guard_request(request: Request, session_token: str) -> None:
     if request.method in ("POST", "PUT", "PATCH", "DELETE"):
         origin = request.headers.get("origin")
         if origin:
-            parsed_origin = urlparse(origin)
+            parsed_origin = urlsplit(origin)
             origin_authority = _parse_authority(parsed_origin.netloc)
             if (
                 parsed_origin.scheme != request.url.scheme
                 or parsed_origin.username is not None
                 or parsed_origin.password is not None
-                or parsed_origin.path not in ("", "/")
+                or parsed_origin.path
                 or parsed_origin.query
                 or parsed_origin.fragment
                 or origin_authority is None
                 or origin_authority[0] != request_host
-                or _effective_port(*origin_authority)
-                != _effective_port(request_host, request_port)
+                or _effective_port(parsed_origin.scheme, origin_authority[1])
+                != _effective_port(request.url.scheme, request_port)
             ):
                 raise ValueError("bad_origin")
         token = request.headers.get(SESSION_TOKEN_HEADER, "")

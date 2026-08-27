@@ -88,6 +88,34 @@ def test_verified_completion_after_write_and_verify(tmp_path):
     assert_valid_event_stream(sink.events)
 
 
+def test_agent_events_and_verification_are_redacted_before_any_sink(tmp_path):
+    sentinel = "RAW-SINK-SENTINEL-DO-NOT-LEAK"
+    write = make_tool_call("write_file", {"path": "new.txt", "content": sentinel})
+    verify = make_tool_call(
+        "run_command",
+        {
+            "argv": [
+                sys.executable,
+                "-c",
+                "import sys; sys.exit(0)",
+                f"FOO={sentinel}",
+                f"--header=Bearer-{sentinel}",
+                sentinel,
+            ],
+            "purpose": "verify",
+        },
+    )
+    model = ScriptedModel([turn(calls=[write]), turn(calls=[verify]), turn("verified")])
+    loop, sink, _model = build_loop(tmp_path, model)
+    result = loop.run("task")
+
+    assert result.status is RunStatus.SUCCESS
+    assert sentinel not in repr([event.payload for event in sink.events])
+    assert sentinel not in result.last_verification["command"]
+    assert "FOO=***" in result.last_verification["command"]
+    assert "--header=***" in result.last_verification["command"]
+
+
 def test_failed_verification_defers_exactly_once(tmp_path):
     write = make_tool_call("write_file", {"path": "new.txt", "content": "hello"})
     verify_fail = make_tool_call(

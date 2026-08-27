@@ -94,6 +94,22 @@ _TERMINAL_ERROR_MESSAGES: Dict[StopReason, Tuple[str, str]] = {
     ),
 }
 
+# AgentEvent.phase records the phase in which an event was emitted. Several
+# events are emitted immediately before AgentLoop transits to the phase in
+# which it can block (notably step_started -> REQUESTING_MODEL). Public live
+# state must describe the work happening *after* that event, not the stale
+# source phase captured on the event itself.
+_LIVE_PHASE_AFTER_EVENT: Dict[str, str] = {
+    "run_started": LoopPhase.READY.value,
+    "step_started": LoopPhase.REQUESTING_MODEL.value,
+    "model_retry": LoopPhase.REQUESTING_MODEL.value,
+    "assistant_received": LoopPhase.HANDLING_RESPONSE.value,
+    "tool_started": LoopPhase.EXECUTING_TOOLS.value,
+    "tool_finished": LoopPhase.EXECUTING_TOOLS.value,
+    "completion_deferred": LoopPhase.READY.value,
+    "run_finished": LoopPhase.TERMINAL.value,
+}
+
 
 class RunControllerError(Exception):
     """Request-level failure with a stable machine-readable code."""
@@ -458,7 +474,7 @@ class RunController:
                 payload=payload,
             )
             self._append_event(dto)
-            self._phase = event.phase.value
+            self._phase = _LIVE_PHASE_AFTER_EVENT.get(event.type, event.phase.value)
 
     def _update_live_facts(self, event: AgentEvent, payload: Dict[str, Any]) -> None:
         if event.type == "step_started":
@@ -492,10 +508,14 @@ class RunController:
         running = self._state == "running"
         last_verification = None
         if result is not None and result.last_verification is not None:
+            stored_command = result.last_verification.get("command")
+            command = (
+                str(stored_command or "")[:160]
+                if result.last_verification.get("command_redacted") is True
+                else redact_verification_summary(stored_command)
+            )
             last_verification = VerificationDTO(
-                command=redact_verification_summary(
-                    result.last_verification.get("command")
-                ),
+                command=command,
                 exit_code=result.last_verification.get("exit_code"),
             )
         elapsed = None

@@ -54,6 +54,7 @@ export async function subscribeToRunEvents(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let receivedEnd = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -65,12 +66,15 @@ export async function subscribeToRunEvents(
         buffer = buffer.slice(index + 2);
         if (!block.trim()) continue;
         const message = parseBlock(block);
-        if (message) options.onEvent(message);
+        if (message) {
+          if (message.event === "end") receivedEnd = true;
+          options.onEvent(message);
+        }
       }
     }
     // A clean EOF without the server's `end` event means the connection
     // dropped; let the caller enter the disconnected/reconnect state.
-    if (!options.signal.aborted) {
+    if (!options.signal.aborted && !receivedEnd) {
       options.onError(new Error("SSE stream ended without terminal event"));
     }
   } finally {

@@ -16,7 +16,12 @@ from fastapi.testclient import TestClient
 from coding_agent.web.app import create_app
 from coding_agent.web.controller import RunController
 from conftest import make_tool_call, turn
-from test_run_controller import _scripted_loop_model, _seed_workspace, _verify_turns
+from test_run_controller import (
+    ToolThenBlockSecondRequestModel,
+    _scripted_loop_model,
+    _seed_workspace,
+    _verify_turns,
+)
 
 FAKE_SECRET = "sk-fake-secret-12345"
 
@@ -172,6 +177,44 @@ class TestSecurity:
             assert response.status_code == 403
             assert response.json()["error"]["code"] == "bad_origin"
 
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "user@localhost",
+            "localhost/path",
+            "localhost?x=y",
+            "localhost#frag",
+            "localhost ",
+        ],
+    )
+    def test_host_must_be_strict_authority(self, client, host):
+        response = client.get("/api/health", headers={"Host": host})
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "bad_host"
+
+    def test_https_effective_port_is_443_not_80(self, controller, workspace):
+        app = create_app(
+            controller=controller,
+            static_dir=workspace,
+            session_token="test-session-token",
+        )
+        https_client = TestClient(app, base_url="https://localhost")
+        headers = auth_headers(https_client)
+        headers["Origin"] = "https://localhost:80"
+        rejected = https_client.post(
+            "/api/workspace/validate", json={"path": "."}, headers=headers
+        )
+        assert rejected.status_code == 403
+        assert rejected.json()["error"]["code"] == "bad_origin"
+
+        headers["Origin"] = "https://localhost"
+        accepted = https_client.post(
+            "/api/workspace/validate",
+            json={"path": ".", "extra": "strict-dto"},
+            headers=headers,
+        )
+        assert accepted.status_code == 422
+
     def test_malformed_host_port_rejected(self, client):
         response = client.get("/api/health", headers={"Host": "localhost:not-a-port"})
         assert response.status_code == 403
@@ -185,6 +228,27 @@ class TestSecurity:
 
 
 class TestProfileAndCredentialApi:
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            None,
+            [],
+            {"version": True, "active_profile": None, "profiles": {}},
+        ],
+    )
+    def test_bootstrap_returns_stable_error_for_corrupt_config(self, workspace, raw):
+        home = workspace / f"corrupt-home-{len(json.dumps(raw))}"
+        home.mkdir()
+        (home / "config.json").write_text(json.dumps(raw), encoding="utf-8")
+        controller = RunController(home=home, env={})
+        client = TestClient(
+            create_app(controller=controller, static_dir=workspace),
+            base_url="http://127.0.0.1",
+        )
+        response = client.get("/api/bootstrap")
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "config_corrupt"
+
     def test_profile_crud_and_credential_write_only(self, client):
         headers = auth_headers(client)
         response = client.post(
@@ -393,6 +457,35 @@ class TestRunApi:
         # No secret anywhere in the API payload.
         assert FAKE_SECRET not in json.dumps(terminal)
 
+    def test_live_api_reports_second_blocking_model_request(self, workspace):
+        model = ToolThenBlockSecondRequestModel()
+        controller = RunController(
+            home=workspace / "live-home",
+            env={"OPENAI_API_KEY": "sk-test", "OPENAI_MODEL": "fake-model"},
+            client_factory=lambda _connection: model,
+        )
+        client = TestClient(
+            create_app(controller=controller, static_dir=workspace),
+            base_url="http://127.0.0.1",
+        )
+        headers = auth_headers(client)
+        started = self._start(client, workspace, headers)
+        assert started.status_code == 200
+        run_id = started.json()["run_id"]
+        try:
+            assert model.second_request_started.wait(timeout=10)
+            live = client.get(f"/api/runs/{run_id}")
+            assert live.status_code == 200
+            assert live.json()["state"] == "running"
+            assert live.json()["phase"] == "REQUESTING_MODEL"
+            assert live.json()["step_count"] == 2
+            assert live.json()["provider_attempt_count"] == 2
+            assert live.json()["tool_call_count"] == 1
+        finally:
+            model.release.set()
+        terminal = self._wait_terminal(client, run_id)
+        assert terminal["status"] == "SUCCESS"
+
     def test_invalid_workspace_and_unknown_run(self, client, workspace):
         headers = auth_headers(client)
         response = client.post(
@@ -513,8 +606,33 @@ class TestEventRedaction:
                     make_tool_call(
                         "run_command",
                         {
-                            "argv": ["python", "--api-key", self.SENTINEL],
-                            "purpose": "inspect",
+                            "argv": [
+                                "python",
+                                "-c",
+                                "import sys; sys.exit(1)",
+                                f"FOO={self.SENTINEL}",
+                                f"--header=Bearer-{self.SENTINEL}",
+                                self.SENTINEL,
+                            ],
+                            "purpose": "verify",
+                        },
+                    )
+                ]
+            ),
+            turn(
+                calls=[
+                    make_tool_call(
+                        "run_command",
+                        {
+                            "argv": [
+                                "python",
+                                "-c",
+                                "import sys; sys.exit(0)",
+                                f"FOO={self.SENTINEL}",
+                                f"--header=Bearer-{self.SENTINEL}",
+                                self.SENTINEL,
+                            ],
+                            "purpose": "verify",
                         },
                     )
                 ]
@@ -555,6 +673,14 @@ class TestEventRedaction:
             and event["payload"].get("name") == "run_command"
         )
         assert self.SENTINEL not in json.dumps(run_finished, ensure_ascii=False)
+        assert terminal["last_verification"] is not None
+        assert self.SENTINEL not in terminal["last_verification"]["command"]
+        assert "FOO=***" in terminal["last_verification"]["command"]
+        assert "--header=***" in terminal["last_verification"]["command"]
+
+        event_stream = client.get(f"/api/runs/{snap['run_id']}/events")
+        assert event_stream.status_code == 200
+        assert self.SENTINEL not in event_stream.text
 
     def test_worker_assertion_text_is_never_exposed(self, workspace):
         sentinel = self.SENTINEL

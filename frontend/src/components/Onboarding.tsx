@@ -72,16 +72,46 @@ export function Onboarding({ onDone }: OnboardingProps) {
                 <CredentialField profile={created} />
               </div>
             ) : (
-              <p className="text-sm text-muted" role="status">
-                {t("onboarding.noCredentialRef")}
-              </p>
+              <div className="space-y-3">
+                <p className="text-sm text-warning" role="status">
+                  {t("onboarding.noCredentialRef")}
+                </p>
+                <ProfileForm
+                  mode="edit"
+                  presets={presets}
+                  editing={{
+                    id: created.id,
+                    provider_id: created.provider_id,
+                    display_name: created.display_name,
+                    base_url: created.base_url,
+                    model: created.model,
+                    credential_ref: null,
+                  }}
+                  onSaved={() => {
+                    queryClient.invalidateQueries({ queryKey: ["profiles"] });
+                    queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+                  }}
+                />
+              </div>
             )}
-            <div className="flex items-center justify-between">
-              <p className="text-xs text-faint">{t("onboarding.resume")}</p>
-              <button type="button" className="btn-primary" onClick={onDone} data-testid="onboarding-done">
-                {t("onboarding.finish")}
-              </button>
-            </div>
+            {created.credential_ref ? (
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-faint">
+                  {created.credential.configured
+                    ? t("onboarding.resume")
+                    : t("onboarding.credentialRequired")}
+                </p>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={onDone}
+                  disabled={!created.credential.configured}
+                  data-testid="onboarding-done"
+                >
+                  {t("onboarding.finish")}
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : presets.length === 0 ? (
           <p className="text-sm text-muted" role="status">

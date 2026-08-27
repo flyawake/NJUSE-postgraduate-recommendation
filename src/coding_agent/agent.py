@@ -27,6 +27,11 @@ from .models import (
     VerificationStatus,
 )
 from .prompt import SYSTEM_PROMPT
+from .public_redaction import (
+    format_public_tool_arguments,
+    format_public_tool_outcome,
+    redact_command_summary,
+)
 from .tools.base import (
     ABORTED_BEFORE_DISPATCH,
     PROTOCOL_ERROR,
@@ -34,7 +39,7 @@ from .tools.base import (
     ToolError,
     ToolOutcome,
 )
-from .tools.executor import ToolExecutor, format_args_summary
+from .tools.executor import ToolExecutor
 from .tools.registry import ToolRegistry
 
 DEFAULT_MAX_STEPS = 20
@@ -361,7 +366,9 @@ class AgentLoop:
                 payload={
                     "call_id": call.id,
                     "name": call.name,
-                    "arguments": format_args_summary(prepared.normalized_args),
+                    "arguments": format_public_tool_arguments(
+                        call.name, prepared.normalized_args
+                    ),
                 },
             )
             outcome = self._tool_executor.execute(prepared)
@@ -380,7 +387,13 @@ class AgentLoop:
                     else outcome.error.code
                     if outcome.error
                     else None,
-                    "summary": outcome.summary(),
+                    "summary": format_public_tool_outcome(
+                        outcome.tool_name,
+                        outcome.ok,
+                        outcome.data,
+                        outcome.error.code if outcome.error else None,
+                        outcome.summary(),
+                    ),
                 },
             )
 
@@ -501,9 +514,10 @@ class AgentLoop:
         if outcome.tool_name == "run_command" and data.get("purpose") == "verify":
             exit_code = data.get("returncode", 1)
             self._last_verification = {
-                "command": format_args_summary(
-                    {"argv": data.get("argv", []), "cwd": data.get("cwd", ".")}
+                "command": redact_command_summary(
+                    data.get("argv", []), data.get("cwd", ".")
                 ),
+                "command_redacted": True,
                 "exit_code": exit_code,
                 "tool_call_id": outcome.call_id,
             }

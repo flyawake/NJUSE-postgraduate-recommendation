@@ -72,6 +72,12 @@ export function buildFeed(events: ToolEvent[], task: string): FeedGrouping {
   };
 
   for (const event of events) {
+    // A tool group represents one uninterrupted run of tool events. Any
+    // semantic event in between ends that run; otherwise a later step's tool
+    // would be rendered inside a group positioned before its step label.
+    if (event.kind !== "tool_started" && event.kind !== "tool_finished") {
+      currentGroup = null;
+    }
     switch (event.kind) {
       case "run_started":
         entries.push({ kind: "task", text: task });
@@ -132,7 +138,7 @@ export function buildFeed(events: ToolEvent[], task: string): FeedGrouping {
           group.items.some((item) => item.callId === callId)
         );
         if (owningGroup) {
-          owningGroup.running = false;
+          owningGroup.running = owningGroup.items.some((item) => item.status === "running");
           if (tool.status === "error" || tool.status === "aborted") {
             owningGroup.containsError = true;
           }

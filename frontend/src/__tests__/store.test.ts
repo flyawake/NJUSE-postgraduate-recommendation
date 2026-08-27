@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { runReducer, type RunStoreState } from "@/lib/store";
-import type { ToolEvent } from "@/api/client";
+import { deriveLiveSnapshot, runReducer, type RunStoreState } from "@/lib/store";
+import type { RunSnapshot, ToolEvent } from "@/api/client";
 
 function state(overrides: Partial<RunStoreState> = {}): RunStoreState {
   return {
@@ -60,5 +60,54 @@ describe("runReducer", () => {
     const next = runReducer(base, { type: "RESET_EVENTS", events: many });
     expect(next.events.length).toBe(2000);
     expect(next.events[0].id).toBe(51);
+  });
+});
+
+describe("deriveLiveSnapshot", () => {
+  it("advances inspector facts to the newest SSE event over a stale snapshot", () => {
+    const snapshot: RunSnapshot = {
+      run_id: "r1",
+      state: "running",
+      phase: "EXECUTING_TOOLS",
+      step_count: 1,
+      provider_attempt_count: 1,
+      tool_call_count: 1,
+      events_total: 4,
+      events_retained_from: 1,
+      events: [
+        { id: 4, kind: "tool_finished", step: 1, phase: "EXECUTING_TOOLS", payload: {} },
+      ],
+    };
+    const events: ToolEvent[] = [
+      { id: 1, kind: "run_started", step: 0, phase: "READY", payload: {} },
+      { id: 2, kind: "step_started", step: 1, phase: "READY", payload: {} },
+      { id: 3, kind: "tool_started", step: 1, phase: "EXECUTING_TOOLS", payload: {} },
+      { id: 4, kind: "tool_finished", step: 1, phase: "EXECUTING_TOOLS", payload: {} },
+      { id: 5, kind: "step_started", step: 2, phase: "READY", payload: {} },
+    ];
+
+    const live = deriveLiveSnapshot(snapshot, events);
+    expect(live?.step_count).toBe(2);
+    expect(live?.provider_attempt_count).toBe(2);
+    expect(live?.tool_call_count).toBe(1);
+    expect(live?.phase).toBe("REQUESTING_MODEL");
+  });
+
+  it("never moves server counters backwards when the retained tail is partial", () => {
+    const snapshot: RunSnapshot = {
+      run_id: "r1",
+      state: "running",
+      phase: "REQUESTING_MODEL",
+      step_count: 8,
+      provider_attempt_count: 10,
+      tool_call_count: 7,
+      events_total: 40,
+      events_retained_from: 39,
+      events: [],
+    };
+    const live = deriveLiveSnapshot(snapshot, [event(40)]);
+    expect(live?.step_count).toBe(8);
+    expect(live?.provider_attempt_count).toBe(10);
+    expect(live?.tool_call_count).toBe(7);
   });
 });
