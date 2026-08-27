@@ -354,3 +354,63 @@ wheel 独立检查：包含 `web/static/index.html` 和 JS asset，无 `.map`。
 ### 13.3 下一步唯一指令
 
 Developer Agent 继续读取 `guide/task_002/`，只处理 `acceptance.md` 的 R3.1-R3.8。优先级为：R3.1/R3.4/R3.6（安全与事件恢复）→ R3.2/R3.3（演示核心事实与时序）→ R3.5/R3.7（配置和交互）→ R3.8（最后重新取证）。必须为 Master 上述每个反例增加自动化覆盖，不得只扩展原有 happy-path 断言。
+
+## 14. Master 特例直接整改与第三次复验（2026-08-27）
+
+用户明确声明本轮为特殊情况，授权 Master 在另一 Agent 工作期间直接完成 R3.1-R3.8 实现；该授权仅适用于本轮最后整改，不改变后续 Master/Developer 分工。实现提交：`5600335`。
+
+### 14.1 R3 逐项结论
+
+**结论：通过。** 本轮不只复跑既有测试，还逐项检查事件源、controller、HTTP/SSE、React store、活动流、配置解析、安全头、onboarding/profile form 与生产构建代码，并为第二次复验的独立反例增加了自动化覆盖。
+
+| 整改项 | 结论 | 源码与独立反例证据 |
+| --- | --- | --- |
+| R3.1 命令 fail-closed 脱敏 | 通过 | 新增 provider-neutral `public_redaction.py`，在 AgentLoop 事件源处先脱敏，再由 Web 边界重复防护；`argv[1:]` 仅保留独立安全 flag，`NAME=value`/`--flag=value` 统一为 `key=***`，普通 operand 为 `***`。`test_agent_events_and_verification_are_redacted_before_any_sink` 与 `TestEventRedaction::test_sentinel_never_reaches_snapshot_or_events` 覆盖 write content、成功/失败 verify、普通赋值、inline flag、独立 operand、snapshot 与 SSE；Playwright 闭环覆盖 DOM 零命中。 |
+| R3.2 current phase/inspector | 通过 | controller 按事件后的实际工作阶段维护 live phase；第二次模型请求阻塞时 snapshot/API 为 `REQUESTING_MODEL, step=2, attempts=2, tools=1`。证据：`test_second_blocking_model_request_reports_current_phase`、`test_live_api_reports_second_blocking_model_request`、`deriveLiveSnapshot` 测试和刷新 E2E 的 2/2/1 中间态断言。 |
+| R3.3 活动流连续组 | 通过 | `buildFeed` 遇到任意非工具事件即关闭当前组；每个组的 running 状态由全部 item 重算。测试覆盖跨 step、retry、completion 边界，Playwright 断言五步产生五个单工具组且展开后顺序严格为 glob→grep→read→edit→verify。 |
+| R3.4 SSE 单调恢复 | 通过 | reconnect 通过同步 ref 读取最新 ID；显式 `end` 后 EOF 不再报断线；reset 保持该 run 已初始化，较慢 HTTP 仅更新 metadata；计数以 snapshot `events_total` 为基线，只累加更新事件。新增 `store-recovery.test.tsx` 用 deferred HTTP + SSE replay 复现并验证旧响应不覆盖 id=5、重连 cursor=5；`sse.test.ts` 覆盖 end/EOF；刷新 E2E 终态无断线横幅。该竞争测试还发现并修复了“retained tail 下 Step 2 但 attempts 仍为 1”的漏计数。 |
+| R3.5 config 根/版本类型 | 通过 | `_parse` 先验证根为 object，再要求 `type(version) is int` 且等于 1；API 保留 `config_corrupt`。`test_config_root_must_be_object`、`test_boolean_version_is_not_integer_version_one` 和 bootstrap API 参数化反例覆盖 null/array/bool/string。 |
+| R3.6 Host/Origin authority | 通过 | authority parser fail-closed 拒绝空白、userinfo、path/query/fragment、反斜线、非数字端口与未括号 IPv6；effective port 按 HTTP=80/HTTPS=443。API 反例覆盖 `user@localhost`、`localhost/path`、query/fragment、HTTPS :80 错配，并保留合法 localhost/IPv4/IPv6。 |
+| R3.7 credential/start 入口 | 通过 | ProfileForm 强制非空 credential ref，旧空 ref 可进入 edit 修复；onboarding 不允许未写凭据即完成；`handleStart` 自身复核 readiness，错误卡不再提供绕过入口。Vitest 覆盖 create 拒绝/成功和 legacy edit；英文 Playwright 用请求计数确认 disabled button 与 Ctrl+Enter 均产生 0 个 `POST /api/runs`。编辑按钮文案同步修正为“保存修改 / Save changes”。 |
+| R3.8 演示证据 | 通过 | screenshot 轨迹区分初始慢 inspect 与最终 py_compile verify，避免重复循环至 MAX_STEPS；重新生成的终态为 SUCCESS/FINAL_ANSWER/VERIFIED、7 steps/7 requests/6 tools（含截图专用慢 inspect）并展示最终答复，无重连横幅。截图脚本在 DOM 层拒绝 sentinel 与 `C:\\Users\\`，PNG 字节扫描也零命中。 |
+
+### 14.2 最终自动化与构建证据
+
+以下命令均实际执行且 exit 0：
+
+```text
+uv sync --all-groups
+uv run ruff format --check .                    # 73 files
+uv run ruff check .
+uv run pytest -q                                # 238 passed, 4 skipped
+uv run coding-agent --help
+uv run python -m coding_agent --help
+uv run coding-agent ui --help
+uv run coding-agent config --help
+npm ci
+npm run check:api                               # generated API types no diff
+npm run typecheck
+npm run lint
+npm test -- --run                               # 33 passed, 8 files
+npm run build                                   # production Vite build
+npm run test:e2e                                # 5 passed
+npm audit --omit=dev --registry=https://registry.npmjs.org  # 0 vulnerabilities
+uv build                                        # sdist + wheel
+git diff --check
+git diff --check 49db10c..HEAD
+```
+
+4 个 pytest skip 均为当前 Windows 无符号链接创建权限的既有平台分支。wheel 独立检查共 47 个文件，包含 `web/static/index.html` 与 JS/CSS assets，不含 `.map`。Live smoke：`N/A - 当前环境未提供外部合法凭据`；Fake Model 的 profile→credential→ModelClientFactory→AgentLoop→GUI 生产入口闭环已完整通过。
+
+### 14.3 1280×720 脱敏截图（`tmp/screenshots/`，不入库）
+
+- `01-main-idle.png`：合法仓库内 demo workspace、active 本地假模型与可开始空态。
+- `02-running.png`：真实运行中 frame，1/1/1、`EXECUTING_TOOLS`、当前 run_command 可见，参数已脱敏。
+- `03-verified-final.png`：SUCCESS/FINAL_ANSWER/VERIFIED，7/7/6、`hello.py`、最终答复与安全验证命令，无断线横幅。
+- `04-settings.png`：成功终态旁的 profile 编辑页，credential ref 与“保存修改”可见，凭据不回显。
+- `05-dark.png`：深色主题下同一 VERIFIED 成功终态与最终答复。
+- `06-english.png`：英文界面下同一 Completed/Terminal/VERIFIED/Final answer 成功终态。
+
+### 14.4 最终评估
+
+task_002 的前置条件、A1-A22、R2.1-R2.8 与 R3.1-R3.8 均已通过。真实模型 smoke 依验收规则记为 N/A，保留为最终演示录制前的后续工作，不阻塞本任务归档。

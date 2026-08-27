@@ -56,14 +56,14 @@ Python 代码必须通过 Ruff format、Ruff lint 和 pytest。task_002 前端�
 
 截至 2026-08-27，`task_001` 可靠内核已通过 Master 整改复验并归档。首验发现的 grep 符号链接边界、read 观察键规范化和 policy 后取消竞态三项 A5/A8 缺口均已修复；独立复现与标准命令通过，结果为 128 passed、4 skipped（均因当前 Windows 无符号链接创建权限，符合既定 skip 规则）。方案已研究本机 DeepSeek Harness，并对照 Codex、OpenCode、Gemini CLI、OpenHands、SWE-agent 与 Aider 的公开架构资料，吸收工具管线、事件生命周期、策略边界、历史投影和完成验证方面的设计经验。项目不依赖或复制这些 agent 框架，而以普通模型客户端和自研内核实现明确、可测试的语义。
 
-`task_002` 已进入实现与整改复验阶段：React/TypeScript/Vite 本地 GUI、FastAPI/RunController/SSE、provider profile、独立 credential store、生产静态资源打包及 Fake Model 图形闭环均已落地，标准 Python/前端/Playwright 门禁可运行。第二次 Master 源码复验结论仍为“需整改”，当前唯一入口是 `guide/task_002/acceptance.md` 的 R3.1-R3.8，重点闭环命令 inline-value 脱敏、实时 phase/inspector、跨 step 活动分组、SSE 单调恢复与终止、严格 config/Host 解析、credential/start 语义及真实一致的演示截图。第一阶段仍只支持现有 `openai_chat_completions` wire API，不夸大为已支持 Anthropic/Responses 等原生协议。
+`task_002` 本地图形应用与多服务商配置已通过第三次 Master 源码复验并归档。React/TypeScript/Vite GUI、FastAPI/RunController/SSE、provider profile、独立 credential store、生产静态资源打包及 Fake Model 图形闭环均已落地；R3 进一步闭环了 AgentEvent 源头 fail-closed 脱敏、实时 phase/inspector、跨 step 活动分组、SSE cursor/reset/end 单调恢复、严格 config/Host 解析、credential/start 语义与真实成功演示证据。最终证据为 Python 238 passed/4 skipped、Vitest 33、Playwright 5、npm audit 0；外部真实模型 smoke 因当前环境无合法凭据按规则记为 N/A，并列为下一阶段首要验证。第一阶段仍只支持现有 `openai_chat_completions` wire API，不夸大为已支持 Anthropic/Responses 等原生协议。
 
-可运行、可测试的端到端 Coding Agent 内核首版已经通过验收。下一阶段推进本地图形应用与多服务商配置、真实模型加固、仓库智能、隔离执行、评测与最终交付，不以完成考核材料作为项目能力建设的终点。
+可运行、可测试的端到端 Coding Agent 内核与本地图形应用首版均已通过验收。下一阶段优先完成真实模型 smoke 与固定任务集评测，再推进仓库智能、隔离执行、可扩展工具协议和最终交付；不以完成考核材料作为项目能力建设的终点。
 
 ## 演进路线
 
 1. **P0 可靠内核（task_001，已归档）**：显式 AgentLoop、规范消息配对、ToolExecutor/ToolPolicy、六个本地工具、资源感知上下文投影、变更后验证门槛、结构化事件和离线端到端测试；R1-R3 整改复验已通过。
-2. **P1 图形化应用与多服务商配置（task_002）**：提供 React/TypeScript 本地 GUI、实时运行/工具时间线、开始与取消、用户级 provider profile、独立 credential provider 和 ModelClientFactory；保留 CLI/legacy 环境变量兼容，不把界面状态或 provider 分支耦合进 AgentLoop。
+2. **P1 图形化应用与多服务商配置（task_002，已归档）**：提供 React/TypeScript 本地 GUI、实时运行/工具时间线、开始与取消、用户级 provider profile、独立 credential provider 和 ModelClientFactory；保留 CLI/legacy 环境变量兼容，不把界面状态或 provider 分支耦合进 AgentLoop；A1-A22、R2、R3 已通过。
 3. **P1 真实模型与质量评测**：用至少一个真实 OpenAI-compatible 模型完成可复现 smoke test；建立固定任务集，记录成功率、测试结果、步数、重试、工具错误、重复调用和上下文用量，基于证据调优提示与策略。
 4. **P2 仓库理解与编辑质量**：引入可替换的 ripgrep 搜索后端、简洁 repository map、语言/符号级上下文和更稳健的补丁编辑；保持工具协议不变，避免把索引逻辑耦合进 AgentLoop。
 5. **P3 执行与权限边界**：提供 read-only/auto-edit/approval 等策略模式及 Docker/受限进程运行时适配器；本地直接执行继续作为明确标注的可信工作区模式。
