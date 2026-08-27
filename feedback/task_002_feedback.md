@@ -160,3 +160,53 @@ uv build                                               # 通过；wheel 内包�
 - `06-english.png`：完整英文界面
 
 其中不含真实密钥、用户目录绝对路径（fake model 已改用 `python` 作为 argv[0]）或仓库外文件信息。
+
+## 10. 审查整改记录（2026-08-27）
+
+上一轮审查结论为“需整改”，本轮按 S1-S4 / M1-M6 及轻微项修复，未改动 `guide/`、`AGENT_*`、`PROJECT_CONTEXT.md`，未改动 task_001 内核语义。
+
+**严重项**
+- **S1 loopback 前缀绕过 + 非法端口**：新增 `src/coding_agent/netutil.py::is_loopback_host`，用 `ipaddress` 精确判断 IPv4/IPv6 字面量与 `localhost`；`provider_config.validate_provider_url` 与 `web/security` 共用该检查，并新增 `parsed.port` 数字端口校验。新增测试：域名伪装（`127.0.0.1.evil.com` 等）在 URL 校验与 Host 校验均被拒，非法端口被拒（`test_rejects_dns_names_that_resemble_loopback_prefixes`、`test_rejects_invalid_ports`、`test_loopback_looking_dns_names_rejected`）。
+- **S2 CLI 未用 active profile / 未共用 factory**：`cli._resolve_config` 无条件走 `ProfileStore + resolve_connection`（显式 > 激活 > legacy），`_default_agent_factory` 改经 `ModelClientFactory.create`；`Config` 增加 `wire_api`。`CODING_AGENT_HOME` 现按规格直接指向配置目录（不再追加 `.coding-agent`）。新增 5 个 resolver 优先级/回退/损坏拒绝测试；`config list/show` 对损坏 credentials 返回稳定错误而非 traceback。
+- **S3 刷新/重连不恢复 snapshot 事件**：`store.tsx` 每次 runId 首次拿到 snapshot 时 `dispatch(RESET_EVENTS, snapshot.events)`（只初始化一次，避免覆盖更新的 SSE 事件）；SSE 收到 `reset` 先清空再按序重放；导出 `runReducer` 并新增 5 个 Vitest 用例（APPEND 去重、RESET 替换/清空、CANCEL_FAILED、2000 条上限）。
+- **S4 提交边界**：`543131f` 混入 Master 侧文件的既有历史无法改写；本轮提交只包含授权实现文件，不触碰 `guide/`/`AGENT_*`/`PROJECT_CONTEXT.md`。后续如何记录该过程问题，等待负责人决定。
+
+**中等问题**
+- M1 `RunController.start` 先构建 loop 再改状态，builder 抛错保持原状态（新增 `test_loop_builder_failure_leaves_controller_idle`）。
+- M2 事件尾被清空且客户端落后时 `take_events` 返回 `([], True)`（新增 `test_empty_retained_tail_resets_behind_clients`）。
+- M3 `run_ui` 退出时调用 `RunController.shutdown()` 取消活动 run（新增 `test_shutdown_cancels_running_worker`）。
+- M4 worker 异常日志只记 `type(exc).__name__`，不再打印 `str(exc)`。
+- M5 cancel 失败时 `CANCEL_FAILED` 恢复 `cancelling=false`，可重试取消。
+- M6 编辑 profile 表单加 `key={editing.id}`，切换编辑对象时状态重置，不会把旧值覆盖到新对象。
+
+**轻微项**
+- i18n 硬编码移除：语言切换、credential show/hide、step 行的 “chars” 全部资源化；`api/client.ts` 的传输错误改为 locale 中立标记，新增 `lib/errorText.ts`，各错误消费点统一经 i18n 渲染。
+- Onboarding 步骤指示器改为真实的两步（连接信息 → 凭据保存）。
+- `bg-black/30`/`bg-black/40` 改为 `--color-overlay` token；`text-[11px]` 改为 `.text-caption` utility。
+- `ProfileForm` 字段错误增加 `id` 与 `aria-describedby` 关联。
+- Settings/Onboarding 增加 loading 状态提示。
+- `tests/test_web_api.py` 移除 `Z:/` 绝对路径，改用 `tmp_path` 相对缺失路径。
+- 新增 `.gitattributes` 对生成 bundle 声明 `-whitespace`：`git diff --check 49db10c..HEAD` 现为 0。
+
+**整改后全量验证（实际执行，全部 exit 0）**
+
+```powershell
+uv sync --all-groups               # 0
+uv run ruff format --check .       # 0（71 files already formatted）
+uv run ruff check .                # 0
+uv run pytest -q                   # 0（211 passed, 4 skipped；1 个 starlette TestClient 弃用 warning）
+uv run coding-agent --help         # 0
+uv run python -m coding_agent --help # 0
+uv run coding-agent ui --help      # 0
+uv run coding-agent config --help  # 0
+npm run typecheck                  # 0
+npm run lint                       # 0
+npm test -- --run                  # 0（23 passed）
+npm run build                      # 0（产物重建后 git status 干净）
+npm run check:api                  # 0（类型无 diff）
+npm run test:e2e                   # 0（3 passed，Fake Model 闭环/secret 零回显/取消与刷新恢复）
+git diff --check                   # 0
+git diff --check 49db10c..HEAD     # 0
+```
+
+4 个 skip 均为平台无法创建符号链接的用例；截图为整改后重新生成，全部 1280×720，字节扫描无 secret/用户目录路径。

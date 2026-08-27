@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, ApiError } from "@/api/client";
 import { useI18n } from "@/lib/i18n";
+import { apiErrorText } from "@/lib/errorText";
 import { useRunStore } from "@/lib/store";
 import { ActivityFeed } from "@/components/ActivityFeed";
 import { InlineError } from "@/components/InlineError";
@@ -80,7 +81,7 @@ export function MainPage({
           error.code === "run_already_active"
             ? "validation"
             : "run_failure";
-        setStartError({ kind, message: error.message, field: error.field });
+        setStartError({ kind, message: apiErrorText(error, t), field: error.field });
       } else {
         setStartError({ kind: "run_failure", message: t("error.runFailure") });
       }
@@ -94,7 +95,7 @@ export function MainPage({
     } catch (error) {
       setStartError({
         kind: "validation",
-        message: error instanceof ApiError ? error.message : t("error.runFailure"),
+        message: apiErrorText(error, t),
       });
     }
   }, [store, t]);

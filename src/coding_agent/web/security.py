@@ -43,9 +43,9 @@ def _extract_host(request: Request) -> str:
 
 
 def _is_loopback_host(host: str) -> bool:
-    if not host:
-        return False
-    return host in ("127.0.0.1", "localhost", "::1") or host.startswith("127.")
+    from ..netutil import is_loopback_host
+
+    return is_loopback_host(host)
 
 
 def new_session_token() -> str:

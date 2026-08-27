@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, FolderOpen, Loader2, XCircle } from "lucide-react";
-import { api, ApiError } from "@/api/client";
+import { api } from "@/api/client";
 import { useI18n } from "@/lib/i18n";
+import { apiErrorText } from "@/lib/errorText";
 import { cx } from "@/lib/format";
 
 export type WorkspaceState = "empty" | "checking" | "valid" | "invalid";
@@ -50,7 +51,7 @@ export function WorkspaceField({ value, onChange, onValidated, id }: WorkspaceFi
       } catch (err) {
         if (seq !== requestSeq.current) return;
         setState("invalid");
-        setError(err instanceof ApiError ? err.message : t("workspace.invalid"));
+        setError(apiErrorText(err, t, "workspace.invalid"));
         onValidated?.(null);
       }
     }, 400);

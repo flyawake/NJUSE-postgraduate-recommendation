@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError } from "@/api/client";
+import { api } from "@/api/client";
 import type { ProviderPreset } from "@/api/client";
 import { useI18n } from "@/lib/i18n";
+import { apiErrorText } from "@/lib/errorText";
 import { cx } from "@/lib/format";
 import { providerUrlError } from "@/lib/validate";
 import { InlineError } from "./InlineError";
@@ -79,7 +80,7 @@ export function ProfileForm({ mode, presets, editing, onSaved, onCancel }: Profi
       onSaved(profile.id);
     },
     onError: (error: unknown) => {
-      setSubmitError(error instanceof ApiError ? error.message : t("error.validation"));
+      setSubmitError(apiErrorText(error, t, "error.validation"));
     },
   });
 
@@ -209,9 +210,9 @@ export function ProfileForm({ mode, presets, editing, onSaved, onCancel }: Profi
   );
 }
 
-function FieldError({ text }: { text: string }) {
+function FieldError({ id, text }: { id?: string; text: string }) {
   return (
-    <p className="mt-1 text-xs text-danger" role="alert">
+    <p id={id} className="mt-1 text-xs text-danger" role="alert">
       {text}
     </p>
   );
@@ -246,10 +247,15 @@ function Field({
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
         aria-invalid={Boolean(error)}
+        aria-describedby={error ? `${id}-error` : undefined}
         spellCheck={false}
         autoComplete="off"
       />
-      {error ? <FieldError text={error} /> : hint ? <p className="mt-1 text-xs text-faint">{hint}</p> : null}
+      {error ? (
+        <FieldError id={`${id}-error`} text={error} />
+      ) : hint ? (
+        <p className="mt-1 text-xs text-faint">{hint}</p>
+      ) : null}
     </div>
   );
 }

@@ -186,11 +186,16 @@ class RunController:
         whole event list with the returned batch.
         """
         with self._lock:
+            if last_id is None:
+                return list(self._events), bool(self._events)
             if not self._events:
-                return [], False
+                # The tail was completely dropped: a client that is behind
+                # must clear its stale events even though there is nothing
+                # new to send.
+                return [], last_id < self._event_seq
             head_id = self._events[0].id
             tail_id = self._events[-1].id
-            if last_id is None or last_id < head_id - 1:
+            if last_id < head_id - 1:
                 return list(self._events), True
             if last_id >= tail_id:
                 return [], False
@@ -211,6 +216,19 @@ class RunController:
                 )
             run_id = uuid.uuid4().hex
             cancel_event = threading.Event()
+            builder = self._loop_builder or self._default_loop_builder
+            # Build the loop before mutating any run state: if the builder
+            # raises (invalid connection, programmer error, injected test
+            # failure) the controller stays in its previous state instead of
+            # being stuck in a phantom "running" state with no worker.
+            loop = builder(
+                connection=connection,
+                workspace=workspace,
+                task=task,
+                run_id=run_id,
+                cancel_event=cancel_event,
+                sink=self._on_agent_event,
+            )
             self._reset_run_state()
             self._state = "running"
             self._run_id = run_id
@@ -226,15 +244,6 @@ class RunController:
             self._finished_mono = None
             self._phase = LoopPhase.INITIALIZING.value
 
-            builder = self._loop_builder or self._default_loop_builder
-            loop = builder(
-                connection=connection,
-                workspace=workspace,
-                task=task,
-                run_id=run_id,
-                cancel_event=cancel_event,
-                sink=self._on_agent_event,
-            )
             worker = threading.Thread(
                 target=self._run_worker,
                 args=(loop, task, run_id),
@@ -381,11 +390,12 @@ class RunController:
             self._terminal_error = self._error_for_result(result)
 
     def _finish_with_exception(self, run_id: str, exc: Exception) -> None:
+        # Only the exception type is logged: exception text may originate
+        # from third-party SDKs and could contain secrets.
         logger.warning(
-            "run %s failed inside worker: %s: %s",
+            "run %s failed inside worker: %s",
             run_id[:8],
             type(exc).__name__,
-            str(exc)[:200],
         )
         with self._lock:
             if self._finished_flag or self._run_id != run_id:

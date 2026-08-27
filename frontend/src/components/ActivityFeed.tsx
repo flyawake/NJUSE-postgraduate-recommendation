@@ -176,7 +176,9 @@ function FeedItemView({ item }: { item: FeedItem }) {
       return (
         <p className="px-1 text-xs text-faint">
           {t("feed.step", { step: item.step })}
-          {item.charCount && item.budget ? ` · ${item.charCount}/${item.budget} chars` : ""}
+          {item.charCount && item.budget
+            ? ` · ${t("feed.charBudget", { charCount: item.charCount, budget: item.budget })}`
+            : ""}
         </p>
       );
     case "retry":

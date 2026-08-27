@@ -58,7 +58,7 @@ export function AppShell({
         <Dialog.Root open={drawerOpen} onOpenChange={setDrawerOpen} modal={false}>
           <Dialog.Portal>
             <Dialog.Overlay
-              className="fixed inset-0 z-40 bg-black/30 lg:hidden"
+              className="fixed inset-0 z-40 bg-overlay lg:hidden"
               data-state={drawerOpen ? "open" : "closed"}
             />
             <Dialog.Content

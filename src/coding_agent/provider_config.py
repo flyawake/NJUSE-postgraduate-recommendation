@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .errors import ConfigError
+from .netutil import is_loopback_host
 from .storage import StorageError, atomic_write_json, load_json
 
 CONFIG_VERSION = 1
@@ -49,9 +50,10 @@ class ProfileError(ConfigError):
 def default_home() -> Path:
     import os
 
-    return (
-        Path(os.environ.get("CODING_AGENT_HOME") or "~").expanduser() / ".coding-agent"
-    )
+    override = os.environ.get("CODING_AGENT_HOME")
+    if override:
+        return Path(override).expanduser()
+    return Path("~").expanduser() / ".coding-agent"
 
 
 def validate_profile_id(profile_id: str) -> str:
@@ -67,8 +69,8 @@ def validate_provider_url(url: str) -> str:
     """Validate a provider base URL.
 
     Rules: absolute ``http``/``https`` URL, no userinfo, no query string, no
-    fragment. HTTPS is allowed for any host; HTTP is allowed only for
-    loopback addresses.
+    fragment, valid numeric port when present. HTTPS is allowed for any host;
+    HTTP is allowed only for loopback addresses.
     """
     from urllib.parse import urlparse
 
@@ -84,7 +86,13 @@ def validate_provider_url(url: str) -> str:
         )
     if parsed.query or parsed.fragment:
         raise ProfileError("base URL 不允许携带 query 或 fragment", field="base_url")
-    if parsed.scheme == "http" and not _is_loopback_host(parsed.hostname):
+    try:
+        parsed.port  # noqa: B018 - accessor raises ValueError on invalid port
+    except ValueError as exc:
+        raise ProfileError(
+            "base URL 端口不合法（必须是数字端口）", field="base_url"
+        ) from exc
+    if parsed.scheme == "http" and not is_loopback_host(parsed.hostname):
         raise ProfileError(
             "HTTP 地址仅允许本机回环地址（127.0.0.1/localhost/[::1]），远程地址必须使用 HTTPS",
             field="base_url",
@@ -94,12 +102,6 @@ def validate_provider_url(url: str) -> str:
             f"base URL 过长（最多 {MAX_BASE_URL} 字符）", field="base_url"
         )
     return value
-
-
-def _is_loopback_host(hostname: Optional[str]) -> bool:
-    if not hostname:
-        return False
-    return hostname in ("127.0.0.1", "localhost", "::1") or hostname.startswith("127.")
 
 
 @dataclass(frozen=True)

@@ -44,7 +44,8 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   try {
     response = await fetch(path, { ...init, headers });
   } catch {
-    throw new ApiError("transport_error", "无法连接本地服务", 0);
+    // Locale-neutral marker; the UI renders it through i18n.
+    throw new ApiError("transport_error", "", 0);
   }
   if (response.status === 204) return undefined as T;
   let body: unknown = null;

@@ -104,7 +104,7 @@ export function ProfileSelector({
                       </span>
                     </span>
                     {state === "missing-credential" ? (
-                      <span className="rounded-sm bg-warning-muted px-1.5 py-0.5 text-[11px] font-medium text-warning">
+                      <span className="rounded-sm bg-warning-muted px-1.5 py-0.5 text-caption font-medium text-warning">
                         {t("profile.missingCredential")}
                       </span>
                     ) : null}

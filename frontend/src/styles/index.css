@@ -55,6 +55,9 @@
   .mono {
     font-family: var(--font-mono);
   }
+  .text-caption {
+    font-size: 11px;
+  }
   .sr-only {
     position: absolute;
     width: 1px;

@@ -13,7 +13,10 @@ from typing import Callable, Dict, Optional
 
 from .credentials import ResolvedCredential
 from .errors import ConfigError
-from .provider_config import ProviderProfile
+from .provider_config import (
+    WIRE_API_CHAT_COMPLETIONS,
+    ProviderProfile,
+)
 
 DEFAULT_MAX_STEPS = 20
 DEFAULT_CHAR_BUDGET = 120_000
@@ -29,6 +32,7 @@ class Config:
     base_url: Optional[str]
     max_steps: int = DEFAULT_MAX_STEPS
     char_budget: int = DEFAULT_CHAR_BUDGET
+    wire_api: str = WIRE_API_CHAT_COMPLETIONS
 
 
 @dataclass(frozen=True)
@@ -172,6 +176,7 @@ def load_config_from_connection(
         base_url=resolved_base_url,
         max_steps=_resolve_steps(max_steps),
         char_budget=DEFAULT_CHAR_BUDGET,
+        wire_api=connection.wire_api,
     )
 
 

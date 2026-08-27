@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Eye, EyeOff, KeyRound, Trash2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError } from "@/api/client";
+import { api } from "@/api/client";
 import type { Profile } from "@/api/client";
 import { useI18n } from "@/lib/i18n";
+import { apiErrorText } from "@/lib/errorText";
 import { cx } from "@/lib/format";
 import { InlineError } from "./InlineError";
 
@@ -62,7 +63,7 @@ export function CredentialField({ profile }: CredentialFieldProps) {
     onError: (error: unknown) => {
       setFeedback({
         kind: "error",
-        text: error instanceof ApiError ? error.message : t("error.validation"),
+        text: apiErrorText(error, t, "error.validation"),
       });
     },
   });
@@ -76,7 +77,7 @@ export function CredentialField({ profile }: CredentialFieldProps) {
     onError: (error: unknown) => {
       setFeedback({
         kind: "error",
-        text: error instanceof ApiError ? error.message : t("error.validation"),
+        text: apiErrorText(error, t, "error.validation"),
       });
     },
   });
@@ -91,7 +92,7 @@ export function CredentialField({ profile }: CredentialFieldProps) {
         <span className="text-sm font-medium">{t("settings.credential.title")}</span>
         <span
           className={cx(
-            "rounded-sm px-1.5 py-0.5 text-[11px] font-medium",
+            "rounded-sm px-1.5 py-0.5 text-caption font-medium",
             envReadonly ? "bg-warning-muted text-warning" : info?.configured ? "bg-success-muted text-success" : "bg-surface-2 text-muted"
           )}
         >
@@ -130,7 +131,7 @@ export function CredentialField({ profile }: CredentialFieldProps) {
             className="btn-icon absolute right-1 top-1/2 -translate-y-1/2"
             onClick={() => setShow((value) => !value)}
             disabled={envReadonly}
-            aria-label={show ? "Hide" : "Show"}
+            aria-label={show ? t("settings.credential.hide") : t("settings.credential.show")}
           >
             {show ? <EyeOff aria-hidden size={14} /> : <Eye aria-hidden size={14} />}
           </button>

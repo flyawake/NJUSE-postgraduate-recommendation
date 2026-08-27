@@ -111,6 +111,16 @@ class TestSecurity:
         assert response.status_code == 403
         assert response.json()["error"]["code"] == "bad_host"
 
+    @pytest.mark.parametrize(
+        "host", ["http://127.0.0.1.evil.com", "http://127.attacker.com"]
+    )
+    def test_loopback_looking_dns_names_rejected(self, controller, workspace, host):
+        app = create_app(controller=controller, static_dir=workspace)
+        evil = TestClient(app, base_url=host)
+        response = evil.get("/api/health")
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "bad_host"
+
     def test_state_change_requires_token(self, client):
         response = client.post(
             "/api/runs",
@@ -349,11 +359,11 @@ class TestRunApi:
         # No secret anywhere in the API payload.
         assert FAKE_SECRET not in json.dumps(terminal)
 
-    def test_invalid_workspace_and_unknown_run(self, client):
+    def test_invalid_workspace_and_unknown_run(self, client, workspace):
         headers = auth_headers(client)
         response = client.post(
             "/api/runs",
-            json={"workspace": "Z:/no/such/path/xyz", "task": "t"},
+            json={"workspace": str(workspace / "no-such-path"), "task": "t"},
             headers=headers,
         )
         assert response.status_code == 400

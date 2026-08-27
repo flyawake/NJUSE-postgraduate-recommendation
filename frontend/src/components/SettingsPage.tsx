@@ -3,9 +3,10 @@ import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import * as Tabs from "@radix-ui/react-tabs";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Pencil, Plus, Trash2 } from "lucide-react";
-import { api, ApiError } from "@/api/client";
+import { api } from "@/api/client";
 import type { Profile } from "@/api/client";
 import { useI18n } from "@/lib/i18n";
+import { apiErrorText } from "@/lib/errorText";
 import { InlineError } from "./InlineError";
 import { ProfileForm } from "./ProfileForm";
 import { CredentialField } from "./CredentialField";
@@ -37,7 +38,8 @@ export function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ["profiles"] });
       queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
     },
-    onError: (err: unknown) => setPageError(err instanceof ApiError ? err.message : t("error.validation")),
+    onError: (err: unknown) =>
+      setPageError(apiErrorText(err, t, "error.validation")),
   });
 
   const deleteMutation = useMutation({
@@ -49,7 +51,7 @@ export function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
     },
     onError: (err: unknown) => {
-      setPageError(err instanceof ApiError ? err.message : t("error.validation"));
+      setPageError(apiErrorText(err, t, "error.validation"));
       setDeleteTarget(null);
     },
   });
@@ -84,7 +86,11 @@ export function SettingsPage() {
         </Tabs.List>
 
         <Tabs.Content value="list" className="pt-4">
-          {profiles.length === 0 ? (
+          {profilesQuery.isLoading ? (
+            <p className="text-sm text-muted" role="status">
+              {t("settings.loading")}
+            </p>
+          ) : profiles.length === 0 ? (
             <p className="text-sm text-muted">{t("settings.empty")}</p>
           ) : (
             <ul className="space-y-2">
@@ -99,7 +105,7 @@ export function SettingsPage() {
                       <p className="flex items-center gap-2 text-sm font-medium">
                         <span className="truncate">{profile.display_name}</span>
                         {profile.id === activeId ? (
-                          <span className="rounded-sm bg-success-muted px-1.5 py-0.5 text-[11px] font-medium text-success">
+                          <span className="rounded-sm bg-success-muted px-1.5 py-0.5 text-caption font-medium text-success">
                             {t("settings.active")}
                           </span>
                         ) : null}
@@ -161,6 +167,7 @@ export function SettingsPage() {
           {editing ? (
             <div className="mt-4 rounded-lg border border-border bg-surface p-4">
               <ProfileForm
+                key={editing.id}
                 mode="edit"
                 presets={presets}
                 editing={{
@@ -201,7 +208,7 @@ export function SettingsPage() {
 
       <AlertDialog.Root open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialog.Portal>
-          <AlertDialog.Overlay className="fixed inset-0 z-40 bg-black/40" />
+          <AlertDialog.Overlay className="fixed inset-0 z-40 bg-overlay" />
           <AlertDialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-surface p-5 shadow-md">
             <AlertDialog.Title className="text-base font-semibold">
               {t("settings.deleteTitle", { name: deleteTarget?.display_name ?? "" })}

@@ -26,7 +26,8 @@ export function Onboarding({ onDone }: OnboardingProps) {
 
   const created: Profile | undefined = (profilesQuery.data ?? []).find((p) => p.id === createdId);
   const presets = bootstrap.data?.provider_presets ?? [];
-  const step = createdId ? 3 : 1;
+  const step = createdId ? 2 : 1;
+  const stepLabels = [t("onboarding.step1"), t("onboarding.step2")];
 
   return (
     <div className="fixed inset-0 z-30 flex items-center justify-center bg-bg p-4">
@@ -42,7 +43,7 @@ export function Onboarding({ onDone }: OnboardingProps) {
         </div>
 
         <ol className="mb-5 flex flex-wrap items-center gap-2 text-xs">
-          {[t("onboarding.step1"), t("onboarding.step2"), t("onboarding.step3")].map((label, index) => {
+          {stepLabels.map((label, index) => {
             const done = step > index + 1;
             const active = step === index + 1;
             return (
@@ -58,7 +59,7 @@ export function Onboarding({ onDone }: OnboardingProps) {
                 >
                   {label}
                 </span>
-                {index < 2 ? <ArrowRight aria-hidden size={12} className="text-faint" /> : null}
+                {index < stepLabels.length - 1 ? <ArrowRight aria-hidden size={12} className="text-faint" /> : null}
               </li>
             );
           })}
@@ -76,6 +77,10 @@ export function Onboarding({ onDone }: OnboardingProps) {
               </button>
             </div>
           </div>
+        ) : presets.length === 0 ? (
+          <p className="text-sm text-muted" role="status">
+            {t("settings.loading")}
+          </p>
         ) : (
           <ProfileForm
             mode="create"

@@ -36,9 +36,10 @@ type Action =
   | { type: "RESET_EVENTS"; events: ToolEvent[] }
   | { type: "SSE_STATUS"; status: SseStatus }
   | { type: "CANCEL_REQUESTED" }
+  | { type: "CANCEL_FAILED" }
   | { type: "CLEAR" };
 
-function reducer(state: RunStoreState, action: Action): RunStoreState {
+export function runReducer(state: RunStoreState, action: Action): RunStoreState {
   switch (action.type) {
     case "APPEND": {
       const next = action.events.filter((event) => event.id > state.lastEventId);
@@ -54,10 +55,11 @@ function reducer(state: RunStoreState, action: Action): RunStoreState {
     }
     case "RESET_EVENTS": {
       const sorted = [...action.events].sort((a, b) => a.id - b.id);
+      const trimmed = sorted.length > MAX_CLIENT_EVENTS ? sorted.slice(-MAX_CLIENT_EVENTS) : sorted;
       return {
         ...state,
-        events: sorted,
-        lastEventId: sorted.length ? sorted[sorted.length - 1].id : state.lastEventId,
+        events: trimmed,
+        lastEventId: trimmed.length ? trimmed[trimmed.length - 1].id : state.lastEventId,
         sseStatus: "connected",
       };
     }
@@ -65,6 +67,8 @@ function reducer(state: RunStoreState, action: Action): RunStoreState {
       return { ...state, sseStatus: action.status };
     case "CANCEL_REQUESTED":
       return { ...state, cancelling: true };
+    case "CANCEL_FAILED":
+      return { ...state, cancelling: false };
     case "CLEAR":
       return initialState;
   }
@@ -87,8 +91,9 @@ const RunStoreContext = createContext<RunStore | null>(null);
 
 export function RunStoreProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
-  const [state, dispatch] = useReducer(reducer, initialState);
+  const [state, dispatch] = useReducer(runReducer, initialState);
   const runIdRef = useRef<string | null>(null);
+  const initializedRunIdRef = useRef<string | null>(null);
 
   // Bootstrap: session token (armed inside api.bootstrap) + profile baseline.
   const bootstrapQuery = useQuery({
@@ -117,10 +122,22 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
   const snapshot = runQuery.data;
   const snapshotLoading = runQuery.isLoading;
 
+  // Initialize the event list from the server snapshot exactly once per run
+  // (refresh / bootstrap restore / new run). Later snapshots must not
+  // overwrite events that SSE already delivered; reconnect recovery is
+  // handled by the SSE `reset` contract instead.
+  useEffect(() => {
+    if (!runId || initializedRunIdRef.current === runId) return;
+    if (!snapshot?.events?.length) return;
+    dispatch({ type: "RESET_EVENTS", events: snapshot.events });
+    initializedRunIdRef.current = runId;
+  }, [runId, snapshot]);
+
   const startRunMutation = useMutation({
     mutationFn: api.startRun,
     onSuccess: (snap) => {
       runIdRef.current = snap.run_id;
+      initializedRunIdRef.current = null;
       dispatch({ type: "CLEAR" });
       queryClient.setQueryData(["run", snap.run_id], snap);
       queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
@@ -133,7 +150,7 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
     onSuccess: (snap) => {
       queryClient.setQueryData(["run", snap.run_id], snap);
     },
-    onError: () => dispatch({ type: "CANCEL_REQUESTED" }),
+    onError: () => dispatch({ type: "CANCEL_FAILED" }),
   });
 
   // SSE subscription lifecycle. Reconnects always resync from the server's
@@ -156,6 +173,12 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
         onEvent: (message) => {
           if (message.event === "hello") {
             dispatch({ type: "SSE_STATUS", status: "connected" });
+            return;
+          }
+          if (message.event === "reset") {
+            // Server retained tail is the new truth; clear the client list,
+            // the following events are replayed in order.
+            dispatch({ type: "RESET_EVENTS", events: [] });
             return;
           }
           if (message.event === "end") {
@@ -208,6 +231,7 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
 
   const clear = useCallback(() => {
     runIdRef.current = null;
+    initializedRunIdRef.current = null;
     dispatch({ type: "CLEAR" });
     queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
   }, [queryClient]);

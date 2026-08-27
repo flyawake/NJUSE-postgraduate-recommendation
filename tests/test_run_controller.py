@@ -187,6 +187,28 @@ class TestStartAndTerminal:
         _wait_terminal(controller)
         assert controller.snapshot().status == "INTERRUPTED"
 
+    def test_loop_builder_failure_leaves_controller_idle(self, seeded):
+        factory, _ = _scripted_loop_model(turn(text="ok"))
+        controller = RunController(
+            home=seeded / "home",
+            env={"OPENAI_API_KEY": "sk-test", "OPENAI_MODEL": "fake-model"},
+            client_factory=factory,
+        )
+
+        def broken_builder(**_kwargs):
+            raise RuntimeError("injected builder failure")
+
+        controller._loop_builder = broken_builder
+        with pytest.raises(RuntimeError):
+            controller.start(RunStartRequest(workspace=str(seeded), task="t"))
+        assert controller.snapshot().state == "idle"
+        # A second start is not blocked by a phantom run.
+        controller._loop_builder = None
+        snap = controller.start(RunStartRequest(workspace=str(seeded), task="t"))
+        assert snap.state == "running"
+        _wait_terminal(controller)
+        assert controller.snapshot().status == "SUCCESS"
+
     def test_terminal_snapshot_is_unique(self, seeded):
         factory, _ = _scripted_loop_model(turn(text="done"))
         controller = make_controller(seeded, factory=factory)
@@ -230,6 +252,18 @@ class TestCancellation:
             controller.cancel()
         assert exc.value.code == "run_not_found"
 
+    def test_shutdown_cancels_running_worker(self, seeded):
+        factory = lambda _connection: BlockingModel(delay=30.0)  # noqa: E731
+        controller = make_controller(seeded, factory=factory)
+        controller._env["OPENAI_API_KEY"] = "sk-test"
+        controller._env["OPENAI_MODEL"] = "fake-model"
+        controller.start(RunStartRequest(workspace=str(seeded), task="t"))
+        controller.shutdown(timeout=5)
+        snap = controller.snapshot()
+        assert snap.state == "terminal"
+        assert snap.status == "INTERRUPTED"
+        assert controller._worker is not None and not controller._worker.is_alive()
+
 
 class TestBoundedEvents:
     def test_events_bounded_by_count_with_resync(self, seeded):
@@ -264,3 +298,22 @@ class TestBoundedEvents:
         _wait_terminal(controller)
         snap = controller.snapshot()
         assert 0 < len(snap.events) < snap.events_total
+
+    def test_empty_retained_tail_resets_behind_clients(self, seeded):
+        factory, _ = _scripted_loop_model(*_verify_turns())
+        # Every event payload is longer than 1 char, so the tail is drained
+        # completely while events_total keeps growing.
+        controller = make_controller(seeded, factory=factory, max_event_chars=1)
+        controller._env["OPENAI_API_KEY"] = "sk-test"
+        controller._env["OPENAI_MODEL"] = "fake-model"
+        controller.start(RunStartRequest(workspace=str(seeded), task="t"))
+        _wait_terminal(controller)
+        snap = controller.snapshot()
+        assert snap.events == []
+        assert snap.events_total > 0
+        # A client that only saw event 1 must clear its stale list.
+        events, reset = controller.take_events(last_id=1)
+        assert events == [] and reset is True
+        # A client that already saw everything needs no reset.
+        events, reset = controller.take_events(last_id=snap.events_total)
+        assert events == [] and reset is False

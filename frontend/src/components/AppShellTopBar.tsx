@@ -96,8 +96,8 @@ export function TopBar({
         </Select.Root>
         <Select.Root value={locale} onValueChange={(next) => setLocale(next as (typeof LOCALES)[number])}>
           <Select.Trigger asChild>
-            <button type="button" className="btn-icon mono text-xs" aria-label="Language" data-testid="locale-toggle">
-              {locale === "zh-CN" ? "中" : "EN"}
+            <button type="button" className="btn-icon mono text-xs" aria-label={t("topbar.language")} data-testid="locale-toggle">
+              {t(`topbar.localeShort.${locale}`)}
             </button>
           </Select.Trigger>
           <Select.Portal>
@@ -113,7 +113,7 @@ export function TopBar({
                     value={value}
                     className="cursor-pointer select-none rounded-sm px-2 py-1.5 text-sm outline-none data-[highlighted]:bg-surface-2"
                   >
-                    <Select.ItemText>{value === "zh-CN" ? "简体中文" : "English"}</Select.ItemText>
+                    <Select.ItemText>{t(`topbar.localeName.${value}`)}</Select.ItemText>
                   </Select.Item>
                 ))}
               </Select.Viewport>

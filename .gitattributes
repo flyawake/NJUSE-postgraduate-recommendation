@@ -1,0 +1,4 @@
+# Generated Vite bundles may legitimately contain whitespace-only lines
+# inside minified template literals (Radix CSS injection). They are build
+# artifacts, so git's whitespace error detection is disabled for them.
+src/coding_agent/web/static/** -whitespace

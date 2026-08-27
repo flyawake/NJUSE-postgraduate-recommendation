@@ -37,7 +37,8 @@ def run_ui(port: int = 0, no_browser: bool = False) -> int:
     """Run the GUI server until Ctrl+C. Returns an exit code."""
     import uvicorn
 
-    app = build_app()
+    controller = RunController(home=default_home())
+    app = build_app(controller=controller)
     config = uvicorn.Config(
         app,
         host="127.0.0.1",
@@ -75,6 +76,9 @@ def run_ui(port: int = 0, no_browser: bool = False) -> int:
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+        # Cancel any still-running AgentLoop worker before the process exits
+        # so owned subprocesses are not orphaned.
+        controller.shutdown(timeout=5)
     return 0
 
 

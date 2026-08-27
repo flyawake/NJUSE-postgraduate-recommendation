@@ -7,6 +7,8 @@ config, exit codes and Ctrl+C handling; all agent logic lives in AgentLoop.
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
 import threading
 from typing import Any, Callable, Dict, Optional, Sequence
@@ -15,14 +17,14 @@ from .agent import AgentLoop
 from .completion import CompletionPolicy
 from .config import (
     Config,
-    load_config,
+    ResolvedModelConnection,
     load_config_from_connection,
     resolve_connection,
 )
 from .context import ContextManager
 from .credentials import CredentialError, CredentialService
 from .errors import ConfigError
-from .model_client import OpenAIModelClient
+from .model_client import ModelClientFactory
 from .models import AgentEvent, RunStatus, VerificationStatus
 from .provider_config import ProfileError, ProfileStore, default_home
 from .tools import build_default_tools
@@ -178,11 +180,16 @@ def _default_agent_factory(
     tracker = FileObservationTracker()
     registry = build_default_tools(workspace, tracker, is_cancelled)
     executor = ToolExecutor(registry, WorkspaceToolPolicy(), is_cancelled)
-    model_client = OpenAIModelClient(
+    # The CLI shares the same factory as the GUI: wire_api dispatch lives
+    # only in ModelClientFactory, never in provider-name branches.
+    connection = ResolvedModelConnection(
         api_key=config.api_key,
         model=config.model,
         base_url=config.base_url,
+        wire_api=config.wire_api,
+        source="legacy-env" if config.wire_api == "openai_chat_completions" else "cli",
     )
+    model_client = ModelClientFactory.create(connection)
     return AgentLoop(
         model_client=model_client,
         tool_registry=registry,
@@ -252,32 +259,27 @@ def _print_result(result) -> None:
 
 
 def _resolve_config(args) -> Config:
-    """Legacy CLI: explicit profile > active profile > legacy OPENAI_* env.
+    """CLI and GUI share one resolver and one wire-API factory.
 
+    Priority: explicit profile > active profile > legacy ``OPENAI_*`` env.
     ``--model``/``--base-url`` only override this run and never write back.
+    A corrupt or invalid profile store is a hard error; it never silently
+    falls back to the legacy environment.
     """
-    workspace = args.workspace
-    if args.profile:
-        home = default_home()
-        store = ProfileStore(home)
-        credentials = CredentialService(home)
-        profiles = store.load().profiles
-        connection = resolve_connection(
-            profiles=profiles,
-            active_profile=store.load().active_profile,
-            explicit_profile=args.profile,
-            env=dict(__import__("os").environ),
-            credential_resolver=credentials.resolve,
-        )
-        return load_config_from_connection(
-            workspace,
-            connection,
-            model=args.model,
-            base_url=args.base_url,
-            max_steps=args.max_steps,
-        )
-    return load_config(
-        workspace=workspace,
+    home = default_home()
+    store = ProfileStore(home)
+    credentials = CredentialService(home)
+    config_data = store.load()
+    connection = resolve_connection(
+        profiles=config_data.profiles,
+        active_profile=config_data.active_profile,
+        explicit_profile=args.profile,
+        env=dict(os.environ),
+        credential_resolver=credentials.resolve,
+    )
+    return load_config_from_connection(
+        args.workspace,
+        connection,
         model=args.model,
         base_url=args.base_url,
         max_steps=args.max_steps,
@@ -299,11 +301,15 @@ def _run_config_command(args) -> int:
             print("没有已保存的 profile。请运行 `coding-agent ui` 在设置页创建。")
             return EXIT_OK
         for profile in profiles:
-            info = (
-                credentials.info(profile.credential_ref)
-                if profile.credential_ref
-                else None
-            )
+            try:
+                info = (
+                    credentials.info(profile.credential_ref)
+                    if profile.credential_ref
+                    else None
+                )
+            except CredentialError as exc:
+                print(f"凭据状态读取失败（{profile.id}）：{exc}", file=sys.stderr)
+                return EXIT_ERROR
             active = " *" if profile.id == config.active_profile else ""
             credential_state = "未配置"
             if info is not None:
@@ -323,9 +329,15 @@ def _run_config_command(args) -> int:
         if profile is None:
             print(f"profile 不存在：{args.profile_id}", file=sys.stderr)
             return EXIT_ERROR
-        info = (
-            credentials.info(profile.credential_ref) if profile.credential_ref else None
-        )
+        try:
+            info = (
+                credentials.info(profile.credential_ref)
+                if profile.credential_ref
+                else None
+            )
+        except CredentialError as exc:
+            print(f"凭据状态读取失败：{exc}", file=sys.stderr)
+            return EXIT_ERROR
         descriptor = profile.to_dict()
         descriptor["credential"] = (
             {
@@ -337,7 +349,7 @@ def _run_config_command(args) -> int:
             else {"configured": False, "source": None, "writable": True}
         )
         descriptor["active"] = profile.id == config.active_profile
-        print(__import__("json").dumps(descriptor, ensure_ascii=False, indent=2))
+        print(json.dumps(descriptor, ensure_ascii=False, indent=2))
         return EXIT_OK
     return EXIT_ERROR
 

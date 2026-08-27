@@ -25,6 +25,7 @@ export default {
         info: "var(--color-info)",
         "info-muted": "var(--color-info-muted)",
         focus: "var(--color-focus)",
+        overlay: "var(--color-overlay)",
       },
       borderRadius: {
         sm: "var(--radius-sm)",

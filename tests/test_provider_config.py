@@ -53,6 +53,25 @@ class TestProviderUrlValidation:
             validate_provider_url("http://localhost:11434/v1")
             == "http://localhost:11434/v1"
         )
+        assert validate_provider_url("http://[::1]:11434/v1") == "http://[::1]:11434/v1"
+
+    def test_rejects_dns_names_that_resemble_loopback_prefixes(self):
+        for url in (
+            "http://127.0.0.1.evil.com/v1",
+            "http://127.attacker.com/v1",
+            "http://127.evil.example:8080",
+        ):
+            with pytest.raises(ProfileError):
+                validate_provider_url(url)
+
+    def test_rejects_invalid_ports(self):
+        for url in (
+            "http://127.0.0.1:bad/v1",
+            "https://api.example.com:99999/v1",
+            "https://api.example.com:not-a-port",
+        ):
+            with pytest.raises(ProfileError):
+                validate_provider_url(url)
 
     @pytest.mark.parametrize(
         "url",
