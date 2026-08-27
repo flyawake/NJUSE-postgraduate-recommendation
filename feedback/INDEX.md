@@ -6,3 +6,4 @@
 
 | 反馈文件 | 对应任务 | 状态 | 是否已评估 | 备注 |
 | --- | --- | --- | --- | --- |
+| [task_001_feedback.md](task_001_feedback.md) | task_001 | 待评估 | 否 | 首次实现反馈：sync/ruff/pytest/help 全部通过（126 passed, 1 skipped）；live smoke 为 N/A（无外部凭据） |
