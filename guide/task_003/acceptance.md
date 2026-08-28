@@ -50,3 +50,14 @@
 - [ ] B2. 2,000-event fixture 初始只挂载不超过 350 个 transcript item；每次“加载更早”增加不超过 250 个且顺序严格递增。
 - [ ] B3. 一次包含 50 个新事件的 batch 不得触发 50 次全 feed 重建；projector contract 证明只处理新增 batch，tool finish 原位更新对应 row。
 - [ ] B4. running→cancelling 的重复 Stop 点击只产生一次 cancel mutation；terminal/idle 不渲染可点击 Stop。
+
+## Master 首验整改验收（2026-08-28）
+
+- [ ] R3.1a. transport/server failure 显示为 error 而非 invalid，错误结果不形成无法绕过的 session cache；WorkspaceField 提供可见、键盘可达的 retry。
+- [ ] R3.1b. React StrictMode 测试证明同一稳定 requestKey 首次最多一次有效网络请求；首次失败后显式 retry 准确新增一次请求并可恢复为 valid。
+- [ ] R3.2a. 2,000-event baseline 追加一个 50-event batch 时，ActivityFeed/projector 只迭代和处理新增 50 项；非 reset 路径不扫描完整 retained tail。
+- [ ] R3.2b. 连续接收超过 2,000 events 后，RunStore tail、projector items 与 callId 索引均有明确上限，且保留 300/200 的挂载与加载顺序合同。
+- [ ] R3.2c. 高频 append 路径不再为 legacy RunStore value 对全事件尾执行 `filter/reduce`；实际 WorkspaceField/ProfileSelector/TaskComposer render 增量有自动化断言。
+- [ ] R3.3. 超过 120 字符的已脱敏工具参数仍能通过结构化公共字段显示准确主目标；不从可截断 argsSummary 反解析，且敏感值不泄漏。
+- [ ] R3.4a. Playwright 使用逐字符方式产生 50 次 task draft 更新，workspace validate 新增请求数为 0；50+ SSE、theme、locale、profile 后仍为 0。
+- [ ] R3.4b. running 状态重复 Stop 的真实 cancel mutation 计数为 1；error/recovery 具有 1280×720 production build 截图和可重复自动化场景。

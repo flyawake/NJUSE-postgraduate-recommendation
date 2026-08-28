@@ -235,3 +235,41 @@ verification_notice | terminal_notice | load_older
 - feedback 必须给出 Network 请求计数、render spy/Profiler 摘要、2,000-event 测试结果和 production Playwright 截图。
 - 记录新增依赖；期望为 0。若非 0，必须说明 bundle、许可证、安全与现有能力为何不足。
 - 回滚单位按批次提交；不得用回滚整个 task 的方式恢复 workspace 校验缺陷。
+
+## 14. Master 首次验收整改（2026-08-28）
+
+首次验收结论为“需整改”。现有产品化视觉、Composer 状态机、基础 Context 拆分和自动化回归总体方向正确，整改不得回退这些已完成能力；本轮只处理以下经源码复核确认的缺陷和证据缺口。
+
+### R3.1 Workspace error/retry 状态机必须形成真实闭环（P0）
+
+- `ApiError` 与 transport/server failure 必须进入 `error`，不能被降级为业务 `invalid`；稳定的业务有效/无效结果与临时错误必须采用不同缓存策略。
+- 显式 retry 必须绕过或失效当前 `requestKey` 的错误缓存，直接进入 `checking` 并产生且仅产生一次新网络请求；不能再次命中旧缓存后立即返回。
+- WorkspaceField 必须在 error 状态提供键盘可达、文案明确的重试动作；恢复不能只依赖修改路径或刷新页面。
+- 在 React StrictMode 下补充真实 hook/component 测试：同键首次稳定校验仍只有一次有效请求；首请求 transport/server failure 后点击 retry，网络请求总数准确增加 1 并可恢复为 valid；旧请求响应仍不能覆盖新 key。
+
+### R3.2 高频事件链必须达到 O(batch) 且有界（P0）
+
+- ActivityFeed 不得在每次 delta 上通过 `events.some(...)` 扫描 retained tail，也不得把整段 `events` 重新传入 projector 再逐项跳过；高频数据边界应直接提供新增 batch/cursor，只有明确 reset 才允许 O(retained events)。
+- `deriveLiveSnapshot` 不得仅为 legacy 大 Context 在每个 event append 上执行全尾 `filter/reduce`；删除无用热路径，或改为增量计数/低频 snapshot 边界。
+- 当 RunStore 的 2,000-event tail 开始淘汰旧事件后，projector 的 `items`、`actionByCallId` 和 `rowIndexByCallId` 也必须具有明确上限；不得因运行超过 2,000 events 而无限增长。
+- 保留初始最多 300、每次加载 200、顺序严格递增和 tool_finished 原位更新的既有 UX。新增合同测试应从已存在的 2,000-event baseline 一次追加 50 个事件，证明 projector 只接收/处理这 50 个新事件；再覆盖超过 2,000 的持续追加并断言事件、投影项和索引均有界。
+
+### R3.3 动作主目标不得依赖可截断展示字符串反解析（P1）
+
+- `actionTarget` 不能以 `JSON.parse(argsSummary)` 作为主目标的唯一来源。当前公共参数摘要超过 120 字符会被截断为非法 JSON，Web 再脱敏时可能退化为 `<arguments redacted>`，导致长路径/长命令的 action row 丢失准确目标。
+- 在安全、脱敏、长度有界的公共事件契约中提供结构化主目标，或采用等价的不可被展示摘要截断破坏的 DTO；React projector 只消费结构化字段。
+- 增加超过 120 字符路径/参数与含敏感值的合同测试，证明主目标仍准确、详情仍脱敏且 API 生成类型保持同步。
+
+### R3.4 补齐验收证据，不得以近似测试替代门槛（P1）
+
+- Playwright 当前 `fill("x".repeat(50))` 只触发一次整体输入事件；改用逐字符输入，证明 50 次 draft 更新期间 workspace validate 增量为 0。
+- render 隔离测试必须直接统计 WorkspaceField、ProfileSelector、TaskComposer 与 ActivityFeed/projector 的实际边界，而非只使用通用 Context probe 代替产品组件。
+- 增加 running 状态双击/并发触发 Stop 的 mutation 计数测试，断言 cancel API 只调用一次。
+- 增加 1280×720 error/recovery 生产截图及一致的自动化场景；现有 idle/running/success、dark、English、narrow 截图继续保留。
+
+### 整改边界与复验入口
+
+- 不实施 task_004 的多轮会话/文件预览、task_005 的 Think、task_006 的 Queue/Steer 或 task_007 的记忆。
+- 不新增状态库、虚拟列表库或第二套 UI 框架；如确有必要，必须先在 feedback 给出不可替代性与依赖审计。
+- Developer 只读取并整改 `task_003`，在原 feedback 追加整改说明、反例测试结果与新截图，然后将反馈重新登记为 `待评估`。
+- 复验必须重跑 Python、Ruff、API types、typecheck、lint、Vitest、production build、Playwright、production audit、wheel 与 `git diff --check`；Master 将重点独立复现 R3.1-R3.4。
