@@ -37,14 +37,11 @@ function parseBlock(block: string): SseEvent | null {
   return { event, id, data };
 }
 
-export async function subscribeToRunEvents(
-  runId: string,
+async function consumeSse(
+  url: string,
   options: SubscribeOptions
 ): Promise<void> {
-  const query = options.lastEventId
-    ? `?last_event_id=${encodeURIComponent(String(options.lastEventId))}`
-    : "";
-  const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/events${query}`, {
+  const response = await fetch(url, {
     headers: { Accept: "text/event-stream" },
     signal: options.signal,
   });
@@ -80,4 +77,31 @@ export async function subscribeToRunEvents(
   } finally {
     reader.releaseLock();
   }
+}
+
+export async function subscribeToRunEvents(
+  runId: string,
+  options: SubscribeOptions
+): Promise<void> {
+  const query = options.lastEventId
+    ? `?last_event_id=${encodeURIComponent(String(options.lastEventId))}`
+    : "";
+  await consumeSse(
+    `/api/runs/${encodeURIComponent(runId)}/events${query}`,
+    options
+  );
+}
+
+export async function subscribeToConversationEvents(
+  conversationId: string,
+  turnId: string,
+  options: SubscribeOptions
+): Promise<void> {
+  const query = options.lastEventId
+    ? `?after_seq=${encodeURIComponent(String(options.lastEventId))}`
+    : "";
+  await consumeSse(
+    `/api/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/sse${query}`,
+    options
+  );
 }

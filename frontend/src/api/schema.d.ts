@@ -195,6 +195,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/conversations/{conversation_id}/turns/{turn_id}/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Stream Snapshot */
+        get: operations["stream_snapshot_api_conversations__conversation_id__turns__turn_id__stream_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/conversations/{conversation_id}/unarchive": {
         parameters: {
             query?: never;
@@ -664,6 +681,18 @@ export interface components {
             model: string;
             /** Provider Id */
             provider_id: string;
+            /** Reasoning Effort */
+            reasoning_effort?: string | null;
+            /**
+             * Reasoning Mode
+             * @default auto
+             */
+            reasoning_mode: string;
+            /**
+             * Show Reasoning
+             * @default false
+             */
+            show_reasoning: boolean;
             /** Wire Api */
             wire_api: string;
         };
@@ -679,6 +708,14 @@ export interface components {
             model: string;
             /** Provider Id */
             provider_id: string;
+            /** Reasoning Effort */
+            reasoning_effort?: string | null;
+            /** Reasoning Mode */
+            reasoning_mode?: string | null;
+            /** Show Reasoning */
+            show_reasoning?: boolean | null;
+            /** Wire Api */
+            wire_api?: string | null;
         };
         /** ProviderPresetDTO */
         ProviderPresetDTO: {
@@ -760,6 +797,28 @@ export interface components {
             task: string;
             /** Workspace */
             workspace: string;
+        };
+        /** StreamCheckpointDTO */
+        StreamCheckpointDTO: {
+            /** Attempt */
+            attempt: number;
+            /** Channel */
+            channel: string;
+            /** Char Count */
+            char_count: number;
+            /** Event Seq */
+            event_seq: number;
+            /** Run Id */
+            run_id: string;
+            /** Text */
+            text: string;
+            /** Updated At */
+            updated_at: string;
+        };
+        /** StreamSnapshotDTO */
+        StreamSnapshotDTO: {
+            /** Checkpoints */
+            checkpoints?: components["schemas"]["StreamCheckpointDTO"][];
         };
         /**
          * ToolEventDTO
@@ -1366,6 +1425,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ToolEventDTO"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_snapshot_api_conversations__conversation_id__turns__turn_id__stream_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StreamSnapshotDTO"];
                 };
             };
             /** @description Validation Error */

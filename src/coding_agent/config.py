@@ -15,6 +15,7 @@ from .credentials import ResolvedCredential
 from .errors import ConfigError
 from .provider_config import (
     WIRE_API_CHAT_COMPLETIONS,
+    WIRE_API_RESPONSES,
     ProviderProfile,
 )
 
@@ -50,6 +51,9 @@ class ResolvedModelConnection:
     source: str
     profile_id: Optional[str] = None
     profile_display_name: Optional[str] = None
+    provider_id: str = "openai"
+    reasoning_mode: str = "auto"
+    reasoning_effort: Optional[str] = None
 
 
 def _profile_connection(
@@ -64,6 +68,9 @@ def _profile_connection(
         source=f"profile:{profile.provider_id}:{credential.source}",
         profile_id=profile.id,
         profile_display_name=profile.display_name,
+        provider_id=profile.provider_id,
+        reasoning_mode=profile.reasoning_mode,
+        reasoning_effort=profile.reasoning_effort,
     )
 
 
@@ -81,6 +88,7 @@ def _legacy_connection(env: Dict[str, str]) -> ResolvedModelConnection:
         base_url=base_url,
         wire_api="openai_chat_completions",
         source="legacy-env",
+        provider_id="openai",
     )
 
 
@@ -109,7 +117,7 @@ def resolve_connection(
         selected = profiles[active_profile]
 
     if selected is not None:
-        if selected.wire_api != "openai_chat_completions":
+        if selected.wire_api not in (WIRE_API_CHAT_COMPLETIONS, WIRE_API_RESPONSES):
             raise ConfigError(
                 f"profile {selected.id} 使用不支持的 wire_api：{selected.wire_api}"
             )

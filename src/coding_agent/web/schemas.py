@@ -62,6 +62,10 @@ class ProfileInput(StrictModel):
     base_url: str
     model: str
     credential_ref: Optional[str] = None
+    wire_api: Optional[str] = None
+    reasoning_mode: Optional[str] = None
+    reasoning_effort: Optional[str] = None
+    show_reasoning: Optional[bool] = None
 
 
 class CredentialSetRequest(StrictModel):
@@ -109,6 +113,9 @@ class ProfileDTO(BaseModel):
     base_url: str
     model: str
     credential_ref: Optional[str] = None
+    reasoning_mode: str = "auto"
+    reasoning_effort: Optional[str] = None
+    show_reasoning: bool = False
     credential: CredentialInfoDTO
 
 
@@ -194,6 +201,20 @@ class TurnDTO(BaseModel):
     result: Optional[Dict[str, Any]] = None
     error_code: Optional[str] = None
     active: bool = False
+
+
+class StreamCheckpointDTO(BaseModel):
+    run_id: str
+    attempt: int
+    channel: str
+    text: str
+    char_count: int
+    event_seq: int
+    updated_at: str
+
+
+class StreamSnapshotDTO(BaseModel):
+    checkpoints: List[StreamCheckpointDTO] = Field(default_factory=list)
 
 
 class TurnPageDTO(BaseModel):
@@ -290,7 +311,14 @@ EVENT_PAYLOAD_KEYS: Dict[str, frozenset] = {
     "run_started": frozenset({"task_chars"}),
     "step_started": frozenset({"char_count", "budget"}),
     "model_retry": frozenset({"attempt", "next_attempt", "reason"}),
-    "assistant_received": frozenset({"text_chars", "tool_call_count"}),
+    "model_stream_started": frozenset({"attempt"}),
+    "assistant_text_delta": frozenset({"delta", "attempt"}),
+    "reasoning_delta": frozenset({"delta", "attempt", "visibility"}),
+    "reasoning_summary_delta": frozenset({"delta", "summary_index", "attempt"}),
+    "stream_attempt_abandoned": frozenset({"attempt", "reason"}),
+    "assistant_received": frozenset(
+        {"text_chars", "tool_call_count", "attempt", "elapsed_ms"}
+    ),
     "tool_started": frozenset({"call_id", "name", "arguments", "target"}),
     "tool_finished": frozenset({"call_id", "name", "ok", "error_code", "summary"}),
     "completion_deferred": frozenset({"verification_status"}),

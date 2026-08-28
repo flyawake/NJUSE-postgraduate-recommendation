@@ -167,16 +167,86 @@ test.describe("Conversation product flow with the Fake Model", () => {
     await expect(page.getByRole("dialog", { name: "Conversations" })).not.toBeVisible();
   });
 
-  test("a hard server restart recovers the active turn as interrupted without replay", async ({ page }) => {
-    test.setTimeout(90_000);
+  test("streaming Think block appears and cancel leaves a clean interrupted state", async ({ page }) => {
     await page.goto("/");
     await createConversation(
       page,
       process.env.E2E_WORKSPACE_FRESH as string,
       /慢速假模型/
     );
-    await send(page, "重启恢复验证");
+    await send(page, "流式推理验证");
+    await expect(page.getByTestId("think-block")).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId("think-block").getByRole("button").click();
+    await expect(page.getByTestId("think-block")).toContainText("Fake visible reasoning");
+    await page.screenshot({
+      path: "feedback/task_005_evidence/streaming-expanded-1280x720-zh-light.png",
+    });
     await expect(page.getByRole("button", { name: "取消运行" })).toBeVisible({ timeout: 15_000 });
+    await page.getByRole("button", { name: "取消运行" }).click();
+    await expect(page.getByRole("button", { name: "开始运行" })).toBeVisible({ timeout: 45_000 });
+    // The interrupted attempt keeps its diagnostic Think/stream block but the
+    // run returns to a clean startable state.
+    await expect(page.getByTestId("think-block")).toHaveCount(1);
+    await page.screenshot({
+      path: "feedback/task_005_evidence/cancel-interrupted-1280x720-zh-light.png",
+    });
+  });
+
+  test("no-reasoning provider renders honest fallback without a Think block", async ({ page }) => {
+    await page.goto("/");
+    await createConversation(page, process.env.E2E_WORKSPACE_FRESH as string, /无推理假模型/);
+    await send(page, "无推理回退验证");
+    await expect(page.getByTestId("final-answer")).toContainText(
+      "已完成：greet 已实现并通过 py_compile 验证。",
+      { timeout: 45_000 }
+    );
+    await expect(page.getByTestId("think-block")).toHaveCount(0);
+    await page.screenshot({
+      path: "feedback/task_005_evidence/no-reasoning-1280x720-zh-light.png",
+    });
+  });
+
+  test("partial provider failure freezes the abandoned attempt before a clean retry", async ({ page }) => {
+    await page.goto("/");
+    await createConversation(page, process.env.E2E_WORKSPACE_FRESH as string, /重试假模型/);
+    await send(page, "部分流失败重试验证");
+    await expect(page.getByTestId("final-answer")).toContainText("Retry final answer.", {
+      timeout: 45_000,
+    });
+    await expect(page.getByText("该次流式尝试已放弃").first()).toBeVisible();
+    await expect(page.getByTestId("think-block")).toHaveCount(2);
+    await page.screenshot({
+      path: "feedback/task_005_evidence/retry-abandoned-1280x720-zh-light.png",
+    });
+  });
+
+  test("Responses adapter completes reasoning, tool output continuation and final text", async ({ page }) => {
+    await page.goto("/");
+    await createConversation(page, process.env.E2E_WORKSPACE_FRESH as string, /Responses 假模型/);
+    await send(page, "Responses 工具闭环验证");
+    await expect(page.getByTestId("final-answer")).toContainText("Responses 闭环完成。", {
+      timeout: 45_000,
+    });
+    const thinkBlocks = page.getByTestId("think-block");
+    await expect(thinkBlocks).toHaveCount(2);
+    await thinkBlocks.last().getByRole("button").click();
+    await expect(thinkBlocks.last()).toContainText("Responses visible summary");
+    expect(await page.locator("body").innerText()).not.toContain("opaque-fake-ciphertext");
+    await page.screenshot({
+      path: "feedback/task_005_evidence/responses-expanded-1280x720-zh-light.png",
+    });
+  });
+
+  test("a hard server restart recovers the active turn as interrupted without replay", async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.goto("/");
+    await createConversation(
+      page,
+      process.env.E2E_WORKSPACE as string,
+      /慢速假模型/
+    );
+    await send(page, "重启恢复验证");
+    await expect(page.getByRole("button", { name: "取消运行" })).toBeVisible({ timeout: 30_000 });
 
     const oldPid = Number(process.env.E2E_APP_PID);
     const port = process.env.E2E_APP_PORT as string;

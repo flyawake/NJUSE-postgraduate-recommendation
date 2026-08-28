@@ -10,7 +10,7 @@
 | [task_002](archive/task_002/plan.md) | 已归档 | P1 | [task_002_feedback.md](../feedback/archive/task_002_feedback.md)（已归档，通过） | 2026-08-27 第三次复验通过：A1-A22、R2、R3 全部闭环；238 passed/4 skipped、Vitest 33、Playwright 5、audit 0；真实模型 smoke 依规则 N/A，转后续任务 |
 | [task_003](archive/task_003/plan.md) | 已归档 | P0 | [task_003_feedback.md](../feedback/archive/task_003_feedback.md)（已归档，通过） | 2026-08-28 用户授权 Master 特例完成 R4；248 passed/4 skipped、Vitest 44、Playwright 7、audit 0，源码与视觉复验通过。 |
 | [task_004](archive/task_004/plan.md) | 已归档 | P0 | [task_004_feedback.md](../feedback/archive/task_004_feedback.md)（已归档，通过） | 2026-08-28 Master 源码验收并直接整改通过：持久多轮/恢复、三栏会话 UI、逐轮 ChangeSet/CAS 预览闭环；Python 272+3 定向、Vitest 46、Playwright 5、audit 0。 |
-| [task_005](task_005/plan.md) | 未开始 | P0 | —（待提交） | 依赖 task_004；provider-neutral streaming 与可展示 reasoning/summary 的折叠 Think |
+| [task_005](archive/task_005/plan.md) | 已归档 | P0 | [task_005_feedback.md](../feedback/archive/task_005_feedback.md)（已归档，通过） | 2026-08-28 Master 源码验收并直接整改通过：provider-neutral streaming、Chat/Responses 双 adapter、可展示 Think、断线恢复与 opaque continuation 闭环；304 passed/4 skipped、Vitest 53、Playwright 9。真实模型 smoke 按规则 N/A。 |
 | [task_006](task_006/plan.md) | 未开始 | P1 | —（待提交） | 依赖 task_004/task_005；Host 权威的 durable Queue/Steer 与 busy Composer |
 | [task_007](task_007/plan.md) | 未开始 | P1 | —（待提交） | 依赖 task_004，建议在 task_006 后实施；可控、可追溯、可删除的跨会话记忆 |
 | [task_008](task_008/plan.md) | 未开始 | P0 | —（待提交） | 依赖 task_003-task_007；集成、性能、安全、恢复、真实模型与最终交付门禁 |

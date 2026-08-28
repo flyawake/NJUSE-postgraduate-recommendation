@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -25,6 +26,8 @@ GREET_OLD = "# TODO: return greeting\n    pass"
 E2E_SENTINEL = "E2E-SENTINEL-9f3c1"
 GREET_NEW = f'    return f"Hello, {{name}}!"  # {E2E_SENTINEL}'
 FINAL_ANSWER = "已完成：greet 已实现并通过 py_compile 验证。"
+_RETRY_COUNTS: dict[str, int] = {}
+_RETRY_LOCK = threading.Lock()
 
 
 def _tool_call(call_id: str, name: str, arguments: dict) -> dict:
@@ -262,6 +265,206 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_stream(self, message: dict, include_reasoning: bool = True) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        def emit(delta: dict, finish_reason: str | None = None) -> None:
+            payload = {
+                "id": "chatcmpl-fake",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": "fake-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": delta,
+                        "finish_reason": finish_reason,
+                    }
+                ],
+            }
+            data = json.dumps(payload).encode("utf-8")
+            self.wfile.write(b"data: " + data + b"\n\n")
+            self.wfile.flush()
+
+        # Provider-visible reasoning: the fake returns a short
+        # reasoning_content unless the no-reasoning endpoint is used, so both
+        # the Think UI and the honest no-reasoning fallback can be tested.
+        if include_reasoning:
+            emit({"content": None, "reasoning_content": "Fake visible reasoning"})
+        content = message.get("content")
+        if isinstance(content, str) and content:
+            emit({"content": content, "tool_calls": None})
+        for call in message.get("tool_calls") or []:
+            emit(
+                {
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": call.get("id"),
+                            "type": "function",
+                            "function": call.get("function"),
+                        }
+                    ],
+                }
+            )
+        finish_reason = "tool_calls" if message.get("tool_calls") else "stop"
+        emit({"content": None, "tool_calls": None}, finish_reason)
+        self.close_connection = True
+
+    def _send_truncated_stream(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        payload = {
+            "id": "chatcmpl-retry",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "fake-retry",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "content": "abandoned partial",
+                        "reasoning_content": "abandoned thought",
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        }
+        self.wfile.write(b"data: " + json.dumps(payload).encode("utf-8") + b"\n\n")
+        self.wfile.flush()
+        self.close_connection = True
+
+    def _send_responses_stream(self, input_items: list[dict]) -> None:
+        has_tool_output = any(
+            item.get("type") == "function_call_output" for item in input_items
+        )
+        has_reasoning = any(item.get("type") == "reasoning" for item in input_items)
+        if has_tool_output and not has_reasoning:
+            self._send({"error": "missing reasoning continuation"}, 400)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        def emit(payload: dict) -> None:
+            self.wfile.write(b"data: " + json.dumps(payload).encode("utf-8") + b"\n\n")
+            self.wfile.flush()
+
+        emit(
+            {
+                "type": "response.reasoning_summary_text.delta",
+                "sequence_number": 1,
+                "item_id": "rs_fake",
+                "output_index": 0,
+                "summary_index": 0,
+                "delta": "Responses visible summary",
+            }
+        )
+        emit(
+            {
+                "type": "response.output_item.done",
+                "sequence_number": 2,
+                "output_index": 0,
+                "item": {
+                    "type": "reasoning",
+                    "id": "rs_fake",
+                    "encrypted_content": "opaque-fake-ciphertext",
+                    "summary": [
+                        {
+                            "type": "summary_text",
+                            "text": "Responses visible summary",
+                        }
+                    ],
+                    "status": "completed",
+                },
+            }
+        )
+        if not has_tool_output:
+            emit(
+                {
+                    "type": "response.output_item.added",
+                    "sequence_number": 2,
+                    "output_index": 1,
+                    "item": {
+                        "type": "function_call",
+                        "id": "fc_fake",
+                        "call_id": "call_responses_1",
+                        "name": "glob",
+                        "arguments": "",
+                        "status": "in_progress",
+                    },
+                }
+            )
+            emit(
+                {
+                    "type": "response.function_call_arguments.delta",
+                    "sequence_number": 3,
+                    "item_id": "fc_fake",
+                    "output_index": 1,
+                    "delta": '{"pattern":"**/*.py","path":"."}',
+                }
+            )
+        else:
+            emit(
+                {
+                    "type": "response.output_text.delta",
+                    "sequence_number": 2,
+                    "item_id": "msg_fake",
+                    "output_index": 1,
+                    "content_index": 0,
+                    "delta": "Responses 闭环完成。",
+                    "logprobs": [],
+                }
+            )
+        emit(
+            {
+                "type": "response.completed",
+                "sequence_number": 4,
+                "response": {
+                    "id": "resp_fake",
+                    "object": "response",
+                    "created_at": 0,
+                    "status": "completed",
+                    "error": None,
+                    "incomplete_details": None,
+                    "instructions": None,
+                    "max_output_tokens": None,
+                    "model": "fake-responses",
+                    "output": [],
+                    "parallel_tool_calls": True,
+                    "previous_response_id": None,
+                    "reasoning": {"effort": "low", "summary": "auto"},
+                    "store": False,
+                    "temperature": None,
+                    "text": {"format": {"type": "text"}},
+                    "tool_choice": "auto",
+                    "tools": [],
+                    "top_p": None,
+                    "truncation": "disabled",
+                    "usage": {
+                        "input_tokens": 1,
+                        "input_tokens_details": {"cached_tokens": 0},
+                        "output_tokens": 1,
+                        "output_tokens_details": {"reasoning_tokens": 1},
+                        "total_tokens": 2,
+                    },
+                    "metadata": {},
+                },
+            }
+        )
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+        self.close_connection = True
+
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
         if self.path == "/health":
             self._send({"status": "ok"})
@@ -276,6 +479,9 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._send({"error": "bad request"}, 400)
             return
+        if self.path.endswith("/v1-responses/responses"):
+            self._send_responses_stream(body.get("input") or [])
+            return
         if self.path.endswith("/v1-shot/chat/completions"):
             time.sleep(0.5)
         elif self.path.endswith("/v1-slow/chat/completions"):
@@ -288,10 +494,30 @@ class Handler(BaseHTTPRequestHandler):
             # while keeping the whole closed loop under ~8 seconds.
             time.sleep(0.5)
         messages = body.get("messages") or []
-        if self.path.endswith("/v1-shot/chat/completions"):
-            self._send(_choice(next_shot_response(messages), "stop"))
+        if self.path.endswith("/v1-retry/chat/completions"):
+            key = next(
+                (
+                    str(message.get("content") or "")
+                    for message in messages
+                    if message.get("role") == "user"
+                ),
+                "retry",
+            )
+            with _RETRY_LOCK:
+                count = _RETRY_COUNTS.get(key, 0)
+                _RETRY_COUNTS[key] = count + 1
+            if count == 0:
+                self._send_truncated_stream()
+            else:
+                self._send_stream(_assistant_text("Retry final answer."))
             return
-        self._send(_choice(next_response(messages), "stop"))
+        is_shot = self.path.endswith("/v1-shot/chat/completions")
+        message = next_shot_response(messages) if is_shot else next_response(messages)
+        include_reasoning = not self.path.endswith("/v1-no-reasoning/chat/completions")
+        if body.get("stream"):
+            self._send_stream(message, include_reasoning=include_reasoning)
+            return
+        self._send(_choice(message, "stop"))
 
 
 def main() -> int:

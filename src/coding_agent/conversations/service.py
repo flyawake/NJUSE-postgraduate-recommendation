@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
@@ -34,6 +35,7 @@ from ..model_client import ModelClient, ModelClientFactory
 from ..models import AgentEvent, RunResult, RunStatus, SystemMessage, UserMessage
 from ..prompt import SYSTEM_PROMPT
 from ..provider_config import ProfileError, ProfileStore, ProviderProfile, default_home
+from ..streaming import ModelRequestOptions
 from ..tools import build_default_tools
 from ..tools.executor import ToolExecutor
 from ..tools.observation import FileObservationTracker
@@ -68,6 +70,17 @@ def _canonical_workspace_key(path: Path) -> str:
 
 
 class _PersistEventSink:
+    """Buffered public-event sink for stream delta checkpointing.
+
+    The worker's AgentLoop may emit thousands of small text/reasoning deltas.
+    Instead of one SQLite commit per chunk, this sink coalesces events in
+    memory and flushes a bounded batch at a fixed event/character threshold,
+    always flushing the terminal ``run_finished`` event immediately.
+    """
+
+    _MAX_BUFFERED_EVENTS = 100
+    _MAX_BUFFERED_CHARS = 16_384
+
     def __init__(
         self,
         repository: SQLiteConversationRepository,
@@ -80,17 +93,124 @@ class _PersistEventSink:
         self._tid = turn_id
         self._run_id = run_id
         self._seq = 0
+        self._pending: List[Dict[str, Any]] = []
+        self._delta_entries: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+        self._chars = 0
+        self._checkpoints: Dict[Tuple[int, str], List[str]] = {}
+        self._checkpoint_seqs: Dict[Tuple[int, str], int] = {}
+        self._last_flush = time.monotonic()
+        self._flush_interval = 0.25
 
     def emit(self, event: AgentEvent) -> None:
         self._seq += 1
-        self._repo.append_public_event(
-            conversation_id=self._cid,
-            turn_id=self._tid,
-            run_id=self._run_id,
-            event_seq=self._seq,
-            kind=event.type,
-            payload=event.to_dict(),
+        payload = event.to_dict()
+        delta = event.payload.get("delta")
+        attempt = event.payload.get("attempt")
+        is_delta = event.type in {
+            "assistant_text_delta",
+            "reasoning_delta",
+            "reasoning_summary_delta",
+        } and isinstance(delta, str)
+        delta_key = (
+            event.type,
+            attempt,
+            event.step,
+            event.payload.get("summary_index"),
+            event.payload.get("visibility"),
         )
+        current = self._delta_entries.get(delta_key) if is_delta else None
+        if current is not None:
+            current["event_seq"] = self._seq
+            current["payload"]["sequence"] = event.sequence
+            current["delta_parts"].append(delta)
+        else:
+            entry: Dict[str, Any] = {
+                "conversation_id": self._cid,
+                "turn_id": self._tid,
+                "run_id": self._run_id,
+                "event_seq": self._seq,
+                "kind": event.type,
+                "payload": payload,
+                "attempt": attempt,
+                "step": event.step,
+            }
+            if is_delta:
+                entry["delta_parts"] = [delta]
+                self._delta_entries[delta_key] = entry
+            else:
+                # A lifecycle/tool event is an ordering barrier. Deltas after
+                # it must not merge backward across the state transition.
+                self._delta_entries = {}
+            self._pending.append(entry)
+        self._chars += _event_size(event.type, payload)
+        self._update_checkpoint(event)
+        if (
+            event.type == "run_finished"
+            or len(self._pending) >= self._MAX_BUFFERED_EVENTS
+            or self._chars >= self._MAX_BUFFERED_CHARS
+            or time.monotonic() - self._last_flush >= self._flush_interval
+        ):
+            self.flush()
+
+    def _update_checkpoint(self, event: AgentEvent) -> None:
+        attempt = event.payload.get("attempt")
+        if not isinstance(attempt, int):
+            return
+        delta = event.payload.get("delta")
+        if not isinstance(delta, str) or not delta:
+            return
+        if event.type == "assistant_text_delta":
+            channel = "text"
+        elif event.type == "reasoning_delta":
+            channel = "reasoning"
+        elif event.type == "reasoning_summary_delta":
+            channel = "summary"
+        else:
+            return
+        key = (attempt, channel)
+        self._checkpoints.setdefault(key, []).append(delta)
+        self._checkpoint_seqs[key] = self._seq
+
+    def flush(self) -> None:
+        if not self._pending and not self._checkpoints:
+            return
+        pending = self._pending
+        for entry in pending:
+            parts = entry.pop("delta_parts", None)
+            entry.pop("attempt", None)
+            entry.pop("step", None)
+            if parts is not None:
+                entry["payload"]["payload"]["delta"] = "".join(parts)
+        checkpoint_entries = [
+            {
+                "conversation_id": self._cid,
+                "turn_id": self._tid,
+                "run_id": self._run_id,
+                "attempt": attempt,
+                "channel": channel,
+                "text": "".join(parts),
+                "event_seq": self._checkpoint_seqs[(attempt, channel)],
+            }
+            for (attempt, channel), parts in self._checkpoints.items()
+        ]
+        self._pending = []
+        self._delta_entries = {}
+        self._checkpoints = {}
+        self._checkpoint_seqs = {}
+        self._chars = 0
+        self._last_flush = time.monotonic()
+        if pending:
+            self._repo.append_public_events_batch(pending)
+        if checkpoint_entries:
+            self._repo.upsert_stream_checkpoints_batch(checkpoint_entries)
+
+
+def _event_size(kind: str, payload: Dict[str, Any]) -> int:
+    return (
+        16
+        + len(kind)
+        + sum(len(str(key)) + len(str(value)) for key, value in payload.items())
+    )
 
 
 class ConversationService:
@@ -307,7 +427,7 @@ class ConversationService:
             raise ConversationServiceError(
                 "invalid_task", "任务内容不能为空", field="task"
             )
-        connection, _profile = self._resolve_connection(record.profile_id)
+        connection, profile = self._resolve_connection(record.profile_id)
         workspace = Path(record.workspace_path)
         if not workspace.is_dir():
             raise ConversationServiceError(
@@ -359,6 +479,10 @@ class ConversationService:
                 journal=journal,
                 collector=collector,
                 history=history,
+                request_options=ModelRequestOptions(
+                    reasoning_mode=profile.reasoning_mode if profile else "auto",
+                    reasoning_effort=profile.reasoning_effort if profile else None,
+                ),
             )
         except Exception as exc:
             self._repository.update_turn_state(
@@ -426,6 +550,12 @@ class ConversationService:
             after_seq=after_seq,
             limit=limit,
         )
+
+    def get_stream_snapshot(
+        self, conversation_id: str, turn_id: str
+    ) -> List[Dict[str, Any]]:
+        self._require_turn(conversation_id, turn_id)
+        return self._repository.get_stream_checkpoints(conversation_id, turn_id)
 
     def get_change_set(
         self, conversation_id: str, turn_id: str
@@ -676,7 +806,8 @@ class ConversationService:
         try:
             config = self.profile_store.load()
             profiles = {p.id: p for p in config.profiles.values()}
-            selected = profiles.get(profile_id) if profile_id else None
+            selected_id = profile_id or config.active_profile
+            selected = profiles.get(selected_id) if selected_id else None
             connection = resolve_connection(
                 profiles=profiles,
                 active_profile=config.active_profile,
@@ -704,7 +835,9 @@ class ConversationService:
         journal: CanonicalJournal,
         collector: ToolChangeCollector,
         history: CanonicalHistory,
+        request_options: Optional[ModelRequestOptions] = None,
     ) -> AgentLoop:
+        options = request_options or ModelRequestOptions()
         if self._loop_builder is not None:
             return self._loop_builder(
                 connection=connection,
@@ -716,6 +849,7 @@ class ConversationService:
                 journal=journal,
                 collector=collector,
                 history=history,
+                request_options=options,
             )
         tracker = FileObservationTracker()
         registry = build_default_tools(
@@ -738,6 +872,7 @@ class ConversationService:
             is_cancelled=cancel_event.is_set,
             event_sink=sink,
             journal=journal,
+            request_options=options,
         )
 
     def _run_worker_with_history(

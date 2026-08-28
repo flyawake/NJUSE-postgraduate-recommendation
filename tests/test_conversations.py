@@ -29,6 +29,7 @@ from coding_agent.models import (
     ToolCall,
     UserMessage,
 )
+from coding_agent.streaming import StreamCompleted, StreamStarted, TextDelta
 from coding_agent.tools.base import PreparedCall, ToolEffect, ToolOutcome, ToolSpec
 
 
@@ -81,6 +82,21 @@ class WriteThenFinalModel:
         return AssistantTurn(text="done", tool_calls=())
 
 
+class TextStreamingModel:
+    def __init__(self) -> None:
+        self.requests = 0
+
+    def request(self, messages, tools):
+        raise AssertionError("should stream")
+
+    def stream(self, messages, tools, *, options=None, cancel=None):
+        self.requests += 1
+        yield StreamStarted()
+        yield TextDelta(0, "hello ")
+        yield TextDelta(0, "world")
+        yield StreamCompleted(finish_reason="stop")
+
+
 class BlockingModel:
     def __init__(self) -> None:
         self.release = True
@@ -115,6 +131,37 @@ def make_service(tmp_path, model, env=None):
 
 
 class TestRepositoryBasics:
+    def test_v4_stream_checkpoint_migration_adds_event_cursor(self, tmp_path):
+        path = tmp_path / "v4.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            CREATE TABLE schema_meta(version INTEGER NOT NULL, applied_at TEXT NOT NULL);
+            INSERT INTO schema_meta VALUES (4, 'old');
+            CREATE TABLE stream_checkpoints(
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                attempt INTEGER NOT NULL,
+                channel TEXT NOT NULL,
+                text TEXT NOT NULL,
+                char_count INTEGER NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(turn_id, attempt, channel)
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+        repo = SQLiteConversationRepository(path, create_backups=False)
+        repo.initialize()
+        columns = {
+            row["name"]
+            for row in repo._connect().execute("PRAGMA table_info(stream_checkpoints)")
+        }
+        assert "event_seq" in columns
+
     def test_create_and_crud(self, workspace_factory, tmp_path):
         repo = SQLiteConversationRepository(tmp_path / "state.db")
         repo.initialize()
@@ -155,6 +202,54 @@ class TestRepositoryBasics:
 
         repo.delete_conversation(conv.id, expected_version=4)
         assert repo.get_conversation(conv.id) is None
+
+    def test_stream_checkpoint_roundtrip(self, workspace_factory, tmp_path):
+        repo = SQLiteConversationRepository(tmp_path / "state.db")
+        repo.initialize()
+        ws = workspace_factory()
+        conv = repo.create_conversation(
+            workspace_path=str(ws), workspace_key=str(ws), profile_id=None, title="t"
+        )
+        turn = repo.create_turn(conv.id, user_text="stream", run_id="run")
+        repo.upsert_stream_checkpoints_batch(
+            [
+                {
+                    "conversation_id": conv.id,
+                    "turn_id": turn.id,
+                    "run_id": "run",
+                    "attempt": 1,
+                    "channel": "text",
+                    "text": "hello ",
+                    "event_seq": 1,
+                },
+                {
+                    "conversation_id": conv.id,
+                    "turn_id": turn.id,
+                    "run_id": "run",
+                    "attempt": 1,
+                    "channel": "reasoning",
+                    "text": "thinking",
+                    "event_seq": 2,
+                },
+            ]
+        )
+        tail = {
+            "conversation_id": conv.id,
+            "turn_id": turn.id,
+            "run_id": "run",
+            "attempt": 1,
+            "channel": "text",
+            "text": "world",
+            "event_seq": 3,
+        }
+        repo.upsert_stream_checkpoints_batch([tail])
+        # An ambiguous retry of the same committed batch is idempotent.
+        repo.upsert_stream_checkpoints_batch([tail])
+        rows = repo.get_stream_checkpoints(conv.id, turn.id)
+        by_channel = {row["channel"]: row["text"] for row in rows}
+        assert by_channel["text"] == "hello world"
+        assert by_channel["reasoning"] == "thinking"
+        assert {row["channel"]: row["event_seq"] for row in rows}["text"] == 3
 
     def test_cursor_pagination_stable(self, workspace_factory, tmp_path):
         repo = SQLiteConversationRepository(tmp_path / "state.db")
@@ -406,6 +501,24 @@ class TestConversationService:
                 getattr(message, "content", "") == "first task in A"
                 for message in history
             )
+        finally:
+            service.shutdown(timeout=5)
+
+    def test_stream_snapshot_recovers_full_text(self, tmp_path, workspace_factory):
+        model = TextStreamingModel()
+        service = make_service(tmp_path, model)
+        try:
+            ws = workspace_factory()
+            conv = service.create_conversation(workspace_path=str(ws), profile_id=None)
+            turn = service.start_turn(conv["id"], user_text="stream text")
+            wait_turn(service, conv["id"], turn["id"])
+            snapshot = service.get_stream_snapshot(conv["id"], turn["id"])
+            text = next(
+                item["text"]
+                for item in snapshot
+                if item["channel"] == "text" and item["attempt"] == 1
+            )
+            assert text == "hello world"
         finally:
             service.shutdown(timeout=5)
 

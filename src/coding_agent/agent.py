@@ -33,6 +33,13 @@ from .public_redaction import (
     public_tool_target,
     redact_command_summary,
 )
+from .streaming import (
+    ModelRequestOptions,
+    ReasoningDelta,
+    ReasoningSummaryDelta,
+    TextDelta,
+    TurnStreamAccumulator,
+)
 from .tools.base import (
     ABORTED_BEFORE_DISPATCH,
     PROTOCOL_ERROR,
@@ -107,6 +114,7 @@ class AgentLoop:
         is_cancelled: Optional[Callable[[], bool]] = None,
         system_prompt: str = SYSTEM_PROMPT,
         journal: Optional[Any] = None,
+        request_options: ModelRequestOptions = ModelRequestOptions(),
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
@@ -126,6 +134,7 @@ class AgentLoop:
         self._is_cancelled = is_cancelled or (lambda: False)
         self._system_prompt = system_prompt
         self._journal = journal
+        self._request_options = request_options
 
         self.phase = LoopPhase.INITIALIZING
         self._history = CanonicalHistory()
@@ -276,17 +285,29 @@ class AgentLoop:
     def _handle_requesting(self) -> None:
         assert self._last_view is not None
         turn: Optional[AssistantTurn] = None
+        successful_stream_attempt: Optional[int] = None
+        stream_elapsed_ms: Optional[int] = None
         for attempt in range(1, self._max_provider_attempts + 1):
             if self._is_cancelled():
                 self._finish(RunStatus.INTERRUPTED, StopReason.INTERRUPTED)
                 return
             self._provider_attempt_count += 1
+            stream_attempt = self._provider_attempt_count
             try:
-                turn = self._model_client.request(
-                    self._last_view.messages, self._tool_schemas
-                )
+                if hasattr(self._model_client, "stream"):
+                    turn, _had_partial, stream_elapsed_ms = self._consume_stream(
+                        stream_attempt
+                    )
+                    successful_stream_attempt = stream_attempt
+                else:
+                    turn = self._model_client.request(
+                        self._last_view.messages, self._tool_schemas
+                    )
                 break
             except ModelRequestError as exc:
+                if self._is_cancelled():
+                    self._finish(RunStatus.INTERRUPTED, StopReason.INTERRUPTED)
+                    return
                 if not exc.retryable or attempt >= self._max_provider_attempts:
                     self._finish(
                         RunStatus.ERROR,
@@ -311,7 +332,12 @@ class AgentLoop:
             self._finish(RunStatus.ERROR, StopReason.MODEL_ERROR)
             return
         self._append_history(
-            AssistantMessage(text=turn.text or "", tool_calls=tuple(turn.tool_calls))
+            AssistantMessage(
+                text=turn.text or "",
+                tool_calls=tuple(turn.tool_calls),
+                reasoning=turn.reasoning,
+                continuations=turn.continuations,
+            )
         )
         self._last_assistant = turn
         self._emit(
@@ -320,9 +346,80 @@ class AgentLoop:
             payload={
                 "text_chars": len(turn.text),
                 "tool_call_count": len(turn.tool_calls),
+                **(
+                    {"attempt": successful_stream_attempt}
+                    if successful_stream_attempt is not None
+                    else {}
+                ),
+                **(
+                    {"elapsed_ms": stream_elapsed_ms}
+                    if stream_elapsed_ms is not None
+                    else {}
+                ),
             },
         )
         self._transit(LoopPhase.HANDLING_RESPONSE)
+
+    def _consume_stream(self, attempt: int):
+        assert self._last_view is not None
+        accumulator = TurnStreamAccumulator()
+        started_at = time.monotonic()
+        self._emit(
+            event_types.EVENT_MODEL_STREAM_STARTED,
+            step=self._step_count,
+            payload={"attempt": attempt},
+        )
+        try:
+            events = self._model_client.stream(
+                self._last_view.messages,
+                self._tool_schemas,
+                options=self._request_options,
+                cancel=self._is_cancelled,
+            )
+            for event in events:
+                # Validate first. An illegal provider fragment must never be
+                # published or checkpointed before the protocol boundary
+                # rejects it.
+                accumulator.absorb(event)
+                if isinstance(event, TextDelta):
+                    self._emit(
+                        event_types.EVENT_ASSISTANT_TEXT_DELTA,
+                        step=self._step_count,
+                        payload={"delta": event.delta, "attempt": attempt},
+                    )
+                elif isinstance(event, ReasoningDelta):
+                    if self._request_options.reasoning_mode != "off":
+                        self._emit(
+                            event_types.EVENT_REASONING_DELTA,
+                            step=self._step_count,
+                            payload={
+                                "delta": event.delta,
+                                "attempt": attempt,
+                                "visibility": event.visibility,
+                            },
+                        )
+                elif isinstance(event, ReasoningSummaryDelta):
+                    if self._request_options.reasoning_mode != "off":
+                        self._emit(
+                            event_types.EVENT_REASONING_SUMMARY_DELTA,
+                            step=self._step_count,
+                            payload={
+                                "delta": event.delta,
+                                "summary_index": event.summary_index,
+                                "attempt": attempt,
+                            },
+                        )
+            turn = accumulator.to_turn()
+            elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
+            return turn, accumulator.has_output, elapsed_ms
+        except Exception:
+            if accumulator.has_output:
+                self._emit(
+                    event_types.EVENT_STREAM_ATTEMPT_ABANDONED,
+                    step=self._step_count,
+                    payload={"attempt": attempt, "reason": "stream_failed"},
+                )
+            raise
 
     def _handle_response(self) -> None:
         turn = self._last_assistant

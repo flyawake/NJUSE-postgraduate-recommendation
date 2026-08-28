@@ -42,6 +42,7 @@ from ..provider_config import (
     ProviderProfile,
     default_home,
 )
+from ..streaming import ModelRequestOptions
 from ..tools import build_default_tools
 from ..tools.executor import ToolExecutor
 from ..tools.observation import FileObservationTracker
@@ -297,6 +298,29 @@ class RunController:
             event.set()
         if worker is not None and worker.is_alive():
             worker.join(timeout=timeout)
+            if worker.is_alive():
+                # A worker stuck in a provider call may not observe the cancel
+                # event within the shutdown budget. Expose one deterministic
+                # terminal INTERRUPTED snapshot instead of leaving the app in a
+                # phantom running state; the late worker result is ignored by
+                # the terminal compare-and-set.
+                self._mark_shutdown_interrupted()
+
+    def _mark_shutdown_interrupted(self) -> None:
+        with self._lock:
+            if self._state != "running":
+                return
+            self._finished_flag = True
+            self._state = "terminal"
+            self._exception_status = "INTERRUPTED"
+            self._exception_stop_reason = "INTERRUPTED"
+            self._phase = LoopPhase.INTERRUPTED.value
+            self._finished_wall = time.time()
+            self._finished_mono = time.monotonic()
+            self._terminal_error = ErrorDetail(
+                code="interrupted",
+                message="服务关闭时运行被中断",
+            )
 
     # ------------------------------------------------------------ validation
 
@@ -398,6 +422,10 @@ class RunController:
             max_steps=DEFAULT_MAX_STEPS,
             is_cancelled=cancel_event.is_set,
             event_sink=_EventSinkAdapter(sink),
+            request_options=ModelRequestOptions(
+                reasoning_mode=connection.reasoning_mode,
+                reasoning_effort=connection.reasoning_effort,
+            ),
         )
 
     def _run_worker(self, loop: AgentLoop, task: str, run_id: str) -> None:

@@ -723,6 +723,27 @@
             "title": "Provider Id",
             "type": "string"
           },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort"
+          },
+          "reasoning_mode": {
+            "default": "auto",
+            "title": "Reasoning Mode",
+            "type": "string"
+          },
+          "show_reasoning": {
+            "default": false,
+            "title": "Show Reasoning",
+            "type": "boolean"
+          },
           "wire_api": {
             "title": "Wire Api",
             "type": "string"
@@ -769,6 +790,50 @@
           "provider_id": {
             "title": "Provider Id",
             "type": "string"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort"
+          },
+          "reasoning_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Mode"
+          },
+          "show_reasoning": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Show Reasoning"
+          },
+          "wire_api": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wire Api"
           }
         },
         "required": [
@@ -1021,6 +1086,62 @@
           "task"
         ],
         "title": "RunStartRequest",
+        "type": "object"
+      },
+      "StreamCheckpointDTO": {
+        "properties": {
+          "attempt": {
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "channel": {
+            "title": "Channel",
+            "type": "string"
+          },
+          "char_count": {
+            "title": "Char Count",
+            "type": "integer"
+          },
+          "event_seq": {
+            "title": "Event Seq",
+            "type": "integer"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "attempt",
+          "channel",
+          "text",
+          "char_count",
+          "event_seq",
+          "updated_at"
+        ],
+        "title": "StreamCheckpointDTO",
+        "type": "object"
+      },
+      "StreamSnapshotDTO": {
+        "properties": {
+          "checkpoints": {
+            "items": {
+              "$ref": "#/components/schemas/StreamCheckpointDTO"
+            },
+            "title": "Checkpoints",
+            "type": "array"
+          }
+        },
+        "title": "StreamSnapshotDTO",
         "type": "object"
       },
       "ToolEventDTO": {
@@ -2179,6 +2300,54 @@
           }
         },
         "summary": "Turn Events"
+      }
+    },
+    "/api/conversations/{conversation_id}/turns/{turn_id}/stream": {
+      "get": {
+        "operationId": "stream_snapshot_api_conversations__conversation_id__turns__turn_id__stream_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "turn_id",
+            "required": true,
+            "schema": {
+              "title": "Turn Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamSnapshotDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Snapshot"
       }
     },
     "/api/conversations/{conversation_id}/unarchive": {

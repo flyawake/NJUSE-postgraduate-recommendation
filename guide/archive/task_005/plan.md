@@ -51,13 +51,13 @@
 
 ## 6. 验收标准
 
-- [ ] assistant 正文在模型完成前逐步显示，完成后的 canonical text 与所有 delta 拼接严格一致。
-- [ ] DeepSeek-compatible reasoning_content 和 OpenAI Responses reasoning summary 通过统一事件显示在可折叠 Think 块；不支持时无虚假思考文本。
-- [ ] streaming tool call fragments 聚合为合法 ToolCall，canonical tool pairing 与 completion verification 不回归。
-- [ ] refresh/SSE reset/reconnect 后正文与 Think 内容无缺失、重复或乱序；2,000 个小 delta 不造成 2,000 次持久化 fsync 或无界 DOM。
-- [ ] cancel 中止上游 stream；partial 后失败/重试不会把两次 attempt 文本拼接，UI 明确标记已放弃 attempt。
-- [ ] profile 可选择 Chat Completions/Responses 与 reasoning 策略，旧配置无损迁移，密钥仍只写不读。
-- [ ] Fake Model 覆盖 content/reasoning/tool fragments；有合法凭据时按 capability 做真实 smoke，无凭据可 N/A 但两种协议 fake 闭环必须通过。
+- [x] assistant 正文在模型完成前逐步显示，完成后的 canonical text 与所有 delta 拼接严格一致。
+- [x] DeepSeek-compatible reasoning_content 和 OpenAI Responses reasoning summary 通过统一事件显示在可折叠 Think 块；不支持时无虚假思考文本。
+- [x] streaming tool call fragments 聚合为合法 ToolCall，canonical tool pairing 与 completion verification 不回归。
+- [x] refresh/SSE reset/reconnect 后正文与 Think 内容无缺失、重复或乱序；2,000 个小 delta 不造成 2,000 次持久化 fsync 或无界 DOM。
+- [x] cancel 中止上游 stream；partial 后失败/重试不会把两次 attempt 文本拼接，UI 明确标记已放弃 attempt。
+- [x] profile 可选择 Chat Completions/Responses 与 reasoning 策略，旧配置无损迁移，密钥仍只写不读。
+- [x] Fake Model 覆盖 content/reasoning/tool fragments；有合法凭据时按 capability 做真实 smoke，无凭据可 N/A 但两种协议 fake 闭环必须通过。
 
 ## 7. 风险与注意事项
 

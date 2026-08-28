@@ -11,6 +11,7 @@ import base64
 import json
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,7 +28,7 @@ from .domain import (
     payload_to_canonical_message,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 DEFAULT_BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA_SQL = """
@@ -127,6 +128,20 @@ CREATE TABLE IF NOT EXISTS public_events (
     UNIQUE (run_id, event_seq)
 );
 
+CREATE TABLE IF NOT EXISTS stream_checkpoints (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    channel TEXT NOT NULL,
+    text TEXT NOT NULL,
+    char_count INTEGER NOT NULL,
+    event_seq INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    UNIQUE (turn_id, attempt, channel)
+);
+
 CREATE TABLE IF NOT EXISTS turn_change_sets (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -181,8 +196,24 @@ CREATE TABLE IF NOT EXISTS artifact_refs (
 """
 
 
+_last_timestamp: float = 0.0
+
+
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    """Monotonic UTC timestamp string.
+
+    The database uses ``last_activity_at`` as part of its opaque cursor and
+    assumes inserted rows sort after existing rows. Free-running Windows
+    timestamps can repeat within a microsecond under rapid inserts, so we
+    nudge the clock forward by 1us whenever the previous value is not strictly
+    larger.
+    """
+    global _last_timestamp
+    now = time.time()
+    if now <= _last_timestamp:
+        now = _last_timestamp + 0.000001
+    _last_timestamp = now
+    return datetime.fromtimestamp(now, timezone.utc).isoformat(timespec="microseconds")
 
 
 def _cursor_token(activity: str, conversation_id: str) -> str:
@@ -317,6 +348,38 @@ class SQLiteConversationRepository:
                             WHERE idempotency_key IS NOT NULL
                             """
                         )
+                    if current_version <= 3:
+                        conn.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS stream_checkpoints (
+                                id TEXT PRIMARY KEY,
+                                conversation_id TEXT NOT NULL
+                                    REFERENCES conversations(id) ON DELETE CASCADE,
+                                turn_id TEXT NOT NULL
+                                    REFERENCES turns(id) ON DELETE CASCADE,
+                                run_id TEXT NOT NULL,
+                                attempt INTEGER NOT NULL,
+                                channel TEXT NOT NULL,
+                                text TEXT NOT NULL,
+                                char_count INTEGER NOT NULL,
+                                event_seq INTEGER NOT NULL DEFAULT 0,
+                                updated_at TEXT NOT NULL,
+                                UNIQUE (turn_id, attempt, channel)
+                            )
+                            """
+                        )
+                    if current_version <= 4:
+                        columns = {
+                            str(row["name"])
+                            for row in conn.execute(
+                                "PRAGMA table_info(stream_checkpoints)"
+                            ).fetchall()
+                        }
+                        if "event_seq" not in columns:
+                            conn.execute(
+                                "ALTER TABLE stream_checkpoints "
+                                "ADD COLUMN event_seq INTEGER NOT NULL DEFAULT 0"
+                            )
                     conn.execute("DELETE FROM schema_meta")
                     conn.execute(
                         "INSERT INTO schema_meta(version, applied_at) VALUES (?, ?)",
@@ -1356,6 +1419,51 @@ class SQLiteConversationRepository:
 
     # ------------------------------------------------------------ public events
 
+    def append_public_events_batch(
+        self,
+        entries: Sequence[Dict[str, Any]],
+    ) -> None:
+        """Insert a batch of public events in one transaction.
+
+        This is the task_005 stream checkpoint path: many small deltas are
+        coalesced in memory and written with a single commit instead of one
+        fsync per token.
+        """
+        if not entries:
+            return
+        now = _utcnow()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                for entry in entries:
+                    conn.execute(
+                        """
+                        INSERT INTO public_events(
+                            id, conversation_id, turn_id, run_id, event_seq,
+                            kind, payload_json, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            uuid.uuid4().hex,
+                            entry["conversation_id"],
+                            entry["turn_id"],
+                            entry["run_id"],
+                            entry["event_seq"],
+                            entry["kind"],
+                            json.dumps(
+                                entry["payload"],
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ),
+                            now,
+                        ),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
     def append_public_event(
         self,
         *,
@@ -1442,6 +1550,80 @@ class SQLiteConversationRepository:
                 }
             )
         return out
+
+    def upsert_stream_checkpoints_batch(
+        self,
+        entries: Sequence[Dict[str, Any]],
+    ) -> None:
+        """Persist coalesced partial stream text checkpoint rows.
+
+        Entries contain only the newly buffered fragment. SQLite appends it
+        once per batch, avoiding Python's repeated cumulative-string copies.
+        """
+        if not entries:
+            return
+        now = _utcnow()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                for entry in entries:
+                    conn.execute(
+                        """
+                        INSERT INTO stream_checkpoints(
+                            id, conversation_id, turn_id, run_id, attempt,
+                            channel, text, char_count, event_seq, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(turn_id, attempt, channel) DO UPDATE SET
+                            run_id=excluded.run_id,
+                            text=CASE
+                                WHEN excluded.event_seq > stream_checkpoints.event_seq
+                                THEN stream_checkpoints.text || excluded.text
+                                ELSE stream_checkpoints.text
+                            END,
+                            char_count=CASE
+                                WHEN excluded.event_seq > stream_checkpoints.event_seq
+                                THEN stream_checkpoints.char_count + excluded.char_count
+                                ELSE stream_checkpoints.char_count
+                            END,
+                            event_seq=MAX(
+                                stream_checkpoints.event_seq, excluded.event_seq
+                            ),
+                            updated_at=excluded.updated_at
+                        """,
+                        (
+                            uuid.uuid4().hex,
+                            entry["conversation_id"],
+                            entry["turn_id"],
+                            entry["run_id"],
+                            int(entry["attempt"]),
+                            str(entry["channel"]),
+                            str(entry["text"]),
+                            len(str(entry["text"])),
+                            int(entry["event_seq"]),
+                            now,
+                        ),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def get_stream_checkpoints(
+        self, conversation_id: str, turn_id: str
+    ) -> List[Dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            rows = conn.execute(
+                """
+                SELECT run_id, attempt, channel, text, char_count, event_seq, updated_at
+                FROM stream_checkpoints
+                WHERE conversation_id=? AND turn_id=?
+                ORDER BY attempt, channel
+                """,
+                (conversation_id, turn_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     # ------------------------------------------------------------ change sets
 

@@ -166,6 +166,16 @@ def canonical_message_to_payload(message: CanonicalMessage) -> Dict[str, Any]:
         return {
             "type": "assistant",
             "text": message.text,
+            "reasoning": message.reasoning,
+            "continuations": [
+                {
+                    "wire_api": item.wire_api,
+                    "item_id": item.item_id,
+                    "encrypted_content": item.encrypted_content,
+                    "summary": list(item.summary),
+                }
+                for item in message.continuations
+            ],
             "tool_calls": [
                 {
                     "id": call.id,
@@ -194,6 +204,7 @@ def payload_to_canonical_message(payload: Dict[str, Any]) -> CanonicalMessage:
 
     from ..models import (
         AssistantMessage,
+        ProviderContinuation,
         SystemMessage,
         ToolCall,
         ToolMessage,
@@ -225,7 +236,43 @@ def payload_to_canonical_message(payload: Dict[str, Any]) -> CanonicalMessage:
             )
             for item in raw_calls
         )
-        return AssistantMessage(text=text, tool_calls=calls)
+        reasoning = payload.get("reasoning")
+        raw_continuations = payload.get("continuations", [])
+        if not isinstance(raw_continuations, list):
+            raise ValueError("assistant continuations invalid")
+        continuation_items = []
+        for item in raw_continuations:
+            if not isinstance(item, dict):
+                raise ValueError("assistant continuation item invalid")
+            wire_api = item.get("wire_api")
+            item_id = item.get("item_id")
+            encrypted = item.get("encrypted_content")
+            summary = item.get("summary", [])
+            if (
+                not isinstance(wire_api, str)
+                or not isinstance(item_id, str)
+                or not item_id
+                or not isinstance(encrypted, str)
+                or not encrypted
+                or not isinstance(summary, list)
+                or not all(isinstance(text, str) for text in summary)
+            ):
+                raise ValueError("assistant continuation item invalid")
+            continuation_items.append(
+                ProviderContinuation(
+                    wire_api=wire_api,
+                    item_id=item_id,
+                    encrypted_content=encrypted,
+                    summary=tuple(summary),
+                )
+            )
+        continuations = tuple(continuation_items)
+        return AssistantMessage(
+            text=text,
+            tool_calls=calls,
+            reasoning=reasoning if isinstance(reasoning, str) else None,
+            continuations=continuations,
+        )
     if message_type == "tool":
         return ToolMessage(
             tool_call_id=str(payload["tool_call_id"]),

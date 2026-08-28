@@ -64,6 +64,7 @@ from .schemas import (
     ProviderPresetDTO,
     RunSnapshotDTO,
     RunStartRequest,
+    StreamSnapshotDTO,
     ToolEventDTO,
     TurnCreateRequest,
     TurnDTO,
@@ -105,6 +106,9 @@ def profile_dto(profile: ProviderProfile, controller: RunController) -> ProfileD
         base_url=profile.base_url,
         model=profile.model,
         credential_ref=profile.credential_ref,
+        reasoning_mode=profile.reasoning_mode,
+        reasoning_effort=profile.reasoning_effort,
+        show_reasoning=profile.show_reasoning,
         credential=CredentialInfoDTO(
             configured=bool(info and info.configured),
             source=info.source if info else None,
@@ -556,6 +560,40 @@ def create_app(
             return result
 
         @app.get(
+            "/api/conversations/{conversation_id}/turns/{turn_id}/sse",
+            include_in_schema=False,
+        )
+        async def turn_event_sse(
+            conversation_id: str,
+            turn_id: str,
+            after_seq: int = 0,
+        ):
+            return StreamingResponse(
+                _conversation_event_stream(
+                    conversation_service, conversation_id, turn_id, after_seq
+                ),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
+        @app.get(
+            "/api/conversations/{conversation_id}/turns/{turn_id}/stream",
+            response_model=StreamSnapshotDTO,
+        )
+        async def stream_snapshot(
+            conversation_id: str, turn_id: str
+        ) -> StreamSnapshotDTO:
+            return StreamSnapshotDTO(
+                checkpoints=conversation_service.get_stream_snapshot(
+                    conversation_id, turn_id
+                )
+            )
+
+        @app.get(
             "/api/conversations/{conversation_id}/turns/{turn_id}/changes",
             response_model=ChangeSetDTO,
         )
@@ -626,8 +664,11 @@ def create_app(
             display_name=body.display_name,
             base_url=body.base_url,
             model=body.model,
-            wire_api="openai_chat_completions",
             credential_ref=body.credential_ref,
+            wire_api=body.wire_api or "openai_chat_completions",
+            reasoning_mode=body.reasoning_mode or "auto",
+            reasoning_effort=body.reasoning_effort,
+            show_reasoning=bool(body.show_reasoning),
         )
         controller.profile_store.create(profile)
         return profile_dto(profile, controller)
@@ -643,8 +684,11 @@ def create_app(
             display_name=body.display_name,
             base_url=body.base_url,
             model=body.model,
-            wire_api="openai_chat_completions",
             credential_ref=body.credential_ref,
+            wire_api=body.wire_api or "openai_chat_completions",
+            reasoning_mode=body.reasoning_mode or "auto",
+            reasoning_effort=body.reasoning_effort,
+            show_reasoning=bool(body.show_reasoning),
         )
         controller.profile_store.update(profile_id, profile)
         return profile_dto(profile, controller)
@@ -733,6 +777,63 @@ def _require_profile(controller: RunController, profile_id: str) -> ProviderProf
     if profile is None:
         raise ProfileError(f"profile 不存在：{profile_id}", field="id")
     return profile
+
+
+def _tool_event_from_stored(event: Dict[str, Any]) -> ToolEventDTO:
+    payload = dict(event.get("payload") or {})
+    target = event.get("target")
+    if target is not None:
+        payload["target"] = target
+    payload = redact_public_payload(str(event.get("kind") or ""), payload)
+    target = payload.pop("target", None)
+    return ToolEventDTO(
+        id=int(event.get("id", 0)),
+        kind=str(event.get("kind", "")),
+        step=int(event.get("step", 0)),
+        phase=str(event.get("phase", "READY")),
+        target=target if isinstance(target, str) else None,
+        payload=payload,
+    )
+
+
+async def _conversation_event_stream(
+    conversation_service: ConversationService,
+    conversation_id: str,
+    turn_id: str,
+    last_id: int,
+) -> AsyncIterator[str]:
+    current_id = last_id
+    yield _sse(
+        "hello",
+        {
+            "conversation_id": conversation_id,
+            "turn_id": turn_id,
+            "last_event_id": current_id,
+        },
+        event_id=None,
+    )
+    idle_ticks = 0
+    while True:
+        events = conversation_service.get_events(
+            conversation_id, turn_id, after_seq=current_id, limit=500
+        )
+        for event in events:
+            dto = _tool_event_from_stored(event)
+            yield _sse(dto.kind, dto.model_dump(), event_id=str(dto.id))
+            current_id = event["id"]
+        turn = conversation_service.get_turn(conversation_id, turn_id)
+        if not turn["active"]:
+            yield _sse(
+                "end",
+                {"message": "turn finished"},
+                event_id=str(current_id),
+            )
+            return
+        idle_ticks += 1
+        if idle_ticks >= 50:
+            idle_ticks = 0
+            yield ": ping\n\n"
+        await asyncio.sleep(0.2)
 
 
 async def _event_stream(

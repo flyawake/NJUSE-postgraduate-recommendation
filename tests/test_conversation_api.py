@@ -137,6 +137,26 @@ class TestConversationApi:
         assert changes.status_code == 200
         assert changes.json()["file_count"] == 0
 
+    def test_stream_snapshot_endpoint(self, api):
+        client, headers, _service, _model, ws = api
+        conv = client.post(
+            "/api/conversations",
+            json={"workspace": str(ws), "profile_id": None},
+            headers=headers,
+        ).json()
+        turn = client.post(
+            f"/api/conversations/{conv['id']}/turns",
+            json={"content": "snapshot"},
+            headers=headers,
+        ).json()
+        wait_turn_via_api(client, headers, conv["id"], turn["id"])
+        response = client.get(
+            f"/api/conversations/{conv['id']}/turns/{turn['id']}/stream",
+            headers=headers,
+        )
+        assert response.status_code == 200
+        assert response.json() == {"checkpoints": []}
+
     def test_idempotent_start_turn(self, api):
         client, headers, _service, _model, ws = api
         conv = client.post(

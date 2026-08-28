@@ -67,20 +67,33 @@ def to_provider_message(message: CanonicalMessage) -> Dict[str, Any]:
         prefix = _SOURCE_PREFIXES.get(message.source, "")
         return {"role": "user", "content": prefix + message.content}
     if isinstance(message, AssistantMessage):
-        if not message.tool_calls:
-            return {"role": "assistant", "content": message.text}
-        return {
-            "role": "assistant",
-            "content": message.text or None,
-            "tool_calls": [
+        base: Dict[str, Any] = {"role": "assistant", "content": message.text or None}
+        if message.reasoning is not None:
+            # DeepSeek-compatible providers that expose visible reasoning need
+            # the original reasoning_content when a tool call continues in the
+            # same logical turn. The adapter may strip this for providers that
+            # do not declare that capability.
+            base["reasoning_content"] = message.reasoning
+        if message.continuations:
+            base["_provider_continuations"] = [
+                {
+                    "wire_api": item.wire_api,
+                    "item_id": item.item_id,
+                    "encrypted_content": item.encrypted_content,
+                    "summary": list(item.summary),
+                }
+                for item in message.continuations
+            ]
+        if message.tool_calls:
+            base["tool_calls"] = [
                 {
                     "id": call.id,
                     "type": "function",
                     "function": {"name": call.name, "arguments": call.arguments_raw},
                 }
                 for call in message.tool_calls
-            ],
-        }
+            ]
+        return base
     if isinstance(message, ToolMessage):
         return {
             "role": "tool",

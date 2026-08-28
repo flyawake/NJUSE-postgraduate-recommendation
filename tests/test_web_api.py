@@ -76,7 +76,10 @@ class TestHealthAndBootstrap:
         assert body["session_token"] == "test-session-token"
         assert body["profiles"] == []
         assert body["active_profile_id"] is None
-        assert body["capabilities"]["wire_apis"] == ["openai_chat_completions"]
+        assert body["capabilities"]["wire_apis"] == [
+            "openai_chat_completions",
+            "openai_responses",
+        ]
         assert body["provider_presets"][0]["provider_id"] == "openai"
         assert body["run"] is None
 

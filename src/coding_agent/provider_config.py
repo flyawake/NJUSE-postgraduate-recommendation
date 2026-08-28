@@ -23,7 +23,8 @@ from .storage import StorageError, atomic_write_json, load_json
 
 CONFIG_VERSION = 1
 WIRE_API_CHAT_COMPLETIONS = "openai_chat_completions"
-WIRE_APIS = (WIRE_API_CHAT_COMPLETIONS,)
+WIRE_API_RESPONSES = "openai_responses"
+WIRE_APIS = (WIRE_API_CHAT_COMPLETIONS, WIRE_API_RESPONSES)
 CONFIG_FILENAME = "config.json"
 
 _PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -126,6 +127,9 @@ class ProviderProfile:
     base_url: str
     model: str
     credential_ref: Optional[str] = None
+    reasoning_mode: str = "auto"
+    reasoning_effort: Optional[str] = None
+    show_reasoning: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {
@@ -135,6 +139,9 @@ class ProviderProfile:
             "wire_api": self.wire_api,
             "base_url": self.base_url,
             "model": self.model,
+            "reasoning_mode": self.reasoning_mode,
+            "reasoning_effort": self.reasoning_effort,
+            "show_reasoning": self.show_reasoning,
         }
         if self.credential_ref is not None:
             data["credential_ref"] = self.credential_ref
@@ -190,6 +197,9 @@ def validate_profile(
     model: str,
     wire_api: str,
     credential_ref: Optional[str],
+    reasoning_mode: str = "auto",
+    reasoning_effort: Optional[str] = None,
+    show_reasoning: bool = False,
 ) -> ProviderProfile:
     """Validate and normalize profile fields (no filesystem access)."""
     if profile_id is not None:
@@ -205,9 +215,9 @@ def validate_profile(
         raise ProfileError(
             f"display_name 过长（最多 {MAX_DISPLAY_NAME} 字符）", field="display_name"
         )
-    if wire_api != WIRE_API_CHAT_COMPLETIONS:
+    if wire_api not in (WIRE_API_CHAT_COMPLETIONS, WIRE_API_RESPONSES):
         raise ProfileError(
-            f"当前仅支持 wire_api={WIRE_API_CHAT_COMPLETIONS}",
+            f"不支持的 wire_api：{wire_api!r}（可选 {', '.join(WIRE_APIS)}）",
             field="wire_api",
         )
     normalized_url = validate_provider_url(base_url)
@@ -219,6 +229,44 @@ def validate_profile(
     normalized_ref = None
     if credential_ref is not None:
         normalized_ref = validate_profile_id(credential_ref)
+    if reasoning_mode not in ("auto", "off", "visible"):
+        raise ProfileError(
+            "reasoning_mode 必须是 auto/off/visible", field="reasoning_mode"
+        )
+    if reasoning_effort not in (None, "low", "medium", "high"):
+        raise ProfileError(
+            "reasoning_effort 必须是 low/medium/high 或空", field="reasoning_effort"
+        )
+    if reasoning_mode == "off" and reasoning_effort is not None:
+        raise ProfileError(
+            "reasoning_mode=off 时不能设置 reasoning_effort",
+            field="reasoning_effort",
+        )
+    if provider_id == "deepseek" and wire_api == WIRE_API_RESPONSES:
+        raise ProfileError(
+            "DeepSeek profile 不支持 OpenAI Responses wire API",
+            field="wire_api",
+        )
+    if (
+        wire_api == WIRE_API_CHAT_COMPLETIONS
+        and provider_id != "openai"
+        and reasoning_effort is not None
+    ):
+        raise ProfileError(
+            "该 Chat Completions provider 未声明 reasoning_effort 能力",
+            field="reasoning_effort",
+        )
+    if (
+        provider_id == "openai"
+        and wire_api == WIRE_API_CHAT_COMPLETIONS
+        and reasoning_mode == "visible"
+    ):
+        raise ProfileError(
+            "OpenAI Chat Completions 不提供可展示的原始 reasoning；请使用 Responses API",
+            field="reasoning_mode",
+        )
+    if not isinstance(show_reasoning, bool):
+        raise ProfileError("show_reasoning 必须是布尔值", field="show_reasoning")
     return ProviderProfile(
         id=profile_id or "",
         provider_id=provider_id,
@@ -227,6 +275,9 @@ def validate_profile(
         base_url=normalized_url,
         model=model,
         credential_ref=normalized_ref,
+        reasoning_mode=reasoning_mode,
+        reasoning_effort=reasoning_effort,
+        show_reasoning=show_reasoning,
     )
 
 
@@ -315,6 +366,9 @@ class ProfileStore:
             "base_url",
             "model",
             "credential_ref",
+            "reasoning_mode",
+            "reasoning_effort",
+            "show_reasoning",
         }
         for pid, item in profiles_raw.items():
             try:
@@ -363,6 +417,9 @@ class ProfileStore:
                 model=item.get("model"),
                 wire_api=item.get("wire_api"),
                 credential_ref=item.get("credential_ref"),
+                reasoning_mode=item.get("reasoning_mode", "auto"),
+                reasoning_effort=item.get("reasoning_effort"),
+                show_reasoning=item.get("show_reasoning", False),
             )
         active = raw.get("active_profile")
         if active is not None:

@@ -16,6 +16,8 @@ export type Conversation = components["schemas"]["ConversationDTO"];
 export type ConversationPage = components["schemas"]["ConversationPageDTO"];
 export type Turn = components["schemas"]["TurnDTO"];
 export type TurnPage = components["schemas"]["TurnPageDTO"];
+export type StreamCheckpoint = components["schemas"]["StreamCheckpointDTO"];
+export type StreamSnapshot = components["schemas"]["StreamSnapshotDTO"];
 export type ChangeSet = components["schemas"]["ChangeSetDTO"];
 export type FileChange = components["schemas"]["FileChangeDTO"];
 export type FilePreview = components["schemas"]["PreviewDTO"];
@@ -194,6 +196,11 @@ export const api = {
     apiFetch<Turn>(`/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/cancel`, {
       method: "POST",
     }),
+
+  getStreamSnapshot: (id: string, turnId: string) =>
+    apiFetch<StreamSnapshot>(
+      `/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/stream`
+    ),
 
   getTurnChanges: (id: string, turnId: string) =>
     apiFetch<ChangeSet>(`/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/changes`),

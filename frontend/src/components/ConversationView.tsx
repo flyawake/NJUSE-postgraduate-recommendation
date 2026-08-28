@@ -7,6 +7,7 @@ import { useI18n } from "@/lib/i18n";
 import { ActivityFeed } from "./ActivityFeed";
 import { InlineError } from "./InlineError";
 import { TurnChangeSummary } from "./TurnChangeSummary";
+import { subscribeToConversationEvents } from "@/lib/sse";
 
 export interface ConversationViewProps {
   conversationId: string;
@@ -27,6 +28,17 @@ function followKey(conversationId: string): string {
 
 function newIdempotencyKey(): string {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+}
+
+export function mergeEventTail(
+  current: ToolEvent[],
+  incoming: ToolEvent[],
+  limit = 2_000
+): ToolEvent[] {
+  const byId = new Map<number, ToolEvent>();
+  for (const item of current) byId.set(item.id, item);
+  for (const item of incoming) byId.set(item.id, item);
+  return [...byId.values()].sort((a, b) => a.id - b.id).slice(-limit);
 }
 
 export function ConversationView({ conversationId, onOpenArtifact }: ConversationViewProps) {
@@ -64,6 +76,11 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
     queryKey: ["conversation", conversationId],
     queryFn: () => api.getConversation(conversationId),
     refetchInterval: 1_000,
+  });
+  const profilesQuery = useQuery({
+    queryKey: ["profiles"],
+    queryFn: api.listProfiles,
+    staleTime: 5_000,
   });
   const turnsQuery = useQuery({
     queryKey: ["turns", conversationId],
@@ -113,6 +130,10 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
   };
 
   const conversation = conversationQuery.data;
+  const defaultThinkOpen = Boolean(
+    profilesQuery.data?.find((profile) => profile.id === conversation?.profile_id)
+      ?.show_reasoning
+  );
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="border-b border-border px-4 py-3">
@@ -141,6 +162,7 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
                 conversationId={conversationId}
                 turn={turn}
                 changeSet={changeSets.data?.[turn.id] ?? null}
+                defaultThinkOpen={defaultThinkOpen}
                 onOpenArtifact={onOpenArtifact}
               />
             ))}
@@ -189,14 +211,17 @@ function ConversationTurn({
   conversationId,
   turn,
   changeSet,
+  defaultThinkOpen,
   onOpenArtifact,
 }: {
   conversationId: string;
   turn: Turn;
   changeSet: ChangeSet | null;
+  defaultThinkOpen: boolean;
   onOpenArtifact?: (turn: Turn, file: FileChange, files: FileChange[]) => void;
 }) {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
   const [items, setItems] = useState<ToolEvent[]>([]);
   const afterSeq = useRef(0);
   useEffect(() => {
@@ -208,17 +233,71 @@ function ConversationTurn({
     queryFn: () => api.getTurnEvents(conversationId, turn.id, { afterSeq: afterSeq.current, limit: 500 }),
     refetchInterval: turn.active ? 500 : false,
   });
+  const streamSnapshot = useQuery({
+    queryKey: ["turn-stream-snapshot", conversationId, turn.id],
+    queryFn: () => api.getStreamSnapshot(conversationId, turn.id),
+    refetchInterval: turn.active ? 500 : false,
+    staleTime: turn.active ? 0 : Number.POSITIVE_INFINITY,
+  });
   const eventData = events.data;
   const refetchEvents = events.refetch;
   useEffect(() => {
     const batch = eventData ?? [];
     if (batch.length === 0) return;
-    const fresh = batch.filter((event) => event.id > afterSeq.current);
-    if (fresh.length === 0) return;
-    afterSeq.current = fresh.at(-1)?.id ?? afterSeq.current;
-    setItems((current) => [...current, ...fresh].slice(-2_000));
+    afterSeq.current = Math.max(
+      afterSeq.current,
+      ...batch.map((event) => event.id)
+    );
+    setItems((current) => mergeEventTail(current, batch));
     if (batch.length === 500) queueMicrotask(() => void refetchEvents());
   }, [eventData, refetchEvents]);
+  useEffect(() => {
+    if (!turn.active) return;
+    let disposed = false;
+    const controller = new AbortController();
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    const connect = () => {
+      if (disposed) return;
+      subscribeToConversationEvents(conversationId, turn.id, {
+        lastEventId: afterSeq.current || undefined,
+        signal: controller.signal,
+        onEvent: (message) => {
+          if (message.event === "hello" || message.event === "end") return;
+          if (message.event === "reset") {
+            afterSeq.current = 0;
+            setItems([]);
+            queryClient.invalidateQueries({
+              queryKey: ["turn-stream-snapshot", conversationId, turn.id],
+            });
+            return;
+          }
+          const event = message.data as ToolEvent;
+          if (!event || typeof event.id !== "number") return;
+          afterSeq.current = Math.max(afterSeq.current, event.id);
+          setItems((current) => mergeEventTail(current, [event]));
+          if (event.kind === "run_finished") {
+            queryClient.invalidateQueries({ queryKey: ["turns", conversationId] });
+            queryClient.invalidateQueries({
+              queryKey: ["turn-stream-snapshot", conversationId, turn.id],
+            });
+          }
+        },
+        onError: () => {
+          if (disposed) return;
+          reconnectTimer = setTimeout(connect, 1_500);
+        },
+      }).catch(() => {
+        if (disposed) return;
+        reconnectTimer = setTimeout(connect, 1_500);
+      });
+    };
+    connect();
+    return () => {
+      disposed = true;
+      controller.abort();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+    };
+  }, [conversationId, turn.id, turn.active, queryClient]);
   return (
     <article className="border-b border-border py-3" data-testid={`turn-${turn.id}`}>
       <ActivityFeed
@@ -231,6 +310,8 @@ function ConversationTurn({
         sseStatus="idle"
         terminalText={turn.result?.final_text ? String(turn.result.final_text) : null}
         verificationStatus={turn.result?.verification_status ? String(turn.result.verification_status) : null}
+        streamSnapshot={streamSnapshot.data?.checkpoints}
+        defaultThinkOpen={defaultThinkOpen}
         embedded
       />
       {!turn.active && !turn.result?.final_text && turn.state === "interrupted" ? (

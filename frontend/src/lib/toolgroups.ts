@@ -17,6 +17,7 @@ export interface ToolItem {
 export type TranscriptItem =
   | { id: string; kind: "user_message"; text: string }
   | { id: string; kind: "action_row"; action: ToolItem }
+  | { id: string; kind: "stream_attempt"; attempt: number }
   | { id: string; kind: "status_notice"; status: "retry" }
   | { id: string; kind: "verification_notice"; status: string | null }
   | { id: string; kind: "terminal_notice"; status: string | null };
@@ -29,6 +30,7 @@ export type TranscriptItem =
 export class TranscriptProjector {
   private readonly actionByCallId = new Map<string, ToolItem>();
   private readonly rowIndexByCallId = new Map<string, number>();
+  private readonly streamAttempts = new Set<number>();
   private items: TranscriptItem[] = [];
   private userMessage: Extract<TranscriptItem, { kind: "user_message" }> | null = null;
   private head = 0;
@@ -71,6 +73,7 @@ export class TranscriptProjector {
   reset(events: ToolEvent[], task: string): readonly TranscriptItem[] {
     this.actionByCallId.clear();
     this.rowIndexByCallId.clear();
+    this.streamAttempts.clear();
     this.items = [];
     this.userMessage = task.trim()
       ? { id: "user-task", kind: "user_message", text: task }
@@ -99,6 +102,21 @@ export class TranscriptProjector {
           this.prune();
         }
         return;
+      case "model_stream_started":
+      case "assistant_text_delta":
+      case "reasoning_delta":
+      case "reasoning_summary_delta": {
+        const attempt = event.payload.attempt;
+        if (typeof attempt !== "number" || this.streamAttempts.has(attempt)) return;
+        this.streamAttempts.add(attempt);
+        this.items.push({
+          id: `stream-attempt-${attempt}`,
+          kind: "stream_attempt",
+          attempt,
+        });
+        this.prune();
+        return;
+      }
       case "tool_started": {
         const callId = String(event.payload.call_id ?? `event-${event.id}`);
         if (this.actionByCallId.has(callId)) return;

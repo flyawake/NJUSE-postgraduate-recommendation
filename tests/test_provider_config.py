@@ -121,6 +121,38 @@ class TestProfileValidation:
         profile = make_profile(credential_ref=None)
         assert profile.credential_ref is None
 
+    def test_rejects_incompatible_reasoning_capabilities(self):
+        with pytest.raises(ProfileError, match="Responses"):
+            make_profile(wire_api="openai_responses")
+        with pytest.raises(ProfileError, match="reasoning_effort"):
+            make_profile(reasoning_effort="high")
+        with pytest.raises(ProfileError, match="reasoning_effort"):
+            make_profile(reasoning_mode="off", reasoning_effort="low")
+        with pytest.raises(ProfileError, match="不提供可展示"):
+            make_profile(
+                provider_id="openai",
+                reasoning_mode="visible",
+            )
+
+    def test_corrupt_show_reasoning_string_fails_closed(self, tmp_path):
+        home = tmp_path / "corrupt-bool"
+        store = ProfileStore(home)
+        home.mkdir(parents=True)
+        raw_profile = make_profile().to_dict()
+        raw_profile["show_reasoning"] = "false"
+        store.path.write_text(
+            json.dumps(
+                {
+                    "version": CONFIG_VERSION,
+                    "active_profile": "deepseek-main",
+                    "profiles": {"deepseek-main": raw_profile},
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ProfileError, match="布尔值"):
+            store.load()
+
 
 class TestCatalog:
     def test_presets_are_chat_completions_only(self):

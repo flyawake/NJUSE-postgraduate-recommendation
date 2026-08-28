@@ -12,7 +12,8 @@ import { ProfileForm } from "./ProfileForm";
 import { CredentialField } from "./CredentialField";
 
 function isProfileUsable(profile: Profile): boolean {
-  return profile.credential.configured && profile.wire_api === "openai_chat_completions";
+  return profile.credential.configured &&
+    (profile.wire_api === "openai_chat_completions" || profile.wire_api === "openai_responses");
 }
 
 export function SettingsPage() {
@@ -177,6 +178,10 @@ export function SettingsPage() {
                   base_url: editing.base_url,
                   model: editing.model,
                   credential_ref: editing.credential_ref ?? null,
+                  wire_api: editing.wire_api,
+                  reasoning_mode: editing.reasoning_mode,
+                  reasoning_effort: editing.reasoning_effort,
+                  show_reasoning: editing.show_reasoning,
                 }}
                 onSaved={() => undefined}
                 onCancel={() => setSelectedId(null)}

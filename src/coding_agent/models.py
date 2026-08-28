@@ -64,11 +64,27 @@ class ToolCall:
 
 
 @dataclass(frozen=True)
+class ProviderContinuation:
+    """Opaque, adapter-scoped state required for a provider sub-request.
+
+    It is canonical internal data, never public display text. The neutral
+    shape prevents SDK objects from crossing the adapter boundary.
+    """
+
+    wire_api: str
+    item_id: str
+    encrypted_content: str
+    summary: Tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
 class AssistantTurn:
     """Normalized assistant response for one model request."""
 
     text: str
     tool_calls: Tuple[ToolCall, ...] = field(default_factory=tuple)
+    reasoning: Optional[str] = None
+    continuations: Tuple[ProviderContinuation, ...] = field(default_factory=tuple)
 
 
 class MessageRole(str, Enum):
@@ -93,6 +109,8 @@ class UserMessage:
 class AssistantMessage:
     text: str
     tool_calls: Tuple[ToolCall, ...] = field(default_factory=tuple)
+    reasoning: Optional[str] = None
+    continuations: Tuple[ProviderContinuation, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

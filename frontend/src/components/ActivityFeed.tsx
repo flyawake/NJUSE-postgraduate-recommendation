@@ -14,7 +14,8 @@ import {
   Wrench,
 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
-import type { ToolEvent } from "@/api/client";
+import type { StreamCheckpoint, ToolEvent } from "@/api/client";
+import { StreamingTranscript } from "./StreamingTranscript";
 import {
   actionTarget,
   TranscriptProjector,
@@ -40,6 +41,8 @@ export interface ActivityFeedProps {
   sseStatus: "idle" | "connected" | "disconnected";
   terminalText?: string | null;
   verificationStatus?: string | null;
+  streamSnapshot?: StreamCheckpoint[];
+  defaultThinkOpen?: boolean;
   embedded?: boolean;
 }
 
@@ -66,6 +69,8 @@ export function ActivityFeed({
   sseStatus,
   terminalText,
   verificationStatus,
+  streamSnapshot,
+  defaultThinkOpen = false,
   embedded = false,
 }: ActivityFeedProps) {
   const { t } = useI18n();
@@ -193,9 +198,21 @@ export function ActivityFeed({
             </div>
           ) : null}
 
-          {visibleItems.map((item) => (
-            <TranscriptRow key={item.id} item={item} />
-          ))}
+          {visibleItems.map((item) =>
+            item.kind === "stream_attempt" ? (
+              <StreamingTranscript
+                key={item.id}
+                events={retainedEvents}
+                snapshot={streamSnapshot}
+                terminalText={terminalText}
+                defaultThinkOpen={defaultThinkOpen}
+                showAssistantText={state !== "terminal" || !terminalText}
+                attempt={item.attempt}
+              />
+            ) : (
+              <TranscriptRow key={item.id} item={item} />
+            )
+          )}
 
           {state === "terminal" && terminalText ? (
             <section className="border-t border-border pt-5" data-testid="final-answer">

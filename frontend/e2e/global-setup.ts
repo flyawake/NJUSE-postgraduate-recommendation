@@ -64,6 +64,9 @@ async function createProfile(
     model: string;
     credential_ref: string;
     secret: string;
+    provider_id?: string;
+    wire_api?: string;
+    reasoning_mode?: string;
   }
 ): Promise<string> {
   const headers = {
@@ -74,11 +77,13 @@ async function createProfile(
     method: "POST",
     headers,
     body: JSON.stringify({
-      provider_id: "custom",
+      provider_id: input.provider_id ?? "custom",
       display_name: input.display_name,
       base_url: input.base_url,
       model: input.model,
       credential_ref: input.credential_ref,
+      wire_api: input.wire_api ?? "openai_chat_completions",
+      reasoning_mode: input.reasoning_mode ?? "auto",
     }),
   });
   if (!created.ok) {
@@ -148,10 +153,34 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     secret,
   });
   await createProfile(baseUrl, bootstrap.session_token, {
+    display_name: "重试假模型",
+    base_url: `http://127.0.0.1:${fakePort}/v1-retry`,
+    model: "fake-model-retry",
+    credential_ref: "fake-retry",
+    secret,
+  });
+  await createProfile(baseUrl, bootstrap.session_token, {
+    display_name: "Responses 假模型",
+    base_url: `http://127.0.0.1:${fakePort}/v1-responses`,
+    model: "fake-model-responses",
+    credential_ref: "fake-responses",
+    secret,
+    provider_id: "openai",
+    wire_api: "openai_responses",
+    reasoning_mode: "visible",
+  });
+  await createProfile(baseUrl, bootstrap.session_token, {
     display_name: "慢速假模型",
     base_url: `http://127.0.0.1:${fakePort}/v1-slow`,
     model: "fake-model-slow",
     credential_ref: "fake-slow",
+    secret,
+  });
+  await createProfile(baseUrl, bootstrap.session_token, {
+    display_name: "无推理假模型",
+    base_url: `http://127.0.0.1:${fakePort}/v1-no-reasoning`,
+    model: "fake-model-no-reasoning",
+    credential_ref: "fake-no-reasoning",
     secret,
   });
 
