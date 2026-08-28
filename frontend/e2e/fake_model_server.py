@@ -89,7 +89,35 @@ def _classify_last_tool_result(messages: list[dict]) -> str | None:
     return "unknown"
 
 
+def _is_sse_stress_run(messages: list[dict]) -> bool:
+    """Keep the performance E2E offline while exercising a long SSE tail."""
+    return any(
+        message.get("role") == "user"
+        and "SSE_STRESS" in str(message.get("content") or "")
+        for message in messages
+    )
+
+
+def _stress_response(messages: list[dict]) -> dict:
+    tool_results = sum(1 for message in messages if message.get("role") == "tool")
+    if tool_results >= 13:
+        return _assistant_text("SSE stress run completed.")
+    # Each signature is unique so the real duplicate-call guard remains on.
+    index = tool_results + 1
+    return _assistant_with_calls(
+        [
+            _tool_call(
+                f"stress_{index}",
+                "glob",
+                {"pattern": f"**/*{index}.py", "path": "."},
+            )
+        ]
+    )
+
+
 def next_response(messages: list[dict]) -> dict:
+    if _is_sse_stress_run(messages):
+        return _stress_response(messages)
     kind = _classify_last_tool_result(messages)
 
     if kind is None:

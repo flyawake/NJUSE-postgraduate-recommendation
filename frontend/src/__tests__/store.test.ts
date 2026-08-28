@@ -5,6 +5,9 @@ import type { RunSnapshot, ToolEvent } from "@/api/client";
 function state(overrides: Partial<RunStoreState> = {}): RunStoreState {
   return {
     events: [],
+    appendedEvents: [],
+    eventResetVersion: 0,
+    eventVersion: 0,
     lastEventId: 0,
     sseStatus: "idle",
     cancelling: false,
@@ -29,6 +32,16 @@ describe("runReducer", () => {
     expect(next.events.map((e) => e.id)).toEqual([1, 2, 3]);
     expect(next.lastEventId).toBe(3);
     expect(next.sseStatus).toBe("connected");
+    expect(next.appendedEvents.map((e) => e.id)).toEqual([3]);
+    expect(next.eventVersion).toBe(1);
+  });
+
+  it("accumulates all SSE callbacks batched before the feed acknowledges them", () => {
+    const afterFirst = runReducer(state(), { type: "APPEND", events: [event(1)] });
+    const afterSecond = runReducer(afterFirst, { type: "APPEND", events: [event(2)] });
+    expect(afterSecond.appendedEvents.map((item) => item.id)).toEqual([1, 2]);
+    expect(runReducer(afterSecond, { type: "ACK_APPEND", version: 1 }).appendedEvents).toHaveLength(2);
+    expect(runReducer(afterSecond, { type: "ACK_APPEND", version: 2 }).appendedEvents).toEqual([]);
   });
 
   it("RESET_EVENTS replaces with the sorted server tail", () => {
@@ -39,6 +52,8 @@ describe("runReducer", () => {
     });
     expect(next.events.map((e) => e.id)).toEqual([3, 4, 5]);
     expect(next.lastEventId).toBe(5);
+    expect(next.appendedEvents).toEqual([]);
+    expect(next.eventResetVersion).toBe(1);
   });
 
   it("RESET_EVENTS clears stale events and the baseline on server tail reset", () => {

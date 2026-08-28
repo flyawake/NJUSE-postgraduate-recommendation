@@ -417,6 +417,8 @@ export interface components {
             phase: string;
             /** Step */
             step: number;
+            /** Target */
+            target?: string | null;
         };
         /** UIPreferencesDTO */
         UIPreferencesDTO: {

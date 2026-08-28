@@ -465,12 +465,15 @@ class RunController:
                 key: value for key, value in event.payload.items() if key in keys
             }
             payload = redact_public_payload(event.type, payload)
+            raw_target = payload.pop("target", None)
+            target = raw_target if isinstance(raw_target, str) else None
             self._update_live_facts(event, payload)
             dto = ToolEventDTO(
                 id=self._event_seq,
                 kind=event.type,
                 step=event.step,
                 phase=event.phase.value,
+                target=target,
                 payload=payload,
             )
             self._append_event(dto)

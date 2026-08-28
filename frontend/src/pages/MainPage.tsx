@@ -1,9 +1,9 @@
-import { useCallback, useState } from "react";
+import { memo, useCallback, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, ApiError } from "@/api/client";
 import { useI18n } from "@/lib/i18n";
 import { apiErrorText } from "@/lib/errorText";
-import { useRunStore } from "@/lib/store";
+import { useRunCommands, useRunEventFeed, useRunMeta } from "@/lib/store";
 import { ActivityFeed } from "@/components/ActivityFeed";
 import { InlineError } from "@/components/InlineError";
 import type { InlineErrorKind } from "@/components/InlineError";
@@ -22,39 +22,38 @@ export interface MainPageProps {
   workspaceValid: boolean | null;
   onWorkspaceChange: (value: string) => void;
   onWorkspaceValidated: (valid: boolean) => void;
-  task: string;
-  onTaskChange: (value: string) => void;
   profileId: string | null;
   onProfileChange: (value: string | null) => void;
 }
 
-export function MainPage({
+/**
+ * The task draft is intentionally local. Run events are consumed only by the
+ * transcript child below, so typing and incoming SSE data never resubscribe
+ * the workspace/profile controls to each other.
+ */
+export const MainPage = memo(function MainPage({
   workspace,
   workspaceValid,
   onWorkspaceChange,
   onWorkspaceValidated,
-  task,
-  onTaskChange,
   profileId,
   onProfileChange,
 }: MainPageProps) {
   const { t } = useI18n();
-  const store = useRunStore();
-
+  const { snapshot, cancelling } = useRunMeta();
+  const { startRun, cancelRun } = useRunCommands();
+  const [task, setTask] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<StartError | null>(null);
+  const cancelRequested = useRef(false);
   const profilesQuery = useQuery({ queryKey: ["profiles"], queryFn: api.listProfiles, staleTime: 5_000 });
   const bootstrap = useQuery({ queryKey: ["bootstrap"], queryFn: api.bootstrap, staleTime: 30_000 });
   const profiles = profilesQuery.data ?? [];
   const activeProfileId = bootstrap.data?.active_profile_id ?? null;
-
-  const [startError, setStartError] = useState<StartError | null>(null);
-
   const selectedProfile = profiles.find((profile) => profile.id === (profileId ?? activeProfileId)) ?? null;
   const profileReady = Boolean(selectedProfile?.credential?.configured);
-
-  const running = store.snapshot?.state === "running";
-  const cancelling = store.cancelling;
-
-  const canStart = workspaceValid === true && profileReady && !running && !cancelling;
+  const running = snapshot?.state === "running";
+  const canStart = workspaceValid === true && profileReady && !running && !cancelling && !starting;
   const startDisabledReason = workspaceValid !== true
     ? t("workspace.invalid")
     : !profileReady
@@ -63,14 +62,26 @@ export function MainPage({
         : t("composer.needSetup")
       : null;
 
+  const handleWorkspaceChange = useCallback(
+    (value: string) => {
+      onWorkspaceChange(value);
+      onWorkspaceValidated(false);
+    },
+    [onWorkspaceChange, onWorkspaceValidated]
+  );
+  const handleWorkspaceValidated = useCallback(
+    (resolvedPath: string | null) => onWorkspaceValidated(resolvedPath !== null),
+    [onWorkspaceValidated]
+  );
+
   const handleStart = useCallback(async () => {
-    // Keep the mutation boundary guarded too: alternate entry points must not
-    // bypass the composer button/shortcut readiness checks.
     if (!canStart || !task.trim()) return;
+    setStarting(true);
+    cancelRequested.current = false;
     setStartError(null);
     try {
-      await store.startRun({ workspace: workspace.trim(), task, profileId: profileId ?? null });
-      onTaskChange("");
+      await startRun({ workspace: workspace.trim(), task, profileId: profileId ?? null });
+      setTask("");
     } catch (error) {
       if (error instanceof ApiError) {
         const kind: InlineErrorKind =
@@ -88,78 +99,54 @@ export function MainPage({
       } else {
         setStartError({ kind: "run_failure", message: t("error.runFailure") });
       }
+    } finally {
+      setStarting(false);
     }
-  }, [canStart, store, workspace, task, profileId, onTaskChange, t]);
+  }, [canStart, profileId, startRun, t, task, workspace]);
 
   const handleCancel = useCallback(async () => {
+    if (cancelRequested.current) return;
+    cancelRequested.current = true;
     setStartError(null);
     try {
-      await store.cancelRun();
+      await cancelRun();
     } catch (error) {
-      setStartError({
-        kind: "validation",
-        message: apiErrorText(error, t),
-      });
+      cancelRequested.current = false;
+      setStartError({ kind: "validation", message: apiErrorText(error, t) });
     }
-  }, [store, t]);
+  }, [cancelRun, t]);
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="main-page">
       <div className="min-h-0 flex-1">
-        <ActivityFeed
-          events={store.events}
-          task={store.snapshot?.task ?? null}
-          state={
-            store.snapshot?.state === "running" || store.snapshot?.state === "terminal"
-              ? store.snapshot.state
-              : "idle"
-          }
-          sseStatus={store.sseStatus}
-          terminalText={store.snapshot?.final_text}
-          verificationStatus={store.snapshot?.verification_status}
-        />
+        <ActivityFeedSection />
       </div>
-      <div className="shrink-0 border-t border-border bg-surface/95 px-4 pb-3 pt-3">
-        <div className="mx-auto max-w-3xl space-y-2.5">
-          <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
-            <div>
-              <p className="mb-1 flex items-center gap-2 text-xs font-medium text-muted">
-                {t("workspace.label")}
-              </p>
-              <WorkspaceField
-                value={workspace}
-                onChange={(value) => {
-                  onWorkspaceChange(value);
-                  onWorkspaceValidated(false);
-                }}
-                onValidated={(resolved) => onWorkspaceValidated(resolved !== null)}
-              />
-            </div>
-            <div>
-              <p className="mb-1 text-xs font-medium text-muted">{t("profile.label")}</p>
-              <ProfileSelector
-                profiles={profiles}
-                activeProfileId={activeProfileId}
-                value={profileId}
-                onChange={onProfileChange}
-              />
-            </div>
-          </div>
-          {startError ? (
-            <InlineError
-              kind={startError.kind}
-              message={startError.message}
-              field={startError.field}
+      <div className="shrink-0 border-t border-border bg-surface/95 px-4 pb-16 pt-3 sm:pb-3">
+        <div className="mx-auto max-w-[54rem] space-y-2.5">
+          <div className="grid grid-cols-1 gap-2 rounded-md bg-surface-2/60 p-2 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,0.75fr)]">
+            <WorkspaceField
+              value={workspace}
+              onChange={handleWorkspaceChange}
+              onValidated={handleWorkspaceValidated}
             />
-          ) : null}
+            <ProfileSelector
+              profiles={profiles}
+              activeProfileId={activeProfileId}
+              value={profileId}
+              onChange={onProfileChange}
+            />
+          </div>
+          {startError ? <InlineError kind={startError.kind} message={startError.message} field={startError.field} /> : null}
           <TaskComposer
             task={task}
-            onTaskChange={onTaskChange}
+            onTaskChange={setTask}
             state={
               running
                 ? cancelling
                   ? "cancelling"
                   : "running"
+                : starting
+                  ? "starting"
                 : canStart
                   ? task.trim()
                     ? "ready"
@@ -175,4 +162,23 @@ export function MainPage({
       </div>
     </div>
   );
-}
+});
+
+/** The sole high-frequency RunEventStore consumer in the main product path. */
+const ActivityFeedSection = memo(function ActivityFeedSection() {
+  const { retainedEvents, appendedEvents, resetVersion, version } = useRunEventFeed();
+  const { snapshot, sseStatus } = useRunMeta();
+  return (
+    <ActivityFeed
+      retainedEvents={retainedEvents}
+      eventBatch={appendedEvents}
+      resetVersion={resetVersion}
+      eventVersion={version}
+      task={snapshot?.task ?? null}
+      state={snapshot?.state === "running" || snapshot?.state === "terminal" ? snapshot.state : "idle"}
+      sseStatus={sseStatus}
+      terminalText={snapshot?.final_text}
+      verificationStatus={snapshot?.verification_status}
+    />
+  );
+});

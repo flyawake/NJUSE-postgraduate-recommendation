@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import type { Profile } from "@/api/client";
 import { useI18n } from "@/lib/i18n";
-import { useRunStore } from "@/lib/store";
+import { useRunCommands, useRunMeta } from "@/lib/store";
 import { AppShell } from "@/components/AppShell";
 import type { ViewName } from "@/components/AppShell";
 import { RunInspector } from "@/components/RunInspector";
@@ -18,7 +18,8 @@ const ONBOARDING_DISMISSED_KEY = "coding-agent-ui-onboarding-dismissed";
 
 export function App() {
   const { t } = useI18n();
-  const store = useRunStore();
+  const { snapshot } = useRunMeta();
+  const { clear } = useRunCommands();
   const [view, setView] = useState<ViewName>("new");
   const [workspace, setWorkspace] = useState<string>(() => {
     try {
@@ -28,7 +29,6 @@ export function App() {
     }
   });
   const [workspaceValid, setWorkspaceValid] = useState<boolean | null>(null);
-  const [task, setTask] = useState("");
   const [profileId, setProfileId] = useState<string | null>(() => {
     try {
       return localStorage.getItem(PROFILE_STORAGE_KEY);
@@ -87,9 +87,9 @@ export function App() {
 
   const inspector = (
     <RunInspector
-      snapshot={store.snapshot}
+      snapshot={snapshot}
       onNewTask={() => {
-        store.clear();
+        clear();
         setView("new");
       }}
     />
@@ -104,7 +104,7 @@ export function App() {
         workspace={workspace}
         profileLabel={profileLabel}
         inspector={inspector}
-        badge={store.snapshot?.state === "running" ? t("status.running") : null}
+        badge={snapshot?.state === "running" ? t("status.running") : null}
       >
         {view === "settings" ? (
           <SettingsPage />
@@ -116,8 +116,6 @@ export function App() {
             workspaceValid={workspaceValid}
             onWorkspaceChange={setWorkspace}
             onWorkspaceValidated={setWorkspaceValid}
-            task={task}
-            onTaskChange={setTask}
             profileId={profileId}
             onProfileChange={setProfileId}
           />

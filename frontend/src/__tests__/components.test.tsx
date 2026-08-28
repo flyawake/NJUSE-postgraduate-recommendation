@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@/lib/i18n";
 import { RunStatusBadge } from "@/components/RunStatusBadge";
 import { VerificationBadge } from "@/components/VerificationBadge";
@@ -94,5 +95,23 @@ describe("TaskComposer", () => {
     );
     expect(screen.getByText("正在取消…")).toBeInTheDocument();
     expect(screen.getByLabelText("取消运行")).toBeDisabled();
+  });
+
+  it("uses the same primary slot for Stop while keeping a running draft editable", async () => {
+    const onCancel = vi.fn();
+    const user = userEvent.setup();
+    renderWithI18n(
+      <TaskComposer
+        task="draft for later"
+        onTaskChange={() => undefined}
+        state="running"
+        onStart={() => undefined}
+        onCancel={onCancel}
+      />
+    );
+    expect(screen.queryByRole("button", { name: "开始运行" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("任务描述")).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "取消运行" }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
   });
 });

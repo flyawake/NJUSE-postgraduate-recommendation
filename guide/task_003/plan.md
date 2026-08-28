@@ -273,3 +273,39 @@ verification_notice | terminal_notice | load_older
 - 不新增状态库、虚拟列表库或第二套 UI 框架；如确有必要，必须先在 feedback 给出不可替代性与依赖审计。
 - Developer 只读取并整改 `task_003`，在原 feedback 追加整改说明、反例测试结果与新截图，然后将反馈重新登记为 `待评估`。
 - 复验必须重跑 Python、Ruff、API types、typecheck、lint、Vitest、production build、Playwright、production audit、wheel 与 `git diff --check`；Master 将重点独立复现 R3.1-R3.4。
+
+## 15. Master R3 复验整改（2026-08-28）
+
+R3 的核心方向和全部自动化已通过复验，但仍有四个直接违反既定门槛的边界，结论保持“需整改”。R4 只收口这些边界，不重做现有 UI、批次投影或测试矩阵。
+
+### R4.1 结构化 action target 必须真正安全且有界（P1）
+
+- 当前 `public_tool_target` 会原样返回任意长度的 path/pattern/query/file_path，`ToolEventDTO.target` 也没有长度约束。Master 已独立复现 10,000 字符 path 原样进入 target，未满足 R3.3 明确规定的“脱敏、长度有界”。
+- 建立单一 public target formatter：按工具选择有意义目标，移除控制字符，执行字段级脱敏并在固定字符预算内截断；DTO/schema 对应记录最大长度或等价合同。`run_command` 继续只暴露安全的 executable 标识，不暴露 operands。
+- glob/grep 不应因通用字段遍历顺序总是优先显示 `path="."`；根据动作语义选择 pattern、workspace 或结构化的 path/pattern 组合，避免产品行出现“搜索了 .”这种低信息摘要。
+- Python 合同测试覆盖至少 10,000 字符 path、pattern/query、含 sentinel 的 command operands 与控制字符；断言 target 长度上限、无 secret、生成 schema 同步。前端继续只消费 target，不回退解析 argsSummary。
+
+### R4.2 reset/new run 必须恢复初始窗口并保留用户任务（P1）
+
+- `ActivityFeed.visibleCount` 当前只在组件首次挂载时初始化为 300；用户加载到 500/700 后，即使 `resetVersion` 变化，reset 分支也不会复位窗口。新 run 或恢复 reset 的首帧因此可挂载超过 B2 的 350 行上限。
+- reset 必须以无 render-phase `setState` 的方式原子恢复 300 行初始窗口；新增 rerender 测试：先加载到 500，再提供新的 resetVersion 与 2,000-event fixture，首次提交仍只挂载 300，随后每次增加 200。
+- 当服务端 retained tail 已淘汰早期 `run_started` 时，refresh/reset 仍必须从 snapshot task 恢复且只恢复一条 user message。当前 projector 只有看到 `run_started` 才使用 task，超过 2,000 events 后刷新可能完全没有用户任务行。
+- 新增“retained_from > run_started id”的恢复合同：顺序不乱、用户任务恰好一条、action window 有界、后续增量不重复任务行。
+
+### R4.3 workspace 在途请求的所有权与 Abort 语义必须闭环（P1）
+
+- `apiFetch` 目前捕获所有 fetch exception 并统一包装为 `ApiError(transport_error)`，使 `useWorkspaceValidation`/`acquireValidation` 中专门处理 `AbortError` 的分支对真实 fetch abort 不可达。应原样传播 AbortError，只有非取消网络失败才映射 transport error。
+- `IN_FLIGHT` 的 `finally` 与 `release` 目前只按 requestKey 删除/递减。旧的、已 abort 但延迟 settle 的请求可能删除或中止随后创建的同键新请求。cleanup/release 必须绑定自己 acquire 到的 entry/controller identity，并只在 map 当前值仍是该 entry 时变更。
+- 增加 remount/in-flight 竞态测试：请求已经发出后卸载，再以同 key 挂载；让旧 promise 延迟 settle，证明旧 cleanup 不能删除/abort 新 entry，新请求能稳定到 valid，且同一时刻最多一个有效在途请求。
+
+### R4.4 测试 render probe 不得进入 production bundle（P2）
+
+- `MainPage.renderProbe` 及 WorkspaceField/ProfileSelector/TaskComposer/ActivityFeed 的 `onRender` props 当前存在于生产源码和构建 JS；这违反 plan 已明确的“render spy 只作为测试仪器，不进入 production bundle”。
+- 删除生产组件的测试回调接口。测试应使用 Vitest module wrapper/mock、React Profiler 或等价的测试侧仪器统计实际组件 render，不改变用户可用组件 API。
+- 保持现有 50 SSE batch 下 WorkspaceField/ProfileSelector/TaskComposer render 增量为 0 的断言，并增加静态检查或源码断言，确保 production source/bundle 不再包含 `renderProbe`/`onRender` 测试缝。
+
+### R4 复验入口
+
+- Developer 只读取并整改 `task_003` 的 R4.1-R4.4；不得开始 task_004，也不得删除现有 R3 反例和视觉证据。
+- 在原 feedback 追加 R4 完成说明、逐项反例和全量命令结果，再将 task_003 反馈重新登记为 `待评估`。
+- Master 复验将首先执行 10,000 字符 target、reset 后 300/200、缺失 run_started 的 user task、延迟 abort/remount 以及 production probe 搜索五组反例，再执行全量门禁。

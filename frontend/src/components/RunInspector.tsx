@@ -1,4 +1,6 @@
 import { useI18n } from "@/lib/i18n";
+import * as Collapsible from "@radix-ui/react-collapsible";
+import { ChevronDown } from "lucide-react";
 import { errorCodeText } from "@/lib/errorText";
 import type { RunSnapshot } from "@/api/client";
 import { formatElapsed } from "@/lib/format";
@@ -52,44 +54,15 @@ export function RunInspector({ snapshot, onNewTask }: RunInspectorProps) {
         <RunStatusBadge status={statusKind} compact />
       </div>
 
-      <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
-        <InspectorField label={t("inspector.stepCount")} value={String(snapshot.step_count ?? 0)} />
-        <InspectorField
-          label={t("inspector.attemptCount")}
-          value={String(snapshot.provider_attempt_count ?? 0)}
-        />
-        <InspectorField label={t("inspector.toolCount")} value={String(snapshot.tool_call_count ?? 0)} />
-        <InspectorField label={t("inspector.elapsed")} value={formatElapsed(snapshot.elapsed_ms)} />
-      </dl>
-
-      <div className="mt-3 space-y-1.5 border-t border-border pt-3 text-sm">
+      <div className="space-y-1.5 text-sm">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-muted">{t("inspector.phase")}</span>
-          <span className="mono text-xs">
-            {snapshot.phase ? t(`phase.${snapshot.phase}`) : "–"}
-          </span>
+          <span className="text-muted">{t("inspector.elapsed")}</span>
+          <span className="mono text-xs">{formatElapsed(snapshot.elapsed_ms)}</span>
         </div>
         <div className="flex items-center justify-between gap-2">
           <span className="text-muted">{t("inspector.verification")}</span>
           <VerificationBadge status={verification} />
         </div>
-        {snapshot.stop_reason ? (
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-muted">{t("inspector.stopReason")}</span>
-            <span className="text-xs">{t(`stopReason.${snapshot.stop_reason}`)}</span>
-          </div>
-        ) : null}
-        {snapshot.last_verification?.command ? (
-          <div className="text-xs">
-            <span className="text-muted">{t("inspector.command")}</span>
-            <p className="mono mt-0.5 break-all rounded-sm bg-surface-2 px-2 py-1">
-              {snapshot.last_verification.command}
-              <span className="ml-1 text-faint">
-                = {snapshot.last_verification.exit_code}
-              </span>
-            </p>
-          </div>
-        ) : null}
       </div>
 
       <div className="mt-3 border-t border-border pt-3">
@@ -117,6 +90,41 @@ export function RunInspector({ snapshot, onNewTask }: RunInspectorProps) {
           />
         </div>
       ) : null}
+
+      <Collapsible.Root className="mt-3 border-t border-border pt-3">
+        <Collapsible.Trigger className="flex w-full items-center justify-between text-sm text-muted hover:text-text">
+          {t("inspector.advanced")}
+          <ChevronDown aria-hidden size={14} />
+        </Collapsible.Trigger>
+        <Collapsible.Content className="mt-2 space-y-3 text-sm">
+          <dl className="grid grid-cols-2 gap-x-3 gap-y-2">
+            <InspectorField label={t("inspector.stepCount")} value={String(snapshot.step_count ?? 0)} />
+            <InspectorField label={t("inspector.attemptCount")} value={String(snapshot.provider_attempt_count ?? 0)} />
+            <InspectorField label={t("inspector.toolCount")} value={String(snapshot.tool_call_count ?? 0)} />
+          </dl>
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-muted">{t("inspector.phase")}</span>
+              <span className="mono text-xs">{snapshot.phase ? t(`phase.${snapshot.phase}`) : "–"}</span>
+            </div>
+            {snapshot.stop_reason ? (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-muted">{t("inspector.stopReason")}</span>
+                <span className="text-xs">{t(`stopReason.${snapshot.stop_reason}`)}</span>
+              </div>
+            ) : null}
+            {snapshot.last_verification?.command ? (
+              <div className="text-xs">
+                <span className="text-muted">{t("inspector.command")}</span>
+                <p className="mono mt-0.5 break-all rounded-sm bg-surface-2 px-2 py-1">
+                  {snapshot.last_verification.command}
+                  <span className="ml-1 text-faint">= {snapshot.last_verification.exit_code}</span>
+                </p>
+              </div>
+            ) : null}
+          </div>
+        </Collapsible.Content>
+      </Collapsible.Root>
 
       {mode === "terminal" ? (
         <button type="button" className="btn-primary mt-4 w-full" onClick={onNewTask}>

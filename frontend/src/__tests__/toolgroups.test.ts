@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildFeed, type ToolGroup } from "@/lib/toolgroups";
+import { actionTarget, TranscriptProjector } from "@/lib/toolgroups";
 import type { ToolEvent } from "@/api/client";
 
 function event(
@@ -11,130 +11,141 @@ function event(
   return { id, kind, step, phase: "EXECUTING_TOOLS", payload };
 }
 
-describe("buildFeed tool grouping", () => {
-  it("groups consecutive completed tools and interleaves with step events", () => {
-    const events = [
+describe("TranscriptProjector", () => {
+  it("projects only public user, action and lifecycle information", () => {
+    const projector = new TranscriptProjector();
+    const items = projector.reset([
       event(1, "run_started", {}, 0),
-      event(2, "step_started", { char_count: 10, budget: 120000 }, 1),
-      event(3, "tool_started", { call_id: "a", name: "glob", arguments: '{"pattern":"**/*.py"}' }),
-      event(4, "tool_finished", { call_id: "a", name: "glob", ok: true, error_code: null, summary: "glob ok: path=." }),
-      event(5, "tool_started", { call_id: "b", name: "read_file", arguments: '{"path":"src/app.py"}' }),
-      event(6, "tool_finished", { call_id: "b", name: "read_file", ok: true, error_code: null, summary: "read_file ok: path=src/app.py" }),
-      event(7, "run_finished", { status: "SUCCESS", stop_reason: "FINAL_ANSWER", verification_status: "VERIFIED" }),
-    ];
-    const { entries, groups } = buildFeed(events, "fix it");
-    expect(entries.map((entry) => entry.kind)).toEqual(["task", "step", "group", "terminal"]);
-    expect(groups).toHaveLength(1);
-    expect(groups[0].items).toHaveLength(2);
-    expect(groups[0].running).toBe(false);
-    expect(groups[0].containsError).toBe(false);
-    expect(groups[0].items[0].status).toBe("success");
-  });
-
-  it("preserves true event order across steps and groups", () => {
-    const events = [
-      event(1, "run_started", {}, 0),
-      event(2, "step_started", { char_count: 1, budget: 2 }, 1),
-      event(3, "tool_started", { call_id: "a", name: "glob", arguments: "{}" }),
-      event(4, "tool_finished", { call_id: "a", name: "glob", ok: true, error_code: null, summary: "s" }),
-      event(5, "step_started", { char_count: 1, budget: 2 }, 2),
-      event(6, "tool_started", { call_id: "b", name: "grep", arguments: "{}" }, 2),
-      event(7, "tool_finished", { call_id: "b", name: "grep", ok: true, error_code: null, summary: "s" }, 2),
-      event(8, "run_finished", { status: "SUCCESS", stop_reason: "FINAL_ANSWER", verification_status: "VERIFIED" }),
-    ];
-    const { entries } = buildFeed(events, "task");
-    expect(entries.map((entry) => entry.kind)).toEqual([
-      "task",
-      "step",
-      "group",
-      "step",
-      "group",
-      "terminal",
-    ]);
-    const groupSteps = entries
-      .filter((entry) => entry.kind === "group")
-      .map((entry) => (entry as { group: ToolGroup }).group.items.map((item) => item.step))
-      .flat();
-    expect(groupSteps).toEqual([1, 2]);
-    expect(
-      entries
-        .filter((entry) => entry.kind === "group")
-        .map((entry) => (entry as { group: ToolGroup }).group.items.map((item) => item.step))
-    ).toEqual([[1], [2]]);
-  });
-
-  it("ends a group at retry and completion boundaries", () => {
-    const events = [
-      event(1, "tool_started", { call_id: "a", name: "glob", arguments: "{}" }),
-      event(2, "tool_finished", { call_id: "a", name: "glob", ok: true, error_code: null, summary: "s" }),
-      event(3, "model_retry", { attempt: 1, next_attempt: 2, reason: "busy" }),
-      event(4, "tool_started", { call_id: "b", name: "grep", arguments: "{}" }),
-      event(5, "tool_finished", { call_id: "b", name: "grep", ok: true, error_code: null, summary: "s" }),
+      event(2, "step_started", { char_count: 10, budget: 120000 }),
+      event(3, "assistant_received", { text_chars: 1000, tool_call_count: 1 }),
+      event(4, "tool_started", { call_id: "a", name: "read_file", arguments: '{"path":"src/a.py"}' }),
+      event(5, "model_retry", { attempt: 1, reason: "busy" }),
       event(6, "completion_deferred", { verification_status: "NOT_RUN" }),
-      event(7, "tool_started", { call_id: "c", name: "run_command", arguments: "{}" }),
-      event(8, "tool_finished", { call_id: "c", name: "run_command", ok: true, error_code: null, summary: "s" }),
-    ];
-    const { entries, groups } = buildFeed(events, "task");
-    expect(entries.map((entry) => entry.kind)).toEqual([
-      "group",
-      "retry",
-      "group",
-      "completion_deferred",
-      "group",
+    ], "read the file");
+
+    expect(items.map((item) => item.kind)).toEqual([
+      "user_message",
+      "action_row",
+      "status_notice",
+      "verification_notice",
     ]);
-    expect(groups.map((group) => group.items.map((item) => item.callId))).toEqual([
-      ["a"],
-      ["b"],
-      ["c"],
+    expect(items[1].kind === "action_row" && items[1].action.name).toBe("read_file");
+  });
+
+  it("projects only appended events and updates a finished tool action in place", () => {
+    const projector = new TranscriptProjector();
+    projector.reset([
+      event(1, "run_started", {}, 0),
+      event(2, "tool_started", { call_id: "a", name: "read_file", arguments: '{"path":"src/a.py"}' }),
+    ], "read the file");
+    expect(projector.processedEvents).toBe(2);
+    const initialRow = projector.snapshot.find((item) => item.kind === "action_row");
+    expect(initialRow?.kind === "action_row" && initialRow.action.status).toBe("running");
+
+    projector.append([
+      event(2, "tool_started", { call_id: "a", name: "read_file", arguments: "{}" }),
+      event(3, "tool_finished", { call_id: "a", ok: true, error_code: null, summary: "read ok" }),
+    ], "read the file");
+
+    expect(projector.processedEvents).toBe(3);
+    const finishedRow = projector.snapshot.find((item) => item.kind === "action_row");
+    expect(finishedRow?.kind === "action_row" && finishedRow.action.status).toBe("success");
+    expect(finishedRow?.kind === "action_row" && finishedRow.action.summary).toBe("read ok");
+    expect(finishedRow).not.toBe(initialRow);
+    expect(finishedRow?.id).toBe(initialRow?.id);
+  });
+
+  it("keeps a bounded view possible for a 2,000-event history without dropping order", () => {
+    const events: ToolEvent[] = [event(1, "run_started", {}, 0)];
+    for (let index = 0; index < 999; index += 1) {
+      const callId = `call-${index}`;
+      events.push(event(index * 2 + 2, "tool_started", { call_id: callId, name: "glob", arguments: "{}" }));
+      events.push(event(index * 2 + 3, "tool_finished", { call_id: callId, ok: true, error_code: null, summary: "ok" }));
+    }
+    const projector = new TranscriptProjector();
+    const items = projector.reset(events, "inspect");
+    expect(projector.processedEvents).toBe(1999);
+    expect(items).toHaveLength(1000);
+    expect(items.slice(-300)).toHaveLength(300);
+    const actionIds = items
+      .filter((item) => item.kind === "action_row")
+      .map((item) => item.id);
+    expect(actionIds.at(0)).toBe("action-call-0");
+    expect(actionIds.at(-1)).toBe("action-call-998");
+  });
+
+  it("projects only the incoming batch after a 2,000-event baseline and bounds sustained history", () => {
+    const baseline: ToolEvent[] = [event(1, "run_started", {}, 0)];
+    for (let index = 0; index < 999; index += 1) {
+      const callId = `base-${index}`;
+      baseline.push(event(index * 2 + 2, "tool_started", { call_id: callId, name: "glob", arguments: "{}" }));
+      baseline.push(event(index * 2 + 3, "tool_finished", { call_id: callId, ok: true, error_code: null, summary: "ok" }));
+    }
+    baseline.push(event(2000, "assistant_received", { text_chars: 0, tool_call_count: 0 }));
+    expect(baseline).toHaveLength(2000);
+    const projector = new TranscriptProjector();
+    projector.reset(baseline, "inspect");
+    const processedBefore = projector.processedEvents;
+    const batch = Array.from({ length: 50 }, (_, index) =>
+      event(2001 + index, "model_retry", { attempt: index + 1 })
+    );
+    projector.append(batch, "inspect");
+    expect(projector.processedEvents - processedBefore).toBe(50);
+
+    const sustained = Array.from({ length: 4100 }, (_, index) =>
+      event(index + 1, "tool_started", {
+        call_id: `sustained-${index}`,
+        name: "read_file",
+        arguments: "{}",
+      })
+    );
+    projector.reset(sustained, "inspect");
+    expect(projector.itemCount).toBeLessThanOrEqual(2000);
+    expect(projector.trackedActionCount).toBeLessThanOrEqual(2000);
+    expect(projector.snapshot.at(0)?.id).toBe("user-task");
+    expect(projector.snapshot.at(1)?.id).toBe("action-sustained-2101");
+
+    projector.append([event(4101, "run_started", {}, 0)], "inspect");
+    expect(projector.snapshot.filter((item) => item.kind === "user_message")).toHaveLength(1);
+  });
+
+  it("recovers one user task when the retained tail no longer contains run_started", () => {
+    const projector = new TranscriptProjector();
+    const retainedTail = Array.from({ length: 2000 }, (_, index) =>
+      event(5000 + index, "tool_started", {
+        call_id: `tail-${index}`,
+        name: "read_file",
+        arguments: "{}",
+      })
+    );
+
+    projector.reset(retainedTail, "恢复这个长任务");
+    expect(projector.itemCount).toBe(2000);
+    expect(projector.snapshot.filter((item) => item.kind === "user_message")).toEqual([
+      { id: "user-task", kind: "user_message", text: "恢复这个长任务" },
     ]);
+    expect(projector.snapshot.at(1)?.id).toBe("action-tail-1");
+
+    projector.append([event(7000, "run_started", {}, 0)], "恢复这个长任务");
+    expect(projector.snapshot.filter((item) => item.kind === "user_message")).toHaveLength(1);
   });
 
-  it("keeps the running group expanded (still running)", () => {
-    const events = [
-      event(1, "tool_started", { call_id: "a", name: "run_command", arguments: "{}" }),
-    ];
-    const { groups } = buildFeed(events, "task");
-    expect(groups[0].running).toBe(true);
-  });
-
-  it("keeps error groups expanded and marks containsError", () => {
-    const events = [
-      event(1, "tool_started", { call_id: "a", name: "grep", arguments: "{}" }),
-      event(2, "tool_finished", { call_id: "a", name: "grep", ok: false, error_code: "INVALID_ARGUMENT", summary: "grep INVALID_ARGUMENT: bad" }),
-    ];
-    const { groups } = buildFeed(events, "task");
-    expect(groups[0].containsError).toBe(true);
-    expect(groups[0].items[0].status).toBe("error");
-    expect(groups[0].items[0].errorCode).toBe("INVALID_ARGUMENT");
-  });
-
-  it("treats aborted tools as interrupted (realistic interleaving)", () => {
-    // One tool is executing when the run is cancelled: it receives
-    // tool_finished with TOOL_ABORTED; no further tools start.
-    const events = [
-      event(1, "tool_started", { call_id: "a", name: "run_command", arguments: "{}" }),
-      event(2, "tool_finished", {
-        call_id: "a",
-        name: "run_command",
-        ok: false,
-        error_code: "TOOL_ABORTED",
-        summary: "command aborted by user cancellation",
-      }),
-      event(3, "run_finished", { status: "INTERRUPTED", stop_reason: "INTERRUPTED", verification_status: "NOT_RUN" }),
-    ];
-    const { groups } = buildFeed(events, "task");
-    expect(groups[0].aborted).toBe(true);
-    expect(groups[0].containsError).toBe(true);
-    expect(groups[0].items[0].status).toBe("aborted");
-  });
-
-  it("dedupes duplicate call ids (keep first)", () => {
-    const events = [
-      event(1, "tool_started", { call_id: "a", name: "glob", arguments: "{}" }),
-      event(2, "tool_started", { call_id: "a", name: "glob", arguments: "{}" }),
-      event(3, "tool_finished", { call_id: "a", name: "glob", ok: true, error_code: null, summary: "s" }),
-    ];
-    const { groups } = buildFeed(events, "task");
-    expect(groups[0].items).toHaveLength(1);
+  it("uses the structured target when the redacted argument summary is truncated", () => {
+    const projector = new TranscriptProjector();
+    projector.reset([
+      {
+        ...event(1, "tool_started", {
+          call_id: "long",
+          name: "write_file",
+          arguments: '{"content":"***","path":"src/' + "x".repeat(160) + "…",
+        }),
+        target: "src/precise-target.py",
+      },
+    ], "write");
+    const row = projector.snapshot.find((item) => item.kind === "action_row");
+    expect(row?.kind).toBe("action_row");
+    if (row?.kind !== "action_row") throw new Error("missing action row");
+    expect(actionTarget(row.action)).toBe("src/precise-target.py");
+    expect(row.action.argsSummary).toContain("***");
   });
 });

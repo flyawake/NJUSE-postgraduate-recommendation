@@ -17,6 +17,9 @@ export type SseStatus = "idle" | "connected" | "disconnected";
 
 export interface RunStoreState {
   events: ToolEvent[];
+  appendedEvents: ToolEvent[];
+  eventResetVersion: number;
+  eventVersion: number;
   lastEventId: number;
   sseStatus: SseStatus;
   cancelling: boolean;
@@ -37,6 +40,9 @@ const LIVE_PHASE_AFTER_EVENT: Record<string, string> = {
 
 const initialState: RunStoreState = {
   events: [],
+  appendedEvents: [],
+  eventResetVersion: 0,
+  eventVersion: 0,
   lastEventId: 0,
   sseStatus: "idle",
   cancelling: false,
@@ -44,6 +50,7 @@ const initialState: RunStoreState = {
 
 type Action =
   | { type: "APPEND"; events: ToolEvent[] }
+  | { type: "ACK_APPEND"; version: number }
   | { type: "RESET_EVENTS"; events: ToolEvent[] }
   | { type: "SSE_STATUS"; status: SseStatus }
   | { type: "CANCEL_REQUESTED" }
@@ -53,13 +60,21 @@ type Action =
 export function runReducer(state: RunStoreState, action: Action): RunStoreState {
   switch (action.type) {
     case "APPEND": {
-      const next = action.events.filter((event) => event.id > state.lastEventId);
+      const next: ToolEvent[] = [];
+      for (const event of action.events) {
+        if (event.id > state.lastEventId) next.push(event);
+      }
       if (!next.length) return { ...state, sseStatus: "connected" };
       const merged = [...state.events, ...next];
       const trimmed = merged.length > MAX_CLIENT_EVENTS ? merged.slice(-MAX_CLIENT_EVENTS) : merged;
       return {
         ...state,
         events: trimmed,
+        // React may batch several SSE callbacks into one commit. Retain all
+        // unseen callback batches until the feed has rendered this version;
+        // keeping only `next` here silently loses intermediate tool events.
+        appendedEvents: [...state.appendedEvents, ...next],
+        eventVersion: state.eventVersion + 1,
         lastEventId: next[next.length - 1].id,
         sseStatus: "connected",
       };
@@ -70,12 +85,20 @@ export function runReducer(state: RunStoreState, action: Action): RunStoreState 
       return {
         ...state,
         events: trimmed,
+        appendedEvents: [],
+        eventResetVersion: state.eventResetVersion + 1,
+        eventVersion: state.eventVersion + 1,
         // An empty reset must clear the baseline too: otherwise replayed
         // events with ids <= the old lastEventId would be filtered out.
         lastEventId: trimmed.length ? trimmed[trimmed.length - 1].id : 0,
         sseStatus: "connected",
       };
     }
+    case "ACK_APPEND":
+      // An acknowledgement from an older rendered frame must not clear an
+      // event that arrived after that frame was committed.
+      if (action.version !== state.eventVersion || state.appendedEvents.length === 0) return state;
+      return { ...state, appendedEvents: [] };
     case "SSE_STATUS":
       return { ...state, sseStatus: action.status };
     case "CANCEL_REQUESTED":
@@ -143,6 +166,35 @@ export interface RunStore {
   refetchSnapshot: () => void;
 }
 
+export interface RunCommands {
+  startRun: RunStore["startRun"];
+  cancelRun: RunStore["cancelRun"];
+  clear: RunStore["clear"];
+  refetchSnapshot: RunStore["refetchSnapshot"];
+}
+
+export interface RunMeta {
+  runId: string | null;
+  snapshot?: RunSnapshot;
+  snapshotLoading: boolean;
+  sseStatus: SseStatus;
+  cancelling: boolean;
+}
+
+/**
+ * High-frequency event boundary. `appendedEvents` is the exact new SSE
+ * batch; retainedEvents is consulted only after a reset/recovery.
+ */
+export interface RunEventFeed {
+  retainedEvents: ToolEvent[];
+  appendedEvents: ToolEvent[];
+  resetVersion: number;
+  version: number;
+}
+
+const RunCommandsContext = createContext<RunCommands | null>(null);
+const RunMetaContext = createContext<RunMeta | null>(null);
+const RunEventsContext = createContext<RunEventFeed | null>(null);
 const RunStoreContext = createContext<RunStore | null>(null);
 
 export function RunStoreProvider({ children }: { children: ReactNode }) {
@@ -214,6 +266,10 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
     },
     onError: () => dispatch({ type: "CANCEL_FAILED" }),
   });
+  const startMutationRef = useRef(startRunMutation.mutateAsync);
+  const cancelMutationRef = useRef(cancelRunMutation.mutateAsync);
+  startMutationRef.current = startRunMutation.mutateAsync;
+  cancelMutationRef.current = cancelRunMutation.mutateAsync;
 
   // SSE subscription lifecycle. A synchronous ref tracks the newest accepted
   // id so a reconnect cannot capture an old reducer render in its closure.
@@ -285,20 +341,20 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
 
   const startRun = useCallback(
     async (request: { workspace: string; task: string; profileId: string | null }) => {
-      const snap = await startRunMutation.mutateAsync({
+      const snap = await startMutationRef.current({
         workspace: request.workspace,
         task: request.task,
         profile_id: request.profileId,
       });
       return snap;
     },
-    [startRunMutation]
+    []
   );
 
   const cancelRun = useCallback(async () => {
     if (!runId) return;
-    await cancelRunMutation.mutateAsync();
-  }, [cancelRunMutation, runId]);
+    await cancelMutationRef.current();
+  }, [runId]);
 
   const clear = useCallback(() => {
     runIdRef.current = null;
@@ -312,32 +368,93 @@ export function RunStoreProvider({ children }: { children: ReactNode }) {
     if (runId) queryClient.invalidateQueries({ queryKey: ["run", runId] });
   }, [queryClient, runId]);
 
-  const liveSnapshot = useMemo(
-    () => deriveLiveSnapshot(snapshot, state.events),
-    [snapshot, state.events]
+  const commands = useMemo<RunCommands>(
+    () => ({ startRun, cancelRun, clear, refetchSnapshot }),
+    [startRun, cancelRun, clear, refetchSnapshot]
+  );
+
+  const meta = useMemo<RunMeta>(
+    () => ({
+      runId,
+      // Snapshot polling is intentionally a low-frequency boundary. Event
+      // consumers receive the append-only tail through RunEventsContext;
+      // their updates must not redraw the workspace, profile or composer.
+      snapshot,
+      snapshotLoading,
+      sseStatus: state.sseStatus,
+      cancelling: state.cancelling,
+    }),
+    [runId, snapshot, snapshotLoading, state.sseStatus, state.cancelling]
   );
 
   const value = useMemo<RunStore>(
     () => ({
-      runId,
-      snapshot: liveSnapshot,
-      snapshotLoading,
+      ...meta,
+      // The legacy aggregate store deliberately exposes the polling snapshot
+      // as-is. Hot SSE updates are consumed through RunEventFeed below, so
+      // this provider never scans a 2,000-event tail on each append.
+      snapshot,
       events: state.events,
-      sseStatus: state.sseStatus,
-      cancelling: state.cancelling,
-      startRun,
-      cancelRun,
-      clear,
-      refetchSnapshot,
+      ...commands,
     }),
-    [runId, liveSnapshot, snapshotLoading, state.events, state.sseStatus, state.cancelling, startRun, cancelRun, clear, refetchSnapshot]
+    [meta, snapshot, state.events, commands]
   );
 
-  return <RunStoreContext.Provider value={value}>{children}</RunStoreContext.Provider>;
+  const eventFeed = useMemo<RunEventFeed>(
+    () => ({
+      retainedEvents: state.events,
+      appendedEvents: state.appendedEvents,
+      resetVersion: state.eventResetVersion,
+      version: state.eventVersion,
+    }),
+    [state.events, state.appendedEvents, state.eventResetVersion, state.eventVersion]
+  );
+
+  // Clear a delivered batch only after React has committed it to the event
+  // consumer. This keeps the hot path O(new batch) even when the browser
+  // batches several EventSource messages into one render.
+  useEffect(() => {
+    if (!state.appendedEvents.length) return;
+    dispatch({ type: "ACK_APPEND", version: state.eventVersion });
+  }, [state.appendedEvents, state.eventVersion]);
+
+  return (
+    <RunCommandsContext.Provider value={commands}>
+      <RunMetaContext.Provider value={meta}>
+        <RunEventsContext.Provider value={eventFeed}>
+          <RunStoreContext.Provider value={value}>{children}</RunStoreContext.Provider>
+        </RunEventsContext.Provider>
+      </RunMetaContext.Provider>
+    </RunCommandsContext.Provider>
+  );
 }
 
 export function useRunStore(): RunStore {
   const ctx = useContext(RunStoreContext);
   if (!ctx) throw new Error("useRunStore must be used inside RunStoreProvider");
+  return ctx;
+}
+
+export function useRunCommands(): RunCommands {
+  const ctx = useContext(RunCommandsContext);
+  if (!ctx) throw new Error("useRunCommands must be used inside RunStoreProvider");
+  return ctx;
+}
+
+export function useRunMeta(): RunMeta {
+  const ctx = useContext(RunMetaContext);
+  if (!ctx) throw new Error("useRunMeta must be used inside RunStoreProvider");
+  return ctx;
+}
+
+export function useRunEvents(): ToolEvent[] {
+  const ctx = useContext(RunEventsContext);
+  if (!ctx) throw new Error("useRunEvents must be used inside RunStoreProvider");
+  return ctx.retainedEvents;
+}
+
+export function useRunEventFeed(): RunEventFeed {
+  const ctx = useContext(RunEventsContext);
+  if (!ctx) throw new Error("useRunEventFeed must be used inside RunStoreProvider");
   return ctx;
 }

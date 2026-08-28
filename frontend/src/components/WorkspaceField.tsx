@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, FolderOpen, Loader2, XCircle } from "lucide-react";
+import { useState } from "react";
+import { CheckCircle2, FolderOpen, Loader2, RotateCcw, XCircle } from "lucide-react";
 import { api } from "@/api/client";
 import { useI18n } from "@/lib/i18n";
 import { apiErrorText, errorCodeText } from "@/lib/errorText";
 import { cx } from "@/lib/format";
+import { useWorkspaceValidation } from "@/lib/workspaceValidation";
 
-export type WorkspaceState = "empty" | "checking" | "valid" | "invalid";
+export type WorkspaceState = "empty" | "debouncing" | "checking" | "valid" | "invalid" | "error";
 
 export interface WorkspaceFieldProps {
   value: string;
@@ -22,72 +23,33 @@ export interface WorkspaceFieldProps {
  */
 export function WorkspaceField({ value, onChange, onValidated, id }: WorkspaceFieldProps) {
   const { t } = useI18n();
-  const [state, setState] = useState<WorkspaceState>(value ? "checking" : "empty");
-  const [error, setError] = useState<string | null>(null);
+  const validation = useWorkspaceValidation(value, onValidated);
+  const [pickerError, setPickerError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const requestSeq = useRef(0);
-
-  useEffect(() => {
-    if (!value.trim()) {
-      setState("empty");
-      setError(null);
-      onValidated?.(null);
-      return;
-    }
-    setState("checking");
-    setError(null);
-    const seq = ++requestSeq.current;
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(async () => {
-      try {
-        const result = await api.validateWorkspace(value.trim());
-        if (seq !== requestSeq.current) return;
-        if (result.valid) {
-          setState("valid");
-          onValidated?.(result.resolved_path ?? null);
-        } else {
-          setState("invalid");
-          setError(
-            result.error?.code
-              ? errorCodeText(result.error.code, t)
-              : t("workspace.invalid")
-          );
-          onValidated?.(null);
-        }
-      } catch (err) {
-        if (seq !== requestSeq.current) return;
-        setState("invalid");
-        setError(apiErrorText(err, t, "workspace.invalid"));
-        onValidated?.(null);
-      }
-    }, 400);
-    return () => {
-      if (timer.current) clearTimeout(timer.current);
-    };
-  }, [value, t, onValidated]);
+  const state = validation.status;
+  const error = pickerError ?? (validation.errorCode ? errorCodeText(validation.errorCode, t) : null);
 
   const handleBrowse = async () => {
     if (picking) return;
     setPicking(true);
-    setError(null);
+    setPickerError(null);
     try {
       const result = await api.pickWorkspace();
       if (result.cancelled) return;
       if (result.error) {
-        setError(errorCodeText(result.error.code, t));
+        setPickerError(errorCodeText(result.error.code, t));
         return;
       }
       if (result.path) onChange(result.path);
     } catch (err) {
-      setError(apiErrorText(err, t, "workspace.invalid"));
+      setPickerError(apiErrorText(err, t, "workspace.invalid"));
     } finally {
       setPicking(false);
     }
   };
 
   const Icon =
-    state === "checking"
+    state === "checking" || state === "debouncing"
       ? Loader2
       : state === "valid"
         ? CheckCircle2
@@ -112,7 +74,7 @@ export function WorkspaceField({ value, onChange, onValidated, id }: WorkspaceFi
           <input
             id={id ?? "workspace"}
             type="text"
-            className={cx("input pr-9", state === "invalid" && "border-danger")}
+            className={cx("input pr-9", (state === "invalid" || state === "error") && "border-danger")}
             placeholder={t("workspace.placeholder")}
             value={value}
             onChange={(event) => {
@@ -127,8 +89,8 @@ export function WorkspaceField({ value, onChange, onValidated, id }: WorkspaceFi
             className={cx(
               "absolute right-2.5 top-1/2 -translate-y-1/2",
               state === "valid" && "text-success",
-              state === "invalid" && "text-danger",
-              state === "checking" && "text-faint"
+              (state === "invalid" || state === "error") && "text-danger",
+              (state === "checking" || state === "debouncing") && "text-faint"
             )}
             aria-hidden
           >
@@ -160,7 +122,17 @@ export function WorkspaceField({ value, onChange, onValidated, id }: WorkspaceFi
       >
         {hintText}
       </p>
-      {state === "invalid" ? <p className="sr-only">{t("workspace.invalid")}</p> : null}
+      {state === "error" ? (
+        <button
+          type="button"
+          className="btn-secondary mt-2"
+          onClick={validation.retry}
+          data-testid="workspace-retry"
+        >
+          <RotateCcw aria-hidden size={14} />
+          {t("workspace.retry")}
+        </button>
+      ) : null}
     </div>
   );
 }

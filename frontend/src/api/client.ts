@@ -44,7 +44,17 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   let response: Response;
   try {
     response = await fetch(path, { ...init, headers });
-  } catch {
+  } catch (error: unknown) {
+    // Cancellation is control flow for hooks that supersede or unmount a
+    // request. Preserve it instead of presenting it as a transport failure.
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "name" in error &&
+      error.name === "AbortError"
+    ) {
+      throw error;
+    }
     // Locale-neutral marker; the UI renders it through i18n.
     throw new ApiError("transport_error", "", 0);
   }
@@ -82,10 +92,11 @@ export const api = {
     return data;
   },
 
-  validateWorkspace: (path: string) =>
+  validateWorkspace: (path: string, signal?: AbortSignal) =>
     apiFetch<WorkspaceValidate>("/api/workspace/validate", {
       method: "POST",
       body: JSON.stringify({ path }),
+      signal,
     }),
 
   /** Open the OS-native folder picker on the server machine. */

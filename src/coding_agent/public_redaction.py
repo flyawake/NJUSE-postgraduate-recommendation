@@ -15,6 +15,9 @@ _SAFE_FLAG_RE = re.compile(r"^-{1,2}[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SAFE_ASSIGNMENT_KEY_RE = re.compile(
     r"^(?:-{1,2}[A-Za-z0-9][A-Za-z0-9._-]*|[A-Za-z_][A-Za-z0-9_]*)$"
 )
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]+")
+
+PUBLIC_TOOL_TARGET_MAX_CHARS = 160
 
 
 def redact_command_arg(part: str) -> str:
@@ -74,6 +77,55 @@ def format_public_tool_arguments(
     if len(text) <= max_chars:
         return text
     return text[: max_chars - 1] + "…"
+
+
+def bound_public_tool_target(
+    value: Any, max_chars: int = PUBLIC_TOOL_TARGET_MAX_CHARS
+) -> Optional[str]:
+    """Normalize one already-selected public target into a bounded UI label."""
+    if not isinstance(value, str) or max_chars < 2:
+        return None
+    cleaned = _CONTROL_CHARS_RE.sub(" ", value).strip()
+    if not cleaned:
+        return None
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[: max_chars - 1] + "…"
+
+
+def public_tool_target(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
+    """Return a safe, structured action target for the public event DTO.
+
+    This is intentionally derived before the bounded argument summary is
+    rendered.  UI code must never parse a display string that may have been
+    truncated (and must not need access to unredacted tool arguments).
+    """
+    if tool_name == "run_command":
+        argv = args.get("argv")
+        if isinstance(argv, (list, tuple)) and argv and isinstance(argv[0], str):
+            # The executable identifies the action without exposing command
+            # operands, inline credentials, or other user-controlled values.
+            executable = argv[0].replace("\\", "/").rsplit("/", 1)[-1]
+            return bound_public_tool_target(executable)
+
+    # Search rows should describe what was searched. A generic path-first
+    # traversal rendered both glob and grep as the low-information target ".".
+    if tool_name in ("glob", "grep"):
+        pattern = bound_public_tool_target(args.get("pattern"))
+        if pattern:
+            return pattern
+        return bound_public_tool_target(args.get("path"))
+
+    key_order = {
+        "read_file": ("path", "file_path"),
+        "write_file": ("path", "file_path"),
+        "edit_file": ("path", "file_path"),
+    }.get(tool_name, ("path", "file_path", "query", "pattern"))
+    for key in key_order:
+        target = bound_public_tool_target(args.get(key))
+        if target:
+            return target
+    return None
 
 
 def format_public_tool_outcome(

@@ -574,6 +574,18 @@
           "step": {
             "title": "Step",
             "type": "integer"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target"
           }
         },
         "required": [

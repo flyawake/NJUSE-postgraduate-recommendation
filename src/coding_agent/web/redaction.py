@@ -11,6 +11,7 @@ import json
 from typing import Any, Dict
 
 from ..public_redaction import (
+    bound_public_tool_target,
     redact_command_summary,
     redact_tool_arguments,
 )
@@ -56,6 +57,10 @@ def redact_public_payload(kind: str, payload: Dict[str, Any]) -> Dict[str, Any]:
 
     if kind == "tool_started" and "arguments" in safe:
         safe["arguments"] = _redact_tool_arguments(tool_name, str(safe["arguments"]))
+    if kind == "tool_started" and "target" in safe:
+        # Defense in depth for injected/legacy events that did not originate
+        # from the current AgentLoop formatter.
+        safe["target"] = bound_public_tool_target(safe["target"])
     if kind == "tool_finished" and tool_name == "run_command":
         # Defense in depth for events from older kernel versions.
         if safe.get("ok") is True:

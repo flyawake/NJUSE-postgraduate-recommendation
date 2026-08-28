@@ -644,6 +644,15 @@ class TestEventRedaction:
         raise AssertionError("run did not reach terminal state")
 
     def test_sentinel_never_reaches_snapshot_or_events(self, workspace):
+        long_secret_argv = [
+            "python",
+            "-c",
+            "import sys; sys.exit(1)",
+            f"FOO={self.SENTINEL}",
+            f"--header=Bearer-{self.SENTINEL}",
+            self.SENTINEL,
+            *[f"token={self.SENTINEL}-{index}" for index in range(24)],
+        ]
         factory, _ = _scripted_loop_model(
             turn(
                 calls=[
@@ -658,14 +667,7 @@ class TestEventRedaction:
                     make_tool_call(
                         "run_command",
                         {
-                            "argv": [
-                                "python",
-                                "-c",
-                                "import sys; sys.exit(1)",
-                                f"FOO={self.SENTINEL}",
-                                f"--header=Bearer-{self.SENTINEL}",
-                                self.SENTINEL,
-                            ],
+                            "argv": long_secret_argv,
                             "purpose": "verify",
                         },
                     )
@@ -717,7 +719,23 @@ class TestEventRedaction:
             and event["payload"].get("name") == "write_file"
         )
         assert "leak.txt" in write_started["payload"]["arguments"]
+        assert write_started["target"] == "leak.txt"
         assert self.SENTINEL not in write_started["payload"]["arguments"]
+        # The detail is deliberately bounded and secret-free, while the UI
+        # title reads the separately structured safe target, never JSON from
+        # this truncated display string.
+        command_started = next(
+            event
+            for event in terminal["events"]
+            if event["kind"] == "tool_started"
+            and event["payload"].get("name") == "run_command"
+        )
+        assert command_started["target"] == "python"
+        # Defense-in-depth may turn an already truncated JSON display value
+        # into a fail-closed marker; either form is intentionally unsuitable
+        # for extracting a title and neither may expose a secret.
+        assert command_started["payload"]["arguments"] == "<arguments redacted>"
+        assert self.SENTINEL not in command_started["payload"]["arguments"]
         run_finished = next(
             event
             for event in terminal["events"]

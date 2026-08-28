@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { PanelLeft, PanelRightClose, PanelRightOpen } from "lucide-react";
@@ -33,8 +33,16 @@ export function AppShell({
   badge,
 }: AppShellProps) {
   const { t } = useI18n();
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.innerWidth < 640);
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    const collapseForNarrowViewport = () => {
+      if (window.innerWidth < 640) setSidebarCollapsed(true);
+    };
+    window.addEventListener("resize", collapseForNarrowViewport);
+    return () => window.removeEventListener("resize", collapseForNarrowViewport);
+  }, []);
 
   return (
     <div className="flex h-full min-h-0 flex-col">

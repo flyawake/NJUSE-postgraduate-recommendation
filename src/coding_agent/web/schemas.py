@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..public_redaction import PUBLIC_TOOL_TARGET_MAX_CHARS
+
 MAX_TASK_CHARS = 100_000
 MAX_WORKSPACE_CHARS = 1024
 
@@ -104,6 +106,9 @@ class ToolEventDTO(BaseModel):
     kind: str
     step: int
     phase: str
+    # Present only for tool_started. It is prepared from normalized arguments
+    # before the display summary is truncated, never reconstructed by the UI.
+    target: Optional[str] = Field(default=None, max_length=PUBLIC_TOOL_TARGET_MAX_CHARS)
     payload: Dict[str, Any]
 
 
@@ -178,7 +183,7 @@ EVENT_PAYLOAD_KEYS: Dict[str, frozenset] = {
     "step_started": frozenset({"char_count", "budget"}),
     "model_retry": frozenset({"attempt", "next_attempt", "reason"}),
     "assistant_received": frozenset({"text_chars", "tool_call_count"}),
-    "tool_started": frozenset({"call_id", "name", "arguments"}),
+    "tool_started": frozenset({"call_id", "name", "arguments", "target"}),
     "tool_finished": frozenset({"call_id", "name", "ok", "error_code", "summary"}),
     "completion_deferred": frozenset({"verification_status"}),
     "run_finished": frozenset(

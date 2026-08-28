@@ -30,6 +30,7 @@ from .prompt import SYSTEM_PROMPT
 from .public_redaction import (
     format_public_tool_arguments,
     format_public_tool_outcome,
+    public_tool_target,
     redact_command_summary,
 )
 from .tools.base import (
@@ -369,6 +370,7 @@ class AgentLoop:
                     "arguments": format_public_tool_arguments(
                         call.name, prepared.normalized_args
                     ),
+                    "target": public_tool_target(call.name, prepared.normalized_args),
                 },
             )
             outcome = self._tool_executor.execute(prepared)
