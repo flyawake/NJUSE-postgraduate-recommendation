@@ -66,7 +66,7 @@ Python 代码必须通过 Ruff format、Ruff lint 和 pytest。task_002 前端�
 
 1. **P0 可靠内核（task_001，已归档）**：显式 AgentLoop、规范消息配对、ToolExecutor/ToolPolicy、六个本地工具、资源感知上下文投影、变更后验证门槛、结构化事件和离线端到端测试；R1-R3 整改复验已通过。
 2. **P1 图形化应用与多服务商配置（task_002，已归档）**：提供 React/TypeScript 本地 GUI、实时运行/工具时间线、开始与取消、用户级 provider profile、独立 credential provider 和 ModelClientFactory；保留 CLI/legacy 环境变量兼容，不把界面状态或 provider 分支耦合进 AgentLoop；A1-A22、R2、R3 已通过。
-3. **P0 产品化界面与性能边界（task_003，已完成，待归档）**：已完成普通界面产品化、连续 transcript 与平面可展开工具活动、Composer Start/Stop、workspace validation 隔离与同键竞态恢复、O(batch) 有界投影、安全结构化 action target 和响应式视觉证据。
+3. **P0 产品化界面与性能边界（task_003，已归档）**：已完成普通界面产品化、连续 transcript 与平面可展开工具活动、Composer Start/Stop、workspace validation 隔离与同键竞态恢复、O(batch) 有界投影、安全结构化 action target 和响应式视觉证据。
 4. **P0 持久多轮会话（task_004，未开始）**：建立 Conversation/Turn/Run 与 SQLite append-only 事实源，完成独立上下文、切换、命名、归档/恢复、删除、后台运行和 crash recovery。
 5. **P0 流式模型与可展示 reasoning（task_005，未开始）**：统一 provider stream event，分别适配 DeepSeek `reasoning_content`、OpenAI Responses reasoning summary 等公开输出；折叠 Think 不暴露或伪造隐藏 chain-of-thought。
 6. **P1 运行中输入（task_006，未开始）**：实现 Host 权威、持久、严格 FIFO 的 Queue，以及只在下一安全 step 边界进入、失败回 Queue 的 Steer；完善 busy Composer 与队列管理。

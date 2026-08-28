@@ -8,7 +8,7 @@
 | --- | --- | --- | --- | --- |
 | [task_001](archive/task_001/plan.md) | 已归档 | P0 | [task_001_feedback.md](../feedback/archive/task_001_feedback.md)（已归档，通过） | 2026-08-27 整改复验通过：128 passed, 4 skipped；R1-R3 独立复现通过；live smoke 与仓库时间合规性转后续跟踪 |
 | [task_002](archive/task_002/plan.md) | 已归档 | P1 | [task_002_feedback.md](../feedback/archive/task_002_feedback.md)（已归档，通过） | 2026-08-27 第三次复验通过：A1-A22、R2、R3 全部闭环；238 passed/4 skipped、Vitest 33、Playwright 5、audit 0；真实模型 smoke 依规则 N/A，转后续任务 |
-| [task_003](task_003/plan.md) | 已完成 | P0 | [task_003_feedback.md](../feedback/task_003_feedback.md)（最终复验通过，待归档） | 2026-08-28 用户授权 Master 特例完成 R4；248 passed/4 skipped、Vitest 44、Playwright 7、audit 0，源码与视觉复验通过。 |
+| [task_003](archive/task_003/plan.md) | 已归档 | P0 | [task_003_feedback.md](../feedback/archive/task_003_feedback.md)（已归档，通过） | 2026-08-28 用户授权 Master 特例完成 R4；248 passed/4 skipped、Vitest 44、Playwright 7、audit 0，源码与视觉复验通过。 |
 | [task_004](task_004/plan.md) | 未开始 | P0 | —（待提交） | 依赖 task_003；持久多轮、左侧 ConversationSidebar、生命周期/后台运行、每轮 ChangeSet 与按需右侧文件预览 |
 | [task_005](task_005/plan.md) | 未开始 | P0 | —（待提交） | 依赖 task_004；provider-neutral streaming 与可展示 reasoning/summary 的折叠 Think |
 | [task_006](task_006/plan.md) | 未开始 | P1 | —（待提交） | 依赖 task_004/task_005；Host 权威的 durable Queue/Steer 与 busy Composer |
