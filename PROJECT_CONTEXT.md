@@ -20,7 +20,7 @@
 
 运行时第三方依赖原则上仅保留普通 `openai` 客户端，其他核心能力优先使用标准库。MVP 工具确定为 `glob`、`grep`、`read_file`、`write_file`、`edit_file` 和 `run_command`，并实现编辑前读取、SHA-256 版本新鲜度、原子替换、领域化输出上限及重复调用保护。
 
-task_002 已新增本地图形层：前端使用 TypeScript、React、Vite、Tailwind CSS 与可访问 UI primitives，Python 侧使用 FastAPI/ASGI、类型化 JSON API、SSE 和 RunController 适配既有 AgentLoop。Node.js 只用于前端开发、测试和 production build；最终静态资源随 Python 包分发，评审者运行 GUI 不应额外安装 Node。前端以 Vitest/React Testing Library 和 Playwright Fake Model 闭环验证，UI 默认简体中文并提供完整英文切换。
+task_002 已新增本地图形层：前端使用 TypeScript、React、Vite、Tailwind CSS 与可访问 UI primitives，Python 侧使用 FastAPI/ASGI、类型化 JSON API、SSE 和 ConversationService 适配既有 AgentLoop；旧 `/api/runs` 仅作为兼容投影。Node.js 只用于前端开发、测试和 production build；最终静态资源随 Python 包分发，评审者运行 GUI 不应额外安装 Node。前端以 Vitest/React Testing Library 和 Playwright Fake Model 闭环验证，UI 默认简体中文并提供完整英文切换。
 
 2026-08-28 产品演进方案确定新增但尚未实现的边界：以标准库 SQLite append-only fact/event source 承载 Conversation、Turn、Inbox 与 Memory；ModelClient 在 adapter 内兼容不同 wire API，向 AgentLoop 输出统一的 text/reasoning/tool/usage/error 流事件；Queue 与 Steer 是不同的持久领域状态，Steer 只在 AgentLoop 安全边界注入；长期记忆通过独立 MemoryService 按 global/workspace/conversation 作用域向 ContextManager 提供有预算、可追溯的投影。上述均保持自研 AgentLoop/ToolExecutor/ContextManager 为核心，不引入 agent 框架。
 
@@ -29,7 +29,7 @@ task_002 已新增本地图形层：前端使用 TypeScript、React、Vite、Tai
 ## 目录结构说明
 
 - `src/coding_agent/`：CLI、配置、内部数据模型、模型适配器、上下文管理、AgentLoop、系统提示和本地工具。
-- `src/coding_agent/web/`：task_002 的本地 GUI 服务、RunController、公开 DTO 与已构建静态资源；不得复制 AgentLoop。
+- `src/coding_agent/web/`：本地 GUI、公开 DTO、ConversationService 路由与已构建静态资源；旧 RunController 仅保留兼容测试，不得成为生产第二事实源或复制 AgentLoop。
 - `frontend/`：task_002 的 React/TypeScript/Vite 源码、设计系统、i18n 和前端测试。
 - `tests/`：配置、模型解析、上下文、工具、终止策略和离线端到端测试。
 - `guide/` 与 `feedback/`：Master/Developer 任务管理资料，不承载业务实现。
@@ -60,14 +60,16 @@ Python 代码必须通过 Ruff format、Ruff lint 和 pytest。task_002 前端�
 
 `task_002` 本地图形应用与多服务商配置已通过第三次 Master 源码复验并归档。React/TypeScript/Vite GUI、FastAPI/RunController/SSE、provider profile、独立 credential store、生产静态资源打包及 Fake Model 图形闭环均已落地；R3 进一步闭环了 AgentEvent 源头 fail-closed 脱敏、实时 phase/inspector、跨 step 活动分组、SSE cursor/reset/end 单调恢复、严格 config/Host 解析、credential/start 语义与真实成功演示证据。最终证据为 Python 238 passed/4 skipped、Vitest 33、Playwright 5、npm audit 0；外部真实模型 smoke 因当前环境无合法凭据按规则记为 N/A，并列为下一阶段首要验证。第一阶段仍只支持现有 `openai_chat_completions` wire API，不夸大为已支持 Anthropic/Responses 等原生协议。
 
-可运行、可测试的端到端 Coding Agent 内核与本地图形应用首版均已通过验收。2026-08-28 已完成下一阶段详细工程规划，详见 `guide/PRODUCT_EVOLUTION_PLAN.md`。task_003 产品化界面与性能边界已通过最终源码复验：用户化文案/布局、连续平面活动流、Composer Start/Stop、workspace validation 隔离与竞态恢复、O(batch) 有界事件投影、安全结构化 action target 和生产测试边界均已闭环；最终证据为 Python 248 passed/4 skipped、Vitest 44、Playwright 7、audit 0。task_004-task_008 依次覆盖持久多轮会话、流式可展示 reasoning、Queue/Steer、可控跨会话记忆和最终发布门禁。task_004 的最终应用壳已经进一步确定为 Conversation 左侧主边栏、中间连续 transcript、默认关闭的右侧 Artifact Preview；每个 terminal turn 末尾显示净文件 ChangeSet，历史 diff 使用内容寻址的 turn-scoped before/after artifact，不能用当前 workspace/git diff 冒充。六个任务 guide 已补全目标/非目标、分层架构、领域模型、接口和事件、状态机、SQLite 事务、并发与恢复、前端状态所有权、实施批次、定量预算、故障注入、测试矩阵和回滚入口。下一实施任务为 task_004，后续任务不得用前端临时状态提前伪实现。
+可运行、可测试的端到端 Coding Agent 内核与本地图形应用首版均已通过验收。2026-08-28 已完成下一阶段详细工程规划，详见 `guide/PRODUCT_EVOLUTION_PLAN.md`。task_003 产品化界面与性能边界已通过最终源码复验：用户化文案/布局、连续平面活动流、Composer Start/Stop、workspace validation 隔离与竞态恢复、O(batch) 有界事件投影、安全结构化 action target 和生产测试边界均已闭环；最终证据为 Python 248 passed/4 skipped、Vitest 44、Playwright 7、audit 0。
+
+task_004 持久多轮会话已于 2026-08-28 通过 Master 源码验收并归档：标准库 SQLite schema v3 保存 Conversation/Turn/canonical/public event/ChangeSet/Artifact 引用，支持事务幂等、投影校验、同会话/同 workspace 并发守卫和 crash→interrupted 无重放恢复；生产 `/api/runs` 通过 ConversationService compatibility adapter，不再建立第二个生产事实源。产品壳已变为左侧会话管理、中间多轮 transcript、默认关闭且按需打开的右侧历史文件审查；rename、归档/恢复、永久删除、独立 draft/scroll、后台运行徽标、逐 turn 净 ChangeSet、immutable before/after CAS、current divergence 和窄屏 drawer 均落地。最终证据为 Python 全仓 272 passed/4 skipped 加 3 项新增定向反例、Vitest 46、Playwright 完整 5 场景、npm audit 0 与 wheel 成功。下一实施任务为 task_005；Queue/Steer 与跨会话记忆仍分别属于 task_006/task_007，不得在前端临时状态中伪实现。
 
 ## 演进路线
 
 1. **P0 可靠内核（task_001，已归档）**：显式 AgentLoop、规范消息配对、ToolExecutor/ToolPolicy、六个本地工具、资源感知上下文投影、变更后验证门槛、结构化事件和离线端到端测试；R1-R3 整改复验已通过。
 2. **P1 图形化应用与多服务商配置（task_002，已归档）**：提供 React/TypeScript 本地 GUI、实时运行/工具时间线、开始与取消、用户级 provider profile、独立 credential provider 和 ModelClientFactory；保留 CLI/legacy 环境变量兼容，不把界面状态或 provider 分支耦合进 AgentLoop；A1-A22、R2、R3 已通过。
 3. **P0 产品化界面与性能边界（task_003，已归档）**：已完成普通界面产品化、连续 transcript 与平面可展开工具活动、Composer Start/Stop、workspace validation 隔离与同键竞态恢复、O(batch) 有界投影、安全结构化 action target 和响应式视觉证据。
-4. **P0 持久多轮会话（task_004，未开始）**：建立 Conversation/Turn/Run 与 SQLite append-only 事实源，完成独立上下文、切换、命名、归档/恢复、删除、后台运行和 crash recovery。
+4. **P0 持久多轮会话（task_004，已归档）**：已建立 Conversation/Turn/Run 与 SQLite append-only 事实源，完成独立上下文、切换、命名、归档/恢复、删除、后台运行、crash recovery、逐轮 ChangeSet 与历史文件审查。
 5. **P0 流式模型与可展示 reasoning（task_005，未开始）**：统一 provider stream event，分别适配 DeepSeek `reasoning_content`、OpenAI Responses reasoning summary 等公开输出；折叠 Think 不暴露或伪造隐藏 chain-of-thought。
 6. **P1 运行中输入（task_006，未开始）**：实现 Host 权威、持久、严格 FIFO 的 Queue，以及只在下一安全 step 边界进入、失败回 Queue 的 Steer；完善 busy Composer 与队列管理。
 7. **P1 可控记忆（task_007，未开始）**：以 MemoryService、SQLite FTS5、作用域、来源、候选审批、冲突和删除实现跨会话知识共享；默认不自动永久保存全部聊天。

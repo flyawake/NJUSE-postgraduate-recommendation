@@ -165,6 +165,9 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   process.env.E2E_BASE_URL = baseUrl;
   process.env.E2E_WORKSPACE = workspace;
   process.env.E2E_WORKSPACE_FRESH = freshWorkspace;
+  process.env.E2E_APP_PID = String(app.pid);
+  process.env.E2E_APP_PORT = String(appPort);
+  process.env.E2E_AGENT_HOME = home;
 
   console.log(`[e2e] backend=${baseUrl} fake=http://127.0.0.1:${fakePort} workspace=${workspace}`);
 

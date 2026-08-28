@@ -45,10 +45,12 @@ class ToolExecutor:
         registry: ToolRegistry,
         policy: ToolPolicy,
         is_cancelled: Optional[Callable[[], bool]] = None,
+        observer: Optional[Any] = None,
     ) -> None:
         self._registry = registry
         self._policy = policy
         self._is_cancelled = is_cancelled or (lambda: False)
+        self._observer = observer
 
     def prepare(self, call) -> PreparedCall:
         name = call.name or ""
@@ -125,49 +127,63 @@ class ToolExecutor:
         if prepared.error is not None:
             return prepared.to_outcome()
         spec: ToolSpec = prepared.spec  # type: ignore[assignment]
+        if self._observer is not None:
+            self._observer.before_execute(prepared)
         try:
             data = spec.handler(prepared.normalized_args)
         except ToolExecutionError as exc:
-            return ToolOutcome(
+            outcome = ToolOutcome(
                 call_id=prepared.call_id,
                 tool_name=prepared.tool_name,
                 ok=False,
                 normalized_args=prepared.normalized_args,
                 error=exc.to_tool_error(),
             )
+            if self._observer is not None:
+                self._observer.after_execute(prepared, outcome)
+            return outcome
         except Exception as exc:  # defensive: never leak a crash into the loop
             error = ToolError(
                 INTERNAL_ERROR,
                 f"{type(exc).__name__}: {exc}",
                 recovery_hint="inspect the tool result and adjust arguments",
             )
-            return ToolOutcome(
+            outcome = ToolOutcome(
                 call_id=prepared.call_id,
                 tool_name=prepared.tool_name,
                 ok=False,
                 normalized_args=prepared.normalized_args,
                 error=error,
             )
+            if self._observer is not None:
+                self._observer.after_execute(prepared, outcome)
+            return outcome
         if not isinstance(data, dict):
             error = ToolError(
                 INTERNAL_ERROR,
                 "tool handler returned a non-object result",
                 recovery_hint="report this as a tool implementation bug",
             )
-            return ToolOutcome(
+            outcome = ToolOutcome(
                 call_id=prepared.call_id,
                 tool_name=prepared.tool_name,
                 ok=False,
                 normalized_args=prepared.normalized_args,
                 error=error,
             )
-        return ToolOutcome(
+            if self._observer is not None:
+                self._observer.after_execute(prepared, outcome)
+            return outcome
+        outcome = ToolOutcome(
             call_id=prepared.call_id,
             tool_name=prepared.tool_name,
             ok=True,
             normalized_args=prepared.normalized_args,
             data=data,
         )
+        if self._observer is not None:
+            self._observer.after_execute(prepared, outcome)
+        return outcome
 
     def run(self, call) -> ToolOutcome:
         """Convenience wrapper: full pipeline in one call (used by tests)."""

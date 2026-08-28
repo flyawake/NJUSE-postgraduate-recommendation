@@ -12,6 +12,17 @@ export type WorkspaceValidate = components["schemas"]["WorkspaceValidateResponse
 export type WorkspacePick = components["schemas"]["WorkspacePickResponse"];
 export type RunStartRequest = components["schemas"]["RunStartRequest"];
 export type ProfileInput = components["schemas"]["ProfileInput"];
+export type Conversation = components["schemas"]["ConversationDTO"];
+export type ConversationPage = components["schemas"]["ConversationPageDTO"];
+export type Turn = components["schemas"]["TurnDTO"];
+export type TurnPage = components["schemas"]["TurnPageDTO"];
+export type ChangeSet = components["schemas"]["ChangeSetDTO"];
+export type FileChange = components["schemas"]["FileChangeDTO"];
+export type FilePreview = components["schemas"]["PreviewDTO"];
+export type ConversationCreateRequest = components["schemas"]["ConversationCreateRequest"];
+export type ConversationRenameRequest = components["schemas"]["ConversationRenameRequest"];
+export type ConversationVersionRequest = components["schemas"]["ConversationVersionRequest"];
+export type TurnCreateRequest = components["schemas"]["TurnCreateRequest"];
 
 export class ApiError extends Error {
   readonly code: string;
@@ -110,6 +121,90 @@ export const api = {
 
   cancelRun: (runId: string) =>
     apiFetch<RunSnapshot>(`/api/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" }),
+
+  listConversations: (params?: { archived?: boolean; query?: string; limit?: number; cursor?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.archived !== undefined) query.set("archived", String(params.archived));
+    if (params?.query) query.set("query", params.query);
+    if (params?.limit) query.set("limit", String(params.limit));
+    if (params?.cursor) query.set("cursor", params.cursor);
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return apiFetch<ConversationPage>(`/api/conversations${suffix}`);
+  },
+
+  createConversation: (input: ConversationCreateRequest) =>
+    apiFetch<Conversation>("/api/conversations", { method: "POST", body: JSON.stringify(input) }),
+
+  getConversation: (id: string) =>
+    apiFetch<Conversation>(`/api/conversations/${encodeURIComponent(id)}`),
+
+  renameConversation: (id: string, input: ConversationRenameRequest) =>
+    apiFetch<Conversation>(`/api/conversations/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+
+  archiveConversation: (id: string, input: ConversationVersionRequest) =>
+    apiFetch<Conversation>(`/api/conversations/${encodeURIComponent(id)}/archive`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  unarchiveConversation: (id: string, input: ConversationVersionRequest) =>
+    apiFetch<Conversation>(`/api/conversations/${encodeURIComponent(id)}/unarchive`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  deleteConversation: (id: string, input: ConversationVersionRequest) =>
+    apiFetch<void>(`/api/conversations/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      body: JSON.stringify(input),
+    }),
+
+  listTurns: (id: string, params?: { limit?: number; cursor?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.limit) query.set("limit", String(params.limit));
+    if (params?.cursor) query.set("cursor", params.cursor);
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return apiFetch<TurnPage>(`/api/conversations/${encodeURIComponent(id)}/turns${suffix}`);
+  },
+
+  startTurn: (id: string, input: TurnCreateRequest) =>
+    apiFetch<Turn>(`/api/conversations/${encodeURIComponent(id)}/turns`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  getTurn: (id: string, turnId: string) =>
+    apiFetch<Turn>(`/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}`),
+
+  getTurnEvents: (id: string, turnId: string, params?: { afterSeq?: number; limit?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.afterSeq) query.set("after_seq", String(params.afterSeq));
+    if (params?.limit) query.set("limit", String(params.limit));
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return (
+    apiFetch<ToolEvent[]>(
+      `/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/events${suffix}`
+    ));
+  },
+
+  cancelTurn: (id: string, turnId: string) =>
+    apiFetch<Turn>(`/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/cancel`, {
+      method: "POST",
+    }),
+
+  getTurnChanges: (id: string, turnId: string) =>
+    apiFetch<ChangeSet>(`/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/changes`),
+
+  getFileChange: (id: string, turnId: string, changeId: string) =>
+    apiFetch<FileChange>(`/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/changes/${encodeURIComponent(changeId)}`),
+
+  getFilePreview: (id: string, turnId: string, changeId: string, mode = "diff") =>
+    apiFetch<FilePreview>(
+      `/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/changes/${encodeURIComponent(changeId)}/preview?mode=${encodeURIComponent(mode)}`
+    ),
 
   listProfiles: () => apiFetch<Profile[]>("/api/profiles"),
 

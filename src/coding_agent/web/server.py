@@ -13,6 +13,7 @@ import webbrowser
 from pathlib import Path
 from typing import Optional
 
+from ..conversations.service import ConversationService
 from ..provider_config import default_home
 from .app import create_app
 from .controller import RunController
@@ -23,13 +24,17 @@ def static_dir() -> Path:
 
 
 def build_app(
-    controller: Optional[RunController] = None, session_token: Optional[str] = None
+    controller: Optional[RunController] = None,
+    session_token: Optional[str] = None,
+    conversation_service: Optional[ConversationService] = None,
 ):
     resolved = controller or RunController(home=default_home())
+    resolved_service = conversation_service or ConversationService(home=default_home())
     return create_app(
         controller=resolved,
         static_dir=static_dir(),
         session_token=session_token,
+        conversation_service=resolved_service,
     )
 
 
@@ -38,7 +43,11 @@ def run_ui(port: int = 0, no_browser: bool = False) -> int:
     import uvicorn
 
     controller = RunController(home=default_home())
-    app = build_app(controller=controller)
+    conversation_service = ConversationService(home=default_home())
+    app = build_app(
+        controller=controller,
+        conversation_service=conversation_service,
+    )
     config = uvicorn.Config(
         app,
         host="127.0.0.1",
@@ -78,7 +87,10 @@ def run_ui(port: int = 0, no_browser: bool = False) -> int:
         thread.join(timeout=10)
         # Cancel any still-running AgentLoop worker before the process exits
         # so owned subprocesses are not orphaned.
+        # /api/runs is backed by the same ConversationService in production;
+        # the profile/controller object owns no active compatibility worker.
         controller.shutdown(timeout=5)
+        conversation_service.shutdown(timeout=5)
     return 0
 
 

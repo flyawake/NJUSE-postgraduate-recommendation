@@ -40,6 +40,7 @@ export interface ActivityFeedProps {
   sseStatus: "idle" | "connected" | "disconnected";
   terminalText?: string | null;
   verificationStatus?: string | null;
+  embedded?: boolean;
 }
 
 const INITIAL_VISIBLE_ITEMS = 300;
@@ -65,6 +66,7 @@ export function ActivityFeed({
   sseStatus,
   terminalText,
   verificationStatus,
+  embedded = false,
 }: ActivityFeedProps) {
   const { t } = useI18n();
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -109,9 +111,9 @@ export function ActivityFeed({
   const hasActivity = itemCount > 0;
 
   useEffect(() => {
-    if (!atBottom || !hasActivity) return;
+    if (embedded || !atBottom || !hasActivity) return;
     bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [eventVersion, lastIncomingId, hasActivity, atBottom, phase]);
+  }, [eventVersion, lastIncomingId, hasActivity, atBottom, phase, embedded]);
 
   useEffect(() => {
     setWindowState((current) =>
@@ -145,11 +147,14 @@ export function ActivityFeed({
   }
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col">
+    <div className={cx("relative flex min-h-0 flex-col", !embedded && "h-full")}>
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="min-h-0 flex-1 overflow-y-auto px-4 pb-28 pt-5"
+        className={cx(
+          "min-h-0 flex-1 px-4 pt-5",
+          embedded ? "pb-3" : "overflow-y-auto pb-28"
+        )}
         data-testid="activity-scroll"
       >
         <div className="mx-auto max-w-[54rem] space-y-2">
@@ -207,7 +212,7 @@ export function ActivityFeed({
         </div>
       </div>
 
-      {phase === "paused-autoscroll" || phase === "disconnected" ? (
+      {!embedded && (phase === "paused-autoscroll" || phase === "disconnected") ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-24 flex justify-center">
           <button
             type="button"

@@ -10,6 +10,8 @@ export function AboutSecurityPage() {
       <Section title={t("about.loopback")} body={t("about.loopbackText")} />
       <Section title={t("about.credentials")} body={t("about.credentialsText")} />
       <Section title={t("about.runCommand")} body={t("about.runCommandText")} />
+      <Section title={t("about.localData")} body={t("about.localDataText")} />
+      <Section title={t("about.deleteSemantics")} body={t("about.deleteSemanticsText")} />
       <Section title={t("about.terminology")} body={t("about.terminologyText")} />
     </div>
   );

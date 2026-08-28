@@ -106,6 +106,7 @@ class AgentLoop:
         sleeper: Callable[[float], None] = time.sleep,
         is_cancelled: Optional[Callable[[], bool]] = None,
         system_prompt: str = SYSTEM_PROMPT,
+        journal: Optional[Any] = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
@@ -124,6 +125,7 @@ class AgentLoop:
         self._sleeper = sleeper
         self._is_cancelled = is_cancelled or (lambda: False)
         self._system_prompt = system_prompt
+        self._journal = journal
 
         self.phase = LoopPhase.INITIALIZING
         self._history = CanonicalHistory()
@@ -156,13 +158,42 @@ class AgentLoop:
         """Immutable view of the append-only canonical history."""
         return self._history.messages
 
-    def run(self, task: str) -> RunResult:
+    def run(
+        self,
+        task: str,
+        *,
+        history: Optional[CanonicalHistory] = None,
+        task_already_in_history: bool = False,
+    ) -> RunResult:
+        """Run one logical turn.
+
+        ``history`` may carry canonical facts from previous turns of a
+        conversation. When supplied, the existing system message is preserved
+        and no duplicate system prompt is appended; otherwise a fresh
+        system+user first turn is created exactly as before.
+        """
         if self._finished:
             raise RuntimeError("AgentLoop.run() may only be called once")
         if self.phase is not LoopPhase.INITIALIZING:
             raise RuntimeError(f"run() called in phase {self.phase}")
-        self._history.append(SystemMessage(self._system_prompt))
-        self._history.append(UserMessage(task, source="user"))
+        if history is not None:
+            self._history = history
+        else:
+            self._history = CanonicalHistory()
+        if task_already_in_history:
+            if (
+                not self._history.messages
+                or not isinstance(self._history.messages[0], SystemMessage)
+                or not isinstance(self._history.messages[-1], UserMessage)
+                or self._history.messages[-1].content != task
+            ):
+                raise ValueError("persisted history does not end with current task")
+        else:
+            if not self._history.messages or not isinstance(
+                self._history.messages[0], SystemMessage
+            ):
+                self._append_history(SystemMessage(self._system_prompt))
+            self._append_history(UserMessage(task, source="user"))
         self._transit(LoopPhase.READY)
         self._emit(
             event_types.EVENT_RUN_STARTED,
@@ -202,6 +233,27 @@ class AgentLoop:
                     details={"error": type(exc).__name__, "message": str(exc)[:200]},
                 )
         return self._build_result()
+
+    def run_turn(
+        self,
+        task: str,
+        *,
+        history: Optional[CanonicalHistory] = None,
+        task_already_in_history: bool = False,
+    ) -> RunResult:
+        """Compatibility alias for task_004's run_turn entry point."""
+        return self.run(
+            task,
+            history=history,
+            task_already_in_history=task_already_in_history,
+        )
+
+    # ------------------------------------------------------------- history
+
+    def _append_history(self, message: CanonicalMessage) -> None:
+        self._history.append(message)
+        if self._journal is not None:
+            self._journal.append(message)
 
     # ------------------------------------------------------------- states
 
@@ -258,7 +310,7 @@ class AgentLoop:
         if turn is None:
             self._finish(RunStatus.ERROR, StopReason.MODEL_ERROR)
             return
-        self._history.append(
+        self._append_history(
             AssistantMessage(text=turn.text or "", tool_calls=tuple(turn.tool_calls))
         )
         self._last_assistant = turn
@@ -405,7 +457,7 @@ class AgentLoop:
 
         if reminder_due:
             signature = self._last_signature or ""
-            self._history.append(
+            self._append_history(
                 UserMessage(
                     REPEAT_REMINDER_MESSAGE.format(
                         count=self._repeat_remind_at,
@@ -450,7 +502,7 @@ class AgentLoop:
             )
             return
         self._completion_deferred = True
-        self._history.append(UserMessage(decision.message, source="completion_policy"))
+        self._append_history(UserMessage(decision.message, source="completion_policy"))
         self._emit(
             event_types.EVENT_COMPLETION_DEFERRED,
             step=self._step_count,
@@ -469,7 +521,7 @@ class AgentLoop:
             if isinstance(path, str):
                 file_path = path
                 is_read_success = True
-        self._history.append(
+        self._append_history(
             ToolMessage(
                 tool_call_id=outcome.call_id,
                 content=outcome.model_content(),

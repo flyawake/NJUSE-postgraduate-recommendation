@@ -27,6 +27,7 @@ from fastapi.responses import (
 
 from .. import __version__
 from ..config import DEFAULT_CHAR_BUDGET, DEFAULT_MAX_STEPS
+from ..conversations.service import ConversationService, ConversationServiceError
 from ..credentials import CredentialError
 from ..errors import ConfigError
 from ..provider_config import (
@@ -39,20 +40,34 @@ from ..provider_config import (
 )
 from ..storage import StorageError
 from .controller import RunController, RunControllerError
+from .legacy_adapter import ConversationRunAdapter
 from .picker import PickerUnavailableError, PickFolder, pick_folder
+from .redaction import redact_public_payload
 from .schemas import (
     BootstrapDTO,
     CapabilitiesDTO,
+    ChangeSetDTO,
+    ConversationCreateRequest,
+    ConversationDTO,
+    ConversationPageDTO,
+    ConversationRenameRequest,
+    ConversationVersionRequest,
     CredentialInfoDTO,
     CredentialSetRequest,
     ErrorDetail,
     ErrorResponse,
+    FileChangeDTO,
     HealthDTO,
+    PreviewDTO,
     ProfileDTO,
     ProfileInput,
     ProviderPresetDTO,
     RunSnapshotDTO,
     RunStartRequest,
+    ToolEventDTO,
+    TurnCreateRequest,
+    TurnDTO,
+    TurnPageDTO,
     UIPreferencesDTO,
     WorkspacePickResponse,
     WorkspaceValidateRequest,
@@ -119,11 +134,25 @@ def create_app(
     session_token: Optional[str] = None,
     version: Optional[str] = None,
     folder_picker: Optional[PickFolder] = None,
+    conversation_service: Optional[ConversationService] = None,
 ) -> FastAPI:
     token = session_token or new_session_token()
     resolved_version = version or __version__
     catalog = ProviderCatalog()
     picker = folder_picker or pick_folder
+    # During the compatibility window, the old single-run endpoints are a
+    # projection of the same persisted ConversationService worker/history.
+    # Tests or embedders that deliberately omit the service retain the
+    # standalone task_001 controller contract.
+    run_api = (
+        ConversationRunAdapter(
+            conversation_service,
+            max_events=getattr(controller, "_max_events", 2_000),
+            max_event_chars=getattr(controller, "_max_event_chars", 1_000_000),
+        )
+        if conversation_service is not None
+        else controller
+    )
 
     app = FastAPI(
         title="Coding Agent Local GUI",
@@ -146,6 +175,26 @@ def create_app(
             status = 409
         else:
             status = 400
+        return error_response(exc.code, str(exc), exc.field, status=status)
+
+    @app.exception_handler(ConversationServiceError)
+    async def handle_conversation_error(
+        _request: Request, exc: ConversationServiceError
+    ):
+        status = (
+            404
+            if exc.code
+            in ("conversation_not_found", "turn_not_found", "artifact_not_found")
+            else 409
+            if exc.code
+            in (
+                "version_conflict",
+                "conversation_busy",
+                "workspace_busy",
+                "conversation_archived",
+            )
+            else 400
+        )
         return error_response(exc.code, str(exc), exc.field, status=status)
 
     @app.exception_handler(ProfileError)
@@ -191,7 +240,7 @@ def create_app(
 
     @app.get("/api/health", response_model=HealthDTO)
     async def health() -> HealthDTO:
-        snap = controller.snapshot()
+        snap = run_api.snapshot()
         return HealthDTO(
             status="ok",
             version=resolved_version,
@@ -201,7 +250,7 @@ def create_app(
 
     @app.get("/api/bootstrap", response_model=BootstrapDTO)
     async def bootstrap() -> BootstrapDTO:
-        snap = controller.snapshot()
+        snap = run_api.snapshot()
         profiles = [
             profile_dto(p, controller) for p in controller.profile_store.list_profiles()
         ]
@@ -270,27 +319,27 @@ def create_app(
 
     @app.post("/api/runs", response_model=RunSnapshotDTO)
     async def start_run(body: RunStartRequest) -> RunSnapshotDTO:
-        return controller.start(body)
+        return run_api.start(body)
 
     @app.get("/api/runs/{run_id}", response_model=RunSnapshotDTO)
     async def run_snapshot(run_id: str) -> RunSnapshotDTO:
-        snap = controller.snapshot()
+        snap = run_api.snapshot()
         if snap.run_id != run_id or snap.state == "idle":
             raise RunControllerError("run_not_found", f"运行不存在：{run_id}")
         return snap
 
     @app.post("/api/runs/{run_id}/cancel", response_model=RunSnapshotDTO)
     async def cancel_run(run_id: str) -> RunSnapshotDTO:
-        snap = controller.snapshot()
+        snap = run_api.snapshot()
         if snap.run_id != run_id or snap.state == "idle":
             raise RunControllerError("run_not_found", f"运行不存在：{run_id}")
-        return controller.cancel()
+        return run_api.cancel()
 
     @app.get("/api/runs/{run_id}/events")
     async def run_events(
         run_id: str, request: Request, last_event_id: Optional[int] = None
     ):
-        snap = controller.snapshot()
+        snap = run_api.snapshot()
         if snap.run_id != run_id or snap.state == "idle":
             raise RunControllerError("run_not_found", f"运行不存在：{run_id}")
         header_id = request.headers.get("last-event-id")
@@ -301,7 +350,7 @@ def create_app(
             except ValueError:
                 last_id = None
         return StreamingResponse(
-            _event_stream(controller, run_id, last_id),
+            _event_stream(run_api, run_id, last_id),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -309,6 +358,255 @@ def create_app(
                 "X-Accel-Buffering": "no",
             },
         )
+
+    # ------------------------------------------------------------ conversations
+
+    if conversation_service is not None:
+
+        def _conv_dto(data: dict) -> ConversationDTO:
+            # The service list payload does not include latest_turn; leave it
+            # to the detail endpoint to enrich.
+            return ConversationDTO(**data)
+
+        def _turn_dto(data: dict) -> TurnDTO:
+            return TurnDTO(**data)
+
+        def _change_dto(data: dict) -> FileChangeDTO:
+            return FileChangeDTO(
+                id=data["id"],
+                relative_path=data["relative_path"],
+                old_relative_path=data.get("old_relative_path"),
+                change_type=data["change_type"],
+                source=data["source"],
+                before_blob_id=data.get("before_blob_id"),
+                after_blob_id=data.get("after_blob_id"),
+                before_sha=data.get("before_sha"),
+                after_sha=data.get("after_sha"),
+                additions=int(data.get("additions", 0)),
+                deletions=int(data.get("deletions", 0)),
+                binary=bool(data.get("binary")),
+                preview_status=data.get("preview_status", "available"),
+                warnings=list(data.get("warnings", [])),
+            )
+
+        @app.post(
+            "/api/conversations",
+            response_model=ConversationDTO,
+            status_code=201,
+        )
+        async def create_conversation(
+            body: ConversationCreateRequest,
+        ) -> ConversationDTO:
+            data = conversation_service.create_conversation(
+                workspace_path=body.workspace,
+                profile_id=body.profile_id,
+                title=body.title,
+            )
+            return _conv_dto(data)
+
+        @app.get("/api/conversations", response_model=ConversationPageDTO)
+        async def list_conversations(
+            archived: Optional[bool] = False,
+            query: Optional[str] = None,
+            limit: int = 50,
+            cursor: Optional[str] = None,
+        ) -> ConversationPageDTO:
+            page = conversation_service.list_conversations(
+                archived=archived, query=query, limit=limit, cursor=cursor
+            )
+            return ConversationPageDTO(
+                items=[_conv_dto(item) for item in page["items"]],
+                next_cursor=page["next_cursor"],
+            )
+
+        @app.get("/api/conversations/{conversation_id}", response_model=ConversationDTO)
+        async def get_conversation(conversation_id: str) -> ConversationDTO:
+            data = conversation_service.get_conversation(conversation_id)
+            active = conversation_service._repository.get_active_turn(conversation_id)
+            if active is not None:
+                data["latest_turn"] = conversation_service._turn_to_dict(active)
+            return _conv_dto(data)
+
+        @app.patch(
+            "/api/conversations/{conversation_id}",
+            response_model=ConversationDTO,
+        )
+        async def rename_conversation(
+            conversation_id: str, body: ConversationRenameRequest
+        ) -> ConversationDTO:
+            return _conv_dto(
+                conversation_service.rename_conversation(
+                    conversation_id,
+                    title=body.title,
+                    expected_version=body.expected_version,
+                )
+            )
+
+        @app.post(
+            "/api/conversations/{conversation_id}/archive",
+            response_model=ConversationDTO,
+        )
+        async def archive_conversation(
+            conversation_id: str, body: ConversationVersionRequest
+        ) -> ConversationDTO:
+            return _conv_dto(
+                conversation_service.archive_conversation(
+                    conversation_id, expected_version=body.expected_version
+                )
+            )
+
+        @app.post(
+            "/api/conversations/{conversation_id}/unarchive",
+            response_model=ConversationDTO,
+        )
+        async def unarchive_conversation(
+            conversation_id: str, body: ConversationVersionRequest
+        ) -> ConversationDTO:
+            return _conv_dto(
+                conversation_service.unarchive_conversation(
+                    conversation_id, expected_version=body.expected_version
+                )
+            )
+
+        @app.delete("/api/conversations/{conversation_id}", status_code=204)
+        async def delete_conversation(
+            conversation_id: str, body: ConversationVersionRequest
+        ) -> None:
+            if not body.confirm:
+                raise ConversationServiceError(
+                    "confirmation_required", "删除会话需要显式确认", field="confirm"
+                )
+            conversation_service.delete_conversation(
+                conversation_id, expected_version=body.expected_version
+            )
+
+        @app.get(
+            "/api/conversations/{conversation_id}/turns",
+            response_model=TurnPageDTO,
+        )
+        async def list_turns(
+            conversation_id: str, limit: int = 50, cursor: Optional[str] = None
+        ) -> TurnPageDTO:
+            page = conversation_service.list_turns(
+                conversation_id, limit=limit, cursor=cursor
+            )
+            return TurnPageDTO(
+                items=[_turn_dto(item) for item in page["items"]],
+                next_cursor=page["next_cursor"],
+            )
+
+        @app.post(
+            "/api/conversations/{conversation_id}/turns",
+            response_model=TurnDTO,
+            status_code=202,
+        )
+        async def start_turn(conversation_id: str, body: TurnCreateRequest) -> TurnDTO:
+            return _turn_dto(
+                conversation_service.start_turn(
+                    conversation_id,
+                    user_text=body.content,
+                    idempotency_key=body.idempotency_key,
+                )
+            )
+
+        @app.get(
+            "/api/conversations/{conversation_id}/turns/{turn_id}",
+            response_model=TurnDTO,
+        )
+        async def get_turn(conversation_id: str, turn_id: str) -> TurnDTO:
+            return _turn_dto(conversation_service.get_turn(conversation_id, turn_id))
+
+        @app.post(
+            "/api/conversations/{conversation_id}/turns/{turn_id}/cancel",
+            response_model=TurnDTO,
+        )
+        async def cancel_turn(conversation_id: str, turn_id: str) -> TurnDTO:
+            return _turn_dto(conversation_service.cancel_turn(conversation_id, turn_id))
+
+        @app.get(
+            "/api/conversations/{conversation_id}/turns/{turn_id}/events",
+            response_model=list[ToolEventDTO],
+        )
+        async def turn_events(
+            conversation_id: str,
+            turn_id: str,
+            after_seq: int = 0,
+            limit: int = 500,
+        ) -> list[ToolEventDTO]:
+            events = conversation_service.get_events(
+                conversation_id, turn_id, after_seq=after_seq, limit=limit
+            )
+            result = []
+            for event in events:
+                payload = dict(event["payload"])
+                if event.get("target") is not None:
+                    payload["target"] = event["target"]
+                payload = redact_public_payload(event["kind"], payload)
+                target = payload.pop("target", None)
+                result.append(
+                    ToolEventDTO(
+                        id=event["id"],
+                        kind=event["kind"],
+                        step=event["step"],
+                        phase=event["phase"],
+                        target=target if isinstance(target, str) else None,
+                        payload=payload,
+                    )
+                )
+            return result
+
+        @app.get(
+            "/api/conversations/{conversation_id}/turns/{turn_id}/changes",
+            response_model=ChangeSetDTO,
+        )
+        async def turn_changes(conversation_id: str, turn_id: str) -> ChangeSetDTO:
+            data = conversation_service.get_change_set(conversation_id, turn_id)
+            if data is None:
+                raise ConversationServiceError(
+                    "change_set_not_found", "该 turn 没有变更摘要"
+                )
+            return ChangeSetDTO(
+                id=data["id"],
+                conversation_id=data["conversation_id"],
+                turn_id=data["turn_id"],
+                status=data["status"],
+                additions=int(data["additions"]),
+                deletions=int(data["deletions"]),
+                file_count=int(data["file_count"]),
+                coverage=data["coverage"],
+                finalized_at=data.get("finalized_at"),
+                files=[_change_dto(item) for item in data.get("files", [])],
+            )
+
+        @app.get(
+            "/api/conversations/{conversation_id}/turns/{turn_id}/changes/{change_id}",
+            response_model=FileChangeDTO,
+        )
+        async def get_file_change(
+            conversation_id: str, turn_id: str, change_id: str
+        ) -> FileChangeDTO:
+            data = conversation_service.get_file_change(
+                conversation_id, turn_id, change_id
+            )
+            if data is None:
+                raise ConversationServiceError("artifact_not_found", "文件变更不存在")
+            return _change_dto(data)
+
+        @app.get(
+            "/api/conversations/{conversation_id}/turns/{turn_id}/changes/{change_id}/preview",
+            response_model=PreviewDTO,
+        )
+        async def get_preview(
+            conversation_id: str,
+            turn_id: str,
+            change_id: str,
+            mode: str = "diff",
+        ) -> PreviewDTO:
+            return PreviewDTO(
+                **conversation_service.get_file_preview(
+                    conversation_id, turn_id, change_id, mode=mode
+                )
+            )
 
     # ------------------------------------------------------------ profiles
 
@@ -438,7 +736,7 @@ def _require_profile(controller: RunController, profile_id: str) -> ProviderProf
 
 
 async def _event_stream(
-    controller: RunController, run_id: str, last_id: Optional[int]
+    controller: Any, run_id: str, last_id: Optional[int]
 ) -> AsyncIterator[str]:
     current_id = last_id
     yield _sse("hello", _hello_payload(controller, current_id), event_id=None)
@@ -480,7 +778,7 @@ async def _event_stream(
         await asyncio.sleep(0.2)
 
 
-def _hello_payload(controller: RunController, last_id: Optional[int]) -> Dict[str, Any]:
+def _hello_payload(controller: Any, last_id: Optional[int]) -> Dict[str, Any]:
     snap = controller.snapshot()
     return {
         "run_id": snap.run_id,

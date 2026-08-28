@@ -52,11 +52,11 @@ uv run coding-agent ui --no-browser    # 仅打印地址（自动化测试用）
 首次使用流程（约 1 分钟）：
 
 1. 启动 `coding-agent ui`，如无 profile 会自动出现 onboarding；选择 provider → 填写 URL/model → 写入凭据引用与凭据 → 保存。
-2. 在新任务页输入工作区路径（校验通过后显示“工作区可用”）、选择或继承 profile。
-3. 输入编程任务，点击“开始运行”（或 `Ctrl+Enter`）。
-4. 实时观察活动流：同一逻辑 step 内的连续工具调用按组显示，step/retry/completion 边界会结束当前组，保证标签与工具的真实顺序；**运行中已完成**的成功组会立即折叠，只有当前执行组与失败/中止组强制展开，终态下仍可展开查看全部详情。右侧运行详情从 SSE 事件即时派生逻辑步数、模型请求数、工具调用数、当前 phase 与“尚未验证”，不会等待轮询旧快照。
-5. 运行中出现问题可点击“取消运行”（变为“正在取消…”，幂等）。运行完成后顶部显示 `VERIFIED / NOT_APPLICABLE / FAILED / NOT_RUN`，最终答复位于活动流末端，页面可再次开始新任务（当前版本不承诺多轮会话）。
-6. 页面任意时刻刷新或断线重连后，会从服务端快照初始化事件并按当前 event ID 续订；落后于服务端保留尾时以 reset 契约清空并重取快照，流在未收到 `end` 即中断时进入断线重连。
+2. 从左栏点击“新对话”，选择工作区与 profile；对话会按 workspace 分组，并可搜索、重命名、归档、恢复或确认后永久删除。
+3. 在底部 Composer 输入编程任务并点击右侧“开始运行”。同一对话可连续追问，模型上下文来自持久化 canonical history；切换到其他对话不会取消后台 turn。
+4. 中栏以连续平面展示工具活动、验证状态和最终答复。运行中同一按钮槽切换为“取消运行”；左栏用状态点显示后台运行。
+5. 每个 terminal turn 的末尾显示本轮净文件变化。点击文件才会打开右侧只读审查栏，可切换 Diff/修改前/修改后/当前文件；历史内容来自不可变快照，当前文件继续变化时会提示 divergence。关闭审查栏后中栏自动恢复宽度。
+6. 对话、turn、canonical message、公开事件和文件快照跨页面刷新及服务重启保持；崩溃时未完成 turn 只恢复为 `INTERRUPTED`，不会自动重放命令或文件写入。
 
 页面默认简体中文，可在右上角切换完整英文；主题支持跟随系统/浅色/深色。
 
@@ -146,27 +146,34 @@ assistant ToolCall
 
 文件安全机制：拒绝绝对路径、`..` 越界和符号链接逃逸；搜索工具对 `os.walk` 的每个候选文件做逐候选 canonical containment 检查，`grep` 不读取、`glob` 不返回解析后位于 workspace 外的符号链接文件，也不跟随目录链接。只有成功 `read_file` 才建立观察（路径键统一规范化，`./a.txt` 与 `a.txt` 视为同一文件），覆盖/编辑前重新计算 SHA-256，未观察返回 `FILE_NOT_OBSERVED`、版本变化返回 `FILE_STALE`；写入走同目录临时文件 + flush/close + `os.replace`，成功后刷新观察。该机制是单进程下的尽力新鲜度防护，**不是跨进程 CAS 或沙箱**。
 
-### 本地 GUI 服务（task_002）
+### 持久多轮 GUI 服务（task_004）
 
 GUI 是 AgentLoop 的展示与控制适配层，不复制或重写内核：
 
 ```text
 React/TypeScript UI (Vite production assets)
-  <-> typed JSON API + SSE
+  <-> typed JSON API
 FastAPI local app server (loopback only)
-  -> RunController (单 active run，worker 线程 + 取消 Event + 有界事件存储)
-       -> resolve_connection -> ModelClientFactory -> 既有 AgentLoop
-       -> AgentEvent 适配 -> 白名单 DTO -> SSE 订阅者
+  -> ConversationService（生命周期、事务与兼容 API）
+       -> SQLiteConversationRepository（state.db 事实源）
+       -> RuntimeRegistry（每会话 active turn、workspace lease、全局 worker 上限）
+       -> CanonicalJournal + AgentLoop
+       -> ToolChangeCollector -> content-addressed ArtifactStore
   -> ProviderCatalog / ProfileStore / CredentialService
 ```
 
-- `RunController` 在受控 worker 线程中运行同步的 `AgentLoop.run`，HTTP 事件循环不被模型/工具调用阻塞；取消只设置既有 cancellation seam，最终产生唯一 terminal snapshot；重复 start 返回稳定 `run_already_active` 冲突，不创建第二个 AgentLoop。
-- 事件存储有数量与字符双重上限；事件 ID 单调，快照为事实基线，SSE 断线重连按 ID 去重；客户端落后于保留尾时服务端发送 reset，前端清空 baseline 并重取快照后再按序重放；运行中快照随事件实时更新计数与 phase。
+- `ConversationService` 是 Web 执行的唯一编排入口；旧 `/api/runs` 在兼容期只把一个持久 turn 投影成旧 DTO，不维护第二套 worker/history/event。CLI 继续直接适配既有 AgentLoop。
+- `CODING_AGENT_HOME/state.db` 使用 SQLite foreign keys、WAL、busy timeout、显式 schema version 与事务。创建 turn、分配 ordinal、持久化首条 user canonical group 和更新 activity 原子提交；idempotency key 有持久 unique constraint。
+- 每个 conversation 同时最多一个 active turn；相同 canonical workspace 整轮互斥，不同 workspace 进入默认上限为 2 的 `ThreadPoolExecutor`。页面 selection 与 runtime 解耦。
+- 文件变化按 turn 的首个 before 与最终 after 合并，成功 write/edit 是 confirmed 证据，`run_command` 使用有文件数/字节/时间预算的 workspace probe 补充副作用；超预算 fail-closed 为 incomplete，但不阻止主 turn 完成。
+- 文本 artifact 单个最多 1 MiB、单 turn 新增快照默认最多 20 MiB，CAS 按 SHA-256 去重并校验读取完整性；delete 事务清理引用，启动时可重试物理 GC。preview 只接受 conversation→turn→change 的层级 ID，不接受任意路径读取。
 - API 错误使用稳定 `code` + 用户可读 `message` + 不含 secret 的 `field`；前端从不解析 message 判断逻辑。
 - Profile 存取：`config.json` 顶层固定 `version:1/active_profile/profiles`；profile ID 创建后不可改名；`wire_api` 当前唯一允许 `openai_chat_completions`；ModelClientFactory 按 wire API 分派，AgentLoop 中不存在 provider 名称分支。
 - 凭据：`credentials.json` 与 config 分离，只有 `ref -> secret`，读取接口只返回 `configured/source/writable`；写入用同目录临时文件 + flush/fsync + `os.replace`（POSIX 目录 0700 / 文件 0600，尽力而为）；损坏文件拒绝写入并保留原文件。
 - 安全：仅监听 loopback；Host 必须为语法合法的 loopback 主机（IPv4/IPv6 字面量或 localhost，端口必须为数字，畸形 Host 直接 403）；Origin 必须与当前请求的 scheme/host/effective port **精确一致**，另一个 loopback 端口、userinfo 或 path 均被拒绝；状态变更必须携带随机会话令牌（`X-Coding-Agent-Token`，由 `/api/bootstrap` 下发，前端仅在内存中保存）；不配置宽泛 CORS；CSP `default-src 'self'` 禁止外部脚本与 CDN，默认 Swagger/ReDoc UI 已禁用（OpenAPI JSON 仍保留）；profile 的 base URL 与 legacy `OPENAI_BASE_URL` 走同一个 validator（仅绝对 HTTP(S)、HTTP 仅限 loopback、无 userinfo/query/fragment、端口必须合法）；workspace 在启动 run 前解析为已存在目录并交给既有路径守卫。
-- 前端：TypeScript + React + Vite + Tailwind（全部视觉值来自 design tokens）+ Radix Primitives（Dialog/Select/Tabs/Collapsible/AlertDialog）+ Lucide；TanStack Query 负责 snapshot/config，SSE 增量事件进入独立 reducer；i18n 资源完整 zh-CN/en-US；面板随视口切换（窄屏检查器为抽屉）；状态（空闲/运行中/完成/失败/取消、验证通过/失败/未验证/无需验证）均配图标与文字，不只依赖颜色。
+- 前端：TypeScript + React + Vite + Tailwind（全部视觉值来自 design tokens）+ Radix Primitives（Dialog/Select/Tabs/Collapsible/AlertDialog）+ Lucide；TanStack Query 负责持久 snapshot 与按 cursor 拉取事件，投影器只增量处理新 event；legacy `/api/runs` 继续保留 SSE 兼容；i18n 资源完整 zh-CN/en-US，侧栏和文件审查在窄屏分别进入可访问 drawer。
+
+本机数据边界：`state.db` 保存对话、模型消息和运行事件，`artifacts/sha256/` 保存历史文件审查所需的有界快照；二者均为本地明文，不由应用主动同步。模型上下文仍会发送给用户选择的 provider。归档只是可恢复隐藏；永久删除会清理该对话及不再被其他 turn 引用的快照，绝不删除 workspace 项目文件。
 
 ### 上下文投影
 
@@ -212,10 +219,10 @@ npm test -- --run
 npm run gen:api      # 从后端 OpenAPI 重新生成 TS 类型（schema.json/schema.d.ts）
 npm run check:api    # 校验重新生成无 diff
 npm run build        # 输出到 src/coding_agent/web/static（随 wheel 分发）
-npm run test:e2e     # Playwright + Fake Model：生产 build 闭环、取消/重连、secret 零泄漏
+npm run test:e2e     # Playwright + Fake Model：多轮、后台切换、文件审查、生命周期、窄屏生产闭环
 ```
 
-覆盖：配置与 CLI、模型响应标准化与重试分类、上下文投影与 canonical 不变性、六工具契约与边界（路径越界、预算、观察版本、原子替换、超时/取消、head-tail 保留）、AgentLoop 全部终止分支、重复调用提醒/终止、半组取消、以及“glob → grep → read → edit → purpose=verify run → 最终答复”的离线端到端闭环（`RunResult.verification_status == VERIFIED`）；task_002 另有 profile/凭据/URL 校验/原子写入、RunController 单 run/取消/有界事件/终态唯一、Web API DTO 与安全（Host/Origin/会话令牌/CSP/secret 零泄漏）、SSE 重连去重、前端组件状态与 i18n 资源完整性测试。
+覆盖：配置与 CLI、模型响应标准化与重试分类、上下文投影与 canonical 不变性、六工具契约与边界、AgentLoop 全部终止分支，以及“glob → grep → read → edit → purpose=verify run → 最终答复”的离线闭环；GUI 另覆盖 profile/凭据/URL、安全边界、Conversation CRUD、多轮隔离、原子 turn、崩溃恢复、并发幂等/workspace lock、201 条分页、ChangeSet、command probe、artifact 完整性与精确 GC、前端组件/i18n，以及 production Fake Model 下的三轮对话、后台切换、归档恢复删除、历史 diff 和 320px drawer。
 
 ## 已知限制
 
@@ -226,5 +233,6 @@ npm run test:e2e     # Playwright + Fake Model：生产 build 闭环、取消/�
 - 本地 GUI 服务只监听 `127.0.0.1`：任何本机进程/网页仍可能发起请求，因此状态变更要求随机会话令牌、Host/Origin 精确同源校验且页面使用 CSP；普通网页无法可靠返回本机目录绝对路径，工作区使用路径输入加后端校验。
 - 凭据文件是用户目录内的本地明文 JSON（Windows 上没有 OS 密钥串级别的加密），推荐使用环境变量；不宣称加密存储。
 - GUI 仅支持一个 provider 协议：`openai_chat_completions`（OpenAI/DeepSeek/自定义网关皆为 Chat Completions 兼容）；不支持 Anthropic Messages、OpenAI Responses 或 OAuth。
-- 首版每个应用进程只允许一个 active run；“最近运行”仅限当前进程内有界记录，不承诺跨进程历史。
+- 当前不包含运行中消息 Queue/Steer、可展示 reasoning stream 与跨会话 Memory；这些能力分别属于后续任务，界面不会提前伪造。
+- 默认允许最多 2 个不同 workspace 的后台 turn；相同 workspace 采用保守整轮互斥，不区分只读与写入任务。
 - 完成验证证据是“agent 声明的 verify 命令 + 退出码”，不是测试充分性证明。

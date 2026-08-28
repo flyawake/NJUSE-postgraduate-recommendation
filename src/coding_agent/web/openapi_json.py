@@ -10,13 +10,21 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
+from pathlib import Path
 
+from ..conversations.service import ConversationService
 from .server import build_app
 
 
 def main() -> int:
-    app = build_app()
-    schema = app.openapi()
+    with tempfile.TemporaryDirectory() as tmp:
+        service = ConversationService(home=Path(tmp), env={})
+        try:
+            app = build_app(conversation_service=service)
+            schema = app.openapi()
+        finally:
+            service._repository.close()
     print(json.dumps(schema, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 

@@ -1,4 +1,5 @@
-import { Activity, Info, Play, Settings2 } from "lucide-react";
+import type { ReactNode } from "react";
+import { Info, Settings2 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { cx } from "@/lib/format";
 import type { ViewName } from "./AppShell";
@@ -7,23 +8,22 @@ export interface SidebarProps {
   view: ViewName;
   collapsed: boolean;
   onNavigate: (view: ViewName) => void;
-  badge?: string | null;
+  children?: ReactNode;
+  drawer?: boolean;
 }
 
-const NAV_ITEMS: Array<{ view: ViewName; labelKey: string; icon: typeof Play }> = [
-  { view: "new", labelKey: "nav.newTask", icon: Play },
-  { view: "current", labelKey: "nav.currentRun", icon: Activity },
+const NAV_ITEMS: Array<{ view: ViewName; labelKey: string; icon: typeof Settings2 }> = [
   { view: "settings", labelKey: "nav.settings", icon: Settings2 },
   { view: "about", labelKey: "nav.about", icon: Info },
 ];
 
-export function Sidebar({ view, collapsed, onNavigate, badge }: SidebarProps) {
+export function Sidebar({ view, collapsed, onNavigate, children, drawer = false }: SidebarProps) {
   const { t } = useI18n();
   return (
     <nav
       className={cx(
-        "flex shrink-0 flex-col gap-1 border-r border-border bg-surface p-2 transition-[width] duration-fast",
-        collapsed ? "w-12" : "w-48"
+        "flex h-full shrink-0 flex-col gap-1 border-r border-border bg-surface p-2 transition-[width] duration-fast",
+        collapsed ? "w-12" : drawer ? "w-full" : "w-48"
       )}
       aria-label={t("shell.collapseSidebar")}
       data-testid="sidebar"
@@ -46,12 +46,12 @@ export function Sidebar({ view, collapsed, onNavigate, badge }: SidebarProps) {
           >
             <Icon aria-hidden size={16} className="shrink-0" />
             {!collapsed ? <span>{t(labelKey)}</span> : null}
-            {!collapsed && itemView === "current" && badge ? (
-              <span className="ml-auto h-2 w-2 rounded-full bg-accent" aria-label={badge} />
-            ) : null}
           </button>
         );
       })}
+      {!collapsed && children ? (
+        <div className="mt-1 min-h-0 flex-1 overflow-hidden border-t border-border/60">{children}</div>
+      ) : null}
       {!collapsed ? <p className="mt-2 px-2 text-xs text-faint">{t("nav.settingsHint")}</p> : null}
     </nav>
   );

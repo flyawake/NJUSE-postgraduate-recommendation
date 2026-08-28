@@ -31,6 +31,27 @@ class RunStartRequest(StrictModel):
     profile_id: Optional[str] = None
 
 
+class ConversationCreateRequest(StrictModel):
+    workspace: str = Field(min_length=1, max_length=MAX_WORKSPACE_CHARS)
+    profile_id: Optional[str] = None
+    title: Optional[str] = Field(default=None, max_length=200)
+
+
+class ConversationRenameRequest(StrictModel):
+    title: str = Field(min_length=1, max_length=200)
+    expected_version: int = Field(ge=1)
+
+
+class ConversationVersionRequest(StrictModel):
+    expected_version: int = Field(ge=1)
+    confirm: bool = False
+
+
+class TurnCreateRequest(StrictModel):
+    content: str = Field(min_length=1, max_length=MAX_TASK_CHARS)
+    idempotency_key: Optional[str] = Field(default=None, max_length=128)
+
+
 class WorkspaceValidateRequest(StrictModel):
     path: str = Field(min_length=1, max_length=MAX_WORKSPACE_CHARS)
 
@@ -138,6 +159,93 @@ class RunSnapshotDTO(BaseModel):
     events: List[ToolEventDTO] = Field(default_factory=list)
     events_total: int = 0
     events_retained_from: int = 0
+
+
+class ConversationDTO(BaseModel):
+    id: str
+    title: str
+    title_source: str
+    workspace_path: str
+    workspace_key: str
+    profile_id: Optional[str] = None
+    state: str
+    version: int
+    created_at: str
+    last_activity_at: str
+    archived_at: Optional[str] = None
+    latest_turn: Optional["TurnDTO"] = None
+
+
+class ConversationPageDTO(BaseModel):
+    items: List[ConversationDTO]
+    next_cursor: Optional[str] = None
+
+
+class TurnDTO(BaseModel):
+    id: str
+    conversation_id: str
+    ordinal: int
+    state: str
+    run_id: Optional[str] = None
+    user_text: str
+    created_at: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    result: Optional[Dict[str, Any]] = None
+    error_code: Optional[str] = None
+    active: bool = False
+
+
+class TurnPageDTO(BaseModel):
+    items: List[TurnDTO]
+    next_cursor: Optional[str] = None
+
+
+class FileChangeDTO(BaseModel):
+    id: str
+    relative_path: str
+    old_relative_path: Optional[str] = None
+    change_type: str
+    source: str
+    before_blob_id: Optional[str] = None
+    after_blob_id: Optional[str] = None
+    before_sha: Optional[str] = None
+    after_sha: Optional[str] = None
+    additions: int = 0
+    deletions: int = 0
+    binary: bool = False
+    preview_status: str = "available"
+    warnings: List[str] = Field(default_factory=list)
+
+
+class ChangeSetDTO(BaseModel):
+    id: str
+    conversation_id: str
+    turn_id: str
+    status: str
+    additions: int
+    deletions: int
+    file_count: int
+    coverage: str
+    finalized_at: Optional[str] = None
+    files: List[FileChangeDTO] = Field(default_factory=list)
+
+
+class PreviewDTO(BaseModel):
+    change_id: str
+    relative_path: str
+    change_type: str
+    mode: str
+    lines: List[str] = Field(default_factory=list)
+    additions: int = 0
+    deletions: int = 0
+    truncated: bool = False
+    binary: bool = False
+    before_sha: Optional[str] = None
+    after_sha: Optional[str] = None
+    current_sha: Optional[str] = None
+    diverged: bool = False
+    error: Optional[ErrorDetail] = None
 
 
 class HealthDTO(BaseModel):
