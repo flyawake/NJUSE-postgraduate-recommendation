@@ -26,6 +26,10 @@
 - [ ] U1. 左侧会话列表支持新建、搜索/分页、运行徽标、rename、archive；归档管理页支持恢复和删除。
 - [ ] U2. 切换会话无整页刷新，键盘和窄屏可操作；危险删除使用有焦点管理的确认 Dialog。
 - [ ] U3. 默认页面不暴露 SQLite/event/canonical 等开发术语，存储与隐私边界位于 About。
+- [ ] U4. 桌面默认显示左侧 ConversationSidebar + 中间 transcript；右侧 preview closed 时不挂载、不占宽、不显示空 RunInspector 卡。
+- [ ] U5. “新对话”、搜索、workspace 分组、切换、rename、archive/delete 和状态 badge 都从左栏进入；原“新任务/当前运行”功能菜单不再作为主导航。
+- [ ] U6. 点击 action row 或 turn 末尾文件行打开右侧 ArtifactPreviewPane；关闭后焦点回到触发文件、中栏恢复宽度。
+- [ ] U7. 窄屏左栏和 preview 分别使用可访问 drawer/sheet；Escape/focus trap/返回焦点正确，Composer draft 不丢。
 
 ## 质量门禁
 
@@ -57,3 +61,38 @@
 | 并发测试 | 同 conversation、同 workspace、不同 workspace、全局 worker 上限 |
 | 重启 E2E | running→interrupted、SSE 恢复、无命令重放 |
 | UI 截图 | 新建、两会话切换、后台 running、归档、删除确认、窄屏 |
+
+## TurnChangeSet 正确性
+
+- [ ] C1. 非 Git workspace 中成功 create/modify 的 write/edit 都保存准确 before/after hash、immutable artifact 和行级 diff；失败工具不产生变更行。
+- [ ] C2. 同一文件在一个 turn 内修改两次只显示一行，diff 为首个 before→最终 after；修改后完全还原则 file_count/+/- 均不计该文件。
+- [ ] C3. 同一路径在后续 turn 再次修改时，两个 turn 各自打开自己的历史 diff；当前 workspace 继续变化不会改写旧 preview，并显示 divergence。
+- [ ] C4. create/modify/delete/rename 和 binary/too-large/incomplete 各有稳定 change type、preview capability 和用户文案；不能生成 diff 时不伪造 +/-。
+- [ ] C5. `RunResult.mutated_paths` 与 tool-confirmed ChangeSet terminal invariant 有自动检查；差异进入稳定 diagnostic/feedback，不静默丢文件。
+- [ ] C6. Git workspace 从已有 dirty/staged/untracked 状态开始时，本 turn diff 以 turn baseline 为准，不把运行前改动算入本轮；HEAD 改变时 coverage fail-closed。
+- [ ] C7. 非 Git/run_command probe 超出文件/字节/耗时预算时主 turn 继续完成，ChangeSet 标 `confirmed_only/incomplete`，成功 write/edit 仍完整可审查。
+
+## 文件摘要与预览 UI
+
+- [ ] V1. 每个 terminal turn 的 change summary 固定在该 turn 最后、下一 user message 前；显示净文件数、总 +A/-D 和 A/M/D/R 文件行。
+- [ ] V2. 0 个净变化不显示空大卡，只显示克制状态；超过 5 个文件默认折叠并可“再显示 N 个”，100 文件时 DOM 有界。
+- [ ] V3. modified 默认 Diff、created 默认 After、deleted 默认 Before；before/after/current mode、上一/下一文件、close 和键盘均可用。
+- [ ] V4. 右栏只在点击文件/审查更改后出现；切到另一 conversation 时旧 pane 自动关闭或恢复该会话自身 artifact，不发生跨会话闪现。
+- [ ] V5. preview loading/error/binary/truncated/corrupt/diverged 有独立可恢复状态；源码只读、HTML 转义、长行和行号可用。
+- [ ] V6. desktop open/closed、1280×720、320px、light/dark、zh-CN/en-US 的全屏 production screenshot 与布局一致。
+
+## Artifact/API 安全与资源门禁
+
+- [ ] S1. preview API 只接受层级资源 ID，逐层校验 conversation→turn→change→blob 归属；任意 path、`..`、绝对路径、跨会话 change id 均不能读取文件。
+- [ ] S2. 历史源码 artifact 不进入 bootstrap/list/SSE/log/error/默认导出；仅用户点击后按需 fetch，DTO/payload 有硬上限。
+- [ ] S3. 单文件 text snapshot≤1 MiB、单 turn 新增 artifact 默认≤20 MiB、diff≤20,000 行；超限结果稳定且不阻塞主 turn。
+- [ ] S4. CAS 相同内容去重；conversation delete 清除 refs，精确 GC 后无 orphan 正文；GC crash 可重试且不会删除仍被其他 turn 引用的 blob。
+- [ ] S5. artifact 文件损坏/hash 不符时 fail-closed 为 `artifact_corrupt`，不把损坏内容渲染或回退读取任意 current path。
+
+## 新增 E2E 场景
+
+1. 左栏新建 Conversation A，运行修改 `a.py`，末尾 change summary 点击后右栏显示 diff；关闭右栏后中栏扩展。
+2. 新建 Conversation B 并后台运行；A/B 列表 badge 独立，切换不取消，B 不显示 A 的 preview。
+3. A 第二 turn 再改 `a.py`；分别点击两个 turn 的同名文件，before/after/diff 和 turn identity 不串 cache。
+4. 从 dirty Git baseline 运行 write/edit + command；只统计 turn 净变化，coverage/warning 符合探测结果。
+5. reload/server restart 后会话列表、turn change summary 和 artifact preview 可恢复；删除 A 后其 API 404、artifact refs/正文完成既定清理。

@@ -19,7 +19,8 @@
 
 ### 左侧：会话导航
 
-- 顶部只保留“新建会话”和搜索；列表展示标题、workspace、最近更新时间、运行/排队状态。
+- 顶部只保留“新对话”和搜索；所有 Conversation 创建从左栏进入，不再以“新任务/当前运行”功能菜单作为主导航。
+- 列表按 canonical workspace 分组，展示标题、最近更新时间、运行/排队/未读状态；模型设置/About 移至底部低频入口。
 - 行菜单提供重命名、归档、删除；归档单独筛选，可恢复，删除二次确认。
 - 切换会话不取消后台运行；运行状态和未读完成结果在对应行可见。
 - 设置、记忆中心和归档入口固定在底部，不与聊天消息混排。
@@ -40,10 +41,13 @@
 - 队列以 Composer 上方的紧凑 dock 展示，支持编辑、删除、排序和手动 Steer；未被 claim 的消息不得伪装成已发送聊天气泡。
 - 默认 Enter 行为随 idle/busy 语义一致，Shift+Enter 换行；Queue/Steer 快捷键可配置且 tooltip、按钮和无障碍名称一致。
 
-### 顶部与详情
+### 顶部、每轮变更与右侧文件审查
 
 - workspace 与 provider profile 使用紧凑上下文按钮/弹层，而不是常驻开发表单；无效配置在原位给出用户可操作的错误。
-- 右侧 inspector 默认关闭，只在查看工具详情、运行统计或诊断时打开；移动/窄屏使用 drawer。
+- 每个 terminal turn 在回复末尾显示净文件变更摘要：文件数、总 +A/-D、A/M/D/R 和文件行；点击文件进入该 turn 的历史审查。
+- 右侧默认完全关闭且不保留空白栏，只在点击改动文件/“审查更改”后打开 Artifact Preview；关闭后中栏恢复宽度，移动/窄屏使用 drawer/sheet。
+- preview 默认展示 turn-scoped before/after diff，可切修改前/修改后/当前文件；当前 workspace 后续变化时明确标记 divergence，不覆盖历史 artifact。
+- 运行统计/验证保留在 terminal summary，工具详情就地展开，高级诊断使用按需 drawer；它们不作为常驻右栏与文件预览竞争。
 - 高级模式才展示 run ID、event sequence、context budget、raw error code 等调试信息，且全部脱敏。
 
 ## 核心状态与数据边界
@@ -71,7 +75,7 @@ Memory（独立服务）
 | 顺序 | 任务 | 交付焦点 | 前置 | 不在本任务做 |
 | --- | --- | --- | --- | --- |
 | 1 | [task_003](task_003/plan.md) | 产品文案、Codex 风格平面 feed、Composer Start/Stop、渲染隔离与 validation 根因修复 | task_002 | 不伪造会话/队列/reasoning |
-| 2 | [task_004](task_004/plan.md) | Conversation/Turn 持久化、多轮上下文、切换/命名/归档/删除、后台运行 | task_003 | 不用前端数组模拟持久队列 |
+| 2 | [task_004](task_004/plan.md) | Conversation/Turn 持久化、左侧会话边栏、后台运行、每轮 ChangeSet、右侧文件/diff 预览 | task_003 | 不用前端数组模拟会话，也不以 current git diff 冒充历史 turn diff |
 | 3 | [task_005](task_005/plan.md) | provider-neutral streaming、可展示 reasoning/summary、折叠 Think | task_004 | 不暴露隐藏思维、不假称所有 provider 支持 |
 | 4 | [task_006](task_006/plan.md) | durable Queue/Steer、AgentLoop 安全插入、busy Composer | task_004、task_005 | 不把 Queue 当即时中断 |
 | 5 | [task_007](task_007/plan.md) | 可控跨会话记忆、来源/作用域/审批/删除 | task_004；建议在 task_006 后 | 不默认自动记住全部聊天 |
@@ -89,7 +93,9 @@ Memory（独立服务）
 | 输入或 event 导致 workspace 重复校验 | task_003 | task_008 性能回归 | Network 请求计数、render 隔离、源码依赖审计 |
 | 模型 think 流式展示、可折叠 | task_005 | task_004 持久事实、task_008 live smoke | 两 wire fixtures、canonical audit、Think UI |
 | 每次输入不再新任务、支持多轮 | task_004 | task_005/006 建立其上的 stream/inbox | 两会话三轮请求、上下文隔离、重启 E2E |
+| 左侧会话边栏、新对话与会话管理 | task_004 | task_003 提供可扩展 Shell | workspace 分组、生命周期、后台 badge、宽/窄屏 E2E |
 | 会话切换、命名、归档、删除 | task_004 | task_008 数据/隐私复核 | SQLite/API lifecycle、UI 与硬删除证据 |
+| 每轮末尾改动文件摘要、右侧预览 | task_004 | task_008 artifact 安全/性能复核 | 净 ChangeSet、历史 before/after/diff、关闭/切会话/重启 E2E |
 | 运行中消息 Queue/手动 Steer | task_006 | task_004/005 | race tests、三条 FIFO、一条 Steer、降级证据 |
 | 跨会话记忆和知识共享 | task_007 | task_004；task_008 安全/性能 | 显式保存、B 会话召回、来源、删除不可召回 |
 | 其他不完善与最终可演示性 | task_008 | 汇总全部任务 | fixed eval、真实模型、clean install、材料 |
@@ -126,6 +132,13 @@ Memory（独立服务）
 - 模型候选必须经用户批准；Memory 不授予工具权限，不覆盖 system/ToolPolicy。
 - hard delete 同时清理正文、来源摘录、索引和缓存，usage audit 不保留正文。
 
+### ADR-06：文件审查以 TurnChangeSet/Artifact 为事实源
+
+- `RunResult.mutated_paths` 只用于完成验证兼容；UI 的文件数、+/- 和历史 diff 来自 turn-scoped ChangeSet。
+- ToolExecutionObserver 精确捕获 write/edit before/after；Git-aware/bounded probe 只增强 command side-effect coverage，并公开 complete/incomplete。
+- 历史 preview 读取内容寻址 artifact，current workspace 是独立 mode；不使用当前 `git diff` 冒充过去某轮结果。
+- 右栏 closed 时不挂载不占位；artifact API 只接收归属资源 ID，不提供任意本地路径读取。
+
 ## 实施与交接规范
 
 每个任务按其 plan 中 A/B/C/D 批次开发。Developer feedback 除标准命令外必须提交：
@@ -144,7 +157,7 @@ Master 复验顺序固定为：源码不变量 → 单元/contract → API/schem
 | 上游任务 | 下游依赖的稳定交付物 | 下游开始条件 |
 | --- | --- | --- |
 | task_003 | ContextBar/Transcript/Composer slots；Run meta/event state boundary | validation/render/视觉验收通过 |
-| task_004 | ConversationRepository、run_turn、RuntimeRegistry、SQLite migration、conversation API | 三轮/隔离/重启/删除通过 |
+| task_004 | ConversationRepository、run_turn、RuntimeRegistry、SQLite migration、ConversationSidebar、TurnChangeSet/Artifact preview API | 三轮/隔离/重启/删除、历史 diff、三栏 E2E 通过 |
 | task_005 | ModelStreamEvent、Attempt、checkpoint/SSE、Think UI、capability | fragments/cancel/reconnect/canonical audit 通过 |
 | task_006 | InboxService、safe-point port、QueueDock/Composer busy FSM | race/FIFO/Steer/demotion 通过 |
 | task_007 | MemoryService、retriever/projection、Memory Center | scope/security/delete/recall 通过 |

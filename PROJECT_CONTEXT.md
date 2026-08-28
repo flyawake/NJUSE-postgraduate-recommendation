@@ -60,7 +60,7 @@ Python 代码必须通过 Ruff format、Ruff lint 和 pytest。task_002 前端�
 
 `task_002` 本地图形应用与多服务商配置已通过第三次 Master 源码复验并归档。React/TypeScript/Vite GUI、FastAPI/RunController/SSE、provider profile、独立 credential store、生产静态资源打包及 Fake Model 图形闭环均已落地；R3 进一步闭环了 AgentEvent 源头 fail-closed 脱敏、实时 phase/inspector、跨 step 活动分组、SSE cursor/reset/end 单调恢复、严格 config/Host 解析、credential/start 语义与真实成功演示证据。最终证据为 Python 238 passed/4 skipped、Vitest 33、Playwright 5、npm audit 0；外部真实模型 smoke 因当前环境无合法凭据按规则记为 N/A，并列为下一阶段首要验证。第一阶段仍只支持现有 `openai_chat_completions` wire API，不夸大为已支持 Anthropic/Responses 等原生协议。
 
-可运行、可测试的端到端 Coding Agent 内核与本地图形应用首版均已通过验收。2026-08-28 已完成下一阶段详细工程规划，详见 `guide/PRODUCT_EVOLUTION_PLAN.md`：task_003 已进入实施，先完成用户化文案/布局、平面活动流、Composer Start/Stop 和渲染隔离，且已定位 workspace validation 重复触发的直接原因是 `WorkspaceField` effect 对不稳定 inline callback 的依赖；task_004-task_008 依次覆盖持久多轮会话、流式可展示 reasoning、Queue/Steer、可控跨会话记忆和最终发布门禁。六个任务 guide 已补全目标/非目标、分层架构、领域模型、接口和事件、状态机、SQLite 事务、并发与恢复、前端状态所有权、实施批次、定量预算、故障注入、测试矩阵和回滚入口。当前只有 task_003 处于进行中，后续任务不得用前端临时状态提前伪实现。
+可运行、可测试的端到端 Coding Agent 内核与本地图形应用首版均已通过验收。2026-08-28 已完成下一阶段详细工程规划，详见 `guide/PRODUCT_EVOLUTION_PLAN.md`：task_003 已进入实施，先完成用户化文案/布局、平面活动流、Composer Start/Stop 和渲染隔离，且已定位 workspace validation 重复触发的直接原因是 `WorkspaceField` effect 对不稳定 inline callback 的依赖；task_004-task_008 依次覆盖持久多轮会话、流式可展示 reasoning、Queue/Steer、可控跨会话记忆和最终发布门禁。task_004 的最终应用壳已经进一步确定为 Conversation 左侧主边栏、中间连续 transcript、默认关闭的右侧 Artifact Preview；每个 terminal turn 末尾显示净文件 ChangeSet，历史 diff 使用内容寻址的 turn-scoped before/after artifact，不能用当前 workspace/git diff 冒充。六个任务 guide 已补全目标/非目标、分层架构、领域模型、接口和事件、状态机、SQLite 事务、并发与恢复、前端状态所有权、实施批次、定量预算、故障注入、测试矩阵和回滚入口。当前只有 task_003 处于进行中，后续任务不得用前端临时状态提前伪实现。
 
 ## 演进路线
 

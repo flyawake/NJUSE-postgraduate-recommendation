@@ -148,6 +148,8 @@ Versioned eval manifest
 | conversation list | 200 conversations, page 50 | warm API p95≤100 ms | Python benchmark |
 | memory retrieval | 2,000 entries | warm p95≤50 ms，cold p95≤150 ms | repository benchmark |
 | queue mutation | 100 items | common mutation p95≤100 ms | API benchmark |
+| change summary | 100 changed files | collapsed DOM 有界，展开/点击 p95≤100 ms | Playwright marks |
+| artifact preview | 20,000-line capped diff | 首个 hunk≤300 ms，滚动/切文件可用 | API + browser marks |
 | cancel acknowledgement | active stream | UI/HTTP ack≤250 ms | Playwright/API marks |
 | cancel terminal | cancellable model/tool | ≤5 s；不可中断命令按政策单列 | worker timestamps |
 | SSE reconnect | retained cursor | 首个一致 snapshot/event≤2 s | disconnect proxy fixture |
@@ -189,6 +191,7 @@ Versioned eval manifest
 | Workspace | canonical path、symlink/reparse、编辑前读取、新鲜度、命令 cwd/取消 |
 | Provider/SSE | fail-closed payload whitelist、超大/未知 event、SDK error 脱敏 |
 | Conversation | ID/version/资源归属、archive/delete、DB 文件权限与备份 |
+| Artifact preview | change ID 层级归属、无任意 path read、历史 blob 完整性、大小限制、delete/GC |
 | Queue/Steer | 重放 idempotency、跨 conversation item ID、重复副作用 |
 | Memory | secret scanner、scope isolation、XML/JSON escape、低信任注入、hard delete |
 | Export/材料 | 默认脱敏、显式 raw 警告、私人绝对路径与 reasoning 内容检查 |
@@ -232,6 +235,7 @@ Versioned eval manifest
 - `performance.json` + 摘要：fixture、样本、median/p95/max。
 - `THREAT_MODEL.md`：资产/边界/威胁/缓解/残余风险。
 - `MIGRATION.md`：schema version、备份、失败恢复。
+- `ARTIFACT_REVIEW.md`：TurnChangeSet coverage、快照预算、历史 diff、隐私/删除边界。
 - `DEMO_SCRIPT.md`：2 分钟时间轴、输入、预期步骤、失败回退。
 
 README.txt 在 1000 汉字内只包含评审真正需要的信息：项目一句话、仓库 URL、环境/启动命令、provider 配置入口、演示能力、核心设计和必要安全说明。详细开发文档留 README.md/docs，不挤入提交文本。

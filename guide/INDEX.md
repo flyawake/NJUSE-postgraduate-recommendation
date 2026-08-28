@@ -9,7 +9,7 @@
 | [task_001](archive/task_001/plan.md) | 已归档 | P0 | [task_001_feedback.md](../feedback/archive/task_001_feedback.md)（已归档，通过） | 2026-08-27 整改复验通过：128 passed, 4 skipped；R1-R3 独立复现通过；live smoke 与仓库时间合规性转后续跟踪 |
 | [task_002](archive/task_002/plan.md) | 已归档 | P1 | [task_002_feedback.md](../feedback/archive/task_002_feedback.md)（已归档，通过） | 2026-08-27 第三次复验通过：A1-A22、R2、R3 全部闭环；238 passed/4 skipped、Vitest 33、Playwright 5、audit 0；真实模型 smoke 依规则 N/A，转后续任务 |
 | [task_003](task_003/plan.md) | 进行中 | P0 | —（待提交） | 产品化界面、平面活动流、Start/Stop 状态机、组件渲染隔离与 workspace validation 根因修复 |
-| [task_004](task_004/plan.md) | 未开始 | P0 | —（待提交） | 依赖 task_003；持久 Conversation/Turn、多轮上下文、切换/命名/归档/删除与后台运行 |
+| [task_004](task_004/plan.md) | 未开始 | P0 | —（待提交） | 依赖 task_003；持久多轮、左侧 ConversationSidebar、生命周期/后台运行、每轮 ChangeSet 与按需右侧文件预览 |
 | [task_005](task_005/plan.md) | 未开始 | P0 | —（待提交） | 依赖 task_004；provider-neutral streaming 与可展示 reasoning/summary 的折叠 Think |
 | [task_006](task_006/plan.md) | 未开始 | P1 | —（待提交） | 依赖 task_004/task_005；Host 权威的 durable Queue/Steer 与 busy Composer |
 | [task_007](task_007/plan.md) | 未开始 | P1 | —（待提交） | 依赖 task_004，建议在 task_006 后实施；可控、可追溯、可删除的跨会话记忆 |

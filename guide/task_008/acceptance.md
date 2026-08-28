@@ -20,6 +20,7 @@
 - [ ] S2. Host/CSP/path/tool policy、SSE/API fail-closed 脱敏、会话删除/导出和 memory poisoning threat cases 通过。
 - [ ] S3. 键盘、焦点、screen-reader label、对比度、200% 缩放和窄屏可用；zh-CN/en-US 无缺失 key、截断或开发占位文案。
 - [ ] S4. 默认界面只显示用户产品信息；高级诊断必须主动打开，详情经过脱敏并可复制必要摘要。
+- [ ] S5. Artifact preview 无任意 path read/跨 conversation IDOR；历史源码不进入 bootstrap/SSE/log/默认导出，conversation delete 后 refs/GC 符合 task_004 承诺。
 
 ## 发布与材料
 
@@ -43,6 +44,7 @@
 - [ ] B3. 200 conversation list warm API p95≤100 ms；2,000 memory warm query p95≤50 ms/cold≤150 ms；100 queue item mutation p95≤100 ms。
 - [ ] B4. active stream cancel HTTP/UI acknowledgement≤250 ms，可取消 worker terminal≤5 s；不支持即时终止的外部命令有明确状态和测试。
 - [ ] B5. SSE retained-cursor reconnect≤2 s 恢复一致 snapshot/event；连续断连 3 次无重复字符、event 或 Queue claim。
+- [ ] B6. 100-file change summary 默认有界挂载且展开/打开 p95≤100 ms；20,000-line 上限 diff 首个 hunk≤300 ms，超限/binary 不进行无界渲染。
 
 ## Crash/recovery 必过点
 
