@@ -6,7 +6,7 @@ import { useI18n } from "@/lib/i18n";
 import { TopBar } from "./AppShellTopBar";
 import { Sidebar } from "./AppShellSidebar";
 
-export type ViewName = "conversations" | "settings" | "about";
+export type ViewName = "conversations" | "memories" | "settings" | "about";
 
 export interface AppShellProps {
   view: ViewName;
@@ -111,7 +111,15 @@ export function AppShell({
           <Dialog.Overlay className="fixed inset-0 z-40 bg-overlay sm:hidden" />
           <Dialog.Content className="fixed inset-y-0 left-0 z-50 w-[min(19rem,90vw)] bg-surface shadow-md outline-none sm:hidden">
             <Dialog.Title className="sr-only">{t("nav.conversations")}</Dialog.Title>
-            <Sidebar view={view} collapsed={false} onNavigate={onNavigate} drawer>
+            <Sidebar
+              view={view}
+              collapsed={false}
+              onNavigate={(nextView) => {
+                onNavigate(nextView);
+                setSidebarDrawerOpen(false);
+              }}
+              drawer
+            >
               {conversationSidebar}
             </Sidebar>
           </Dialog.Content>

@@ -12,6 +12,7 @@ import { CreateConversationDialog } from "@/components/CreateConversationDialog"
 import { Onboarding } from "@/components/Onboarding";
 import { SettingsPage } from "@/components/SettingsPage";
 import { AboutSecurityPage } from "@/components/AboutSecurityPage";
+import { MemoryPage } from "@/components/MemoryPage";
 import { useI18n } from "@/lib/i18n";
 
 const WS_STORAGE_KEY = "coding-agent-ui-workspace";
@@ -83,6 +84,28 @@ export function App() {
     } catch { /* non-browser test environment */ }
   }, []);
 
+  const openMemorySource = useCallback(async (conversationId: string, turnId?: string | null) => {
+    let conversation: Conversation;
+    try {
+      conversation = await api.getConversation(conversationId);
+    } catch {
+      return;
+    }
+    selectConversation(conversation);
+    if (turnId) {
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set("turn", turnId);
+        window.history.replaceState(null, "", url);
+      } catch { /* non-browser test environment */ }
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const target = document.querySelector<HTMLElement>(`[data-testid="turn-${turnId}"]`);
+        target?.scrollIntoView({ block: "center" });
+        target?.focus({ preventScroll: true });
+      }));
+    }
+  }, [selectConversation]);
+
   const closeArtifact = useCallback(() => {
     const trigger = artifact?.trigger;
     setArtifact(null);
@@ -122,7 +145,7 @@ export function App() {
           />
         }
       >
-        {view === "settings" ? <SettingsPage /> : view === "about" ? <AboutSecurityPage /> : selectedConversationId ? (
+        {view === "settings" ? <SettingsPage /> : view === "about" ? <AboutSecurityPage /> : view === "memories" ? <MemoryPage defaultWorkspace={workspace} onOpenSource={openMemorySource} /> : selectedConversationId ? (
           <ConversationView
             key={selectedConversationId}
             conversationId={selectedConversationId}
@@ -133,6 +156,7 @@ export function App() {
               files,
               trigger: document.activeElement instanceof HTMLElement ? document.activeElement : null,
             })}
+            onOpenMemorySource={openMemorySource}
           />
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">

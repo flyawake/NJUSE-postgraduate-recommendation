@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .errors import ContextOverflowError
 from .models import (
@@ -53,11 +53,29 @@ class CanonicalHistory:
 
 
 @dataclass(frozen=True)
+class MemoryProjection:
+    """Immutable memory context returned by a per-turn provider.
+
+    ``block`` is a pre-rendered, XML-escaped, untrusted-reference block. The
+    provider is responsible for retrieving once and recording usage in the
+    turn's audit table.
+    """
+
+    block: str
+    entries: Tuple[Any, ...] = ()
+    snapshot_hash: str = ""
+    reason: str = ""
+    omitted_count: int = 0
+    commit_usage: Optional[Callable[[], None]] = None
+
+
+@dataclass(frozen=True)
 class RequestView:
     messages: Tuple[Dict[str, Any], ...]
     char_count: int
     compacted_results: int = 0
     omitted_chars: int = 0
+    memory_projection: Optional[MemoryProjection] = None
 
 
 def to_provider_message(message: CanonicalMessage) -> Dict[str, Any]:
@@ -138,13 +156,32 @@ class _Step:
 
 
 class ContextManager:
-    def __init__(self, char_budget: int = DEFAULT_CHAR_BUDGET) -> None:
+    def __init__(
+        self,
+        char_budget: int = DEFAULT_CHAR_BUDGET,
+        *,
+        memory_provider: Optional[Callable[[], Optional[MemoryProjection]]] = None,
+    ) -> None:
         if char_budget < 1:
             raise ValueError("char_budget must be positive")
         self.char_budget = char_budget
+        self._memory_provider = memory_provider
+        self._memory_projection_loaded = False
+        self._memory_projection: Optional[MemoryProjection] = None
+        self._memory_projection_committed = False
+
+    def _get_memory_projection(self) -> Optional[MemoryProjection]:
+        """Retrieve memory once per ContextManager instance (one turn)."""
+        if not self._memory_projection_loaded:
+            self._memory_projection_loaded = True
+            if self._memory_provider is not None:
+                self._memory_projection = self._memory_provider()
+        return self._memory_projection
 
     def build_request(self, history: CanonicalHistory) -> RequestView:
         messages = list(history.messages)
+        memory_projection = self._get_memory_projection()
+        prefix = memory_projection.block if memory_projection else None
         steps = self._segment_steps(messages)
         recent_indices: set[int] = set()
         for step in steps[-RECENT_STEPS_TO_KEEP:]:
@@ -169,7 +206,7 @@ class ContextManager:
                 replaceable.append(index)
 
         overrides: Dict[int, str] = {}
-        rendered = self._render(messages, overrides)
+        rendered = self._render(messages, overrides, prefix=prefix)
         count = _message_chars(rendered)
         compacted = 0
         for index in replaceable:  # oldest first
@@ -178,11 +215,32 @@ class ContextManager:
             message = messages[index]
             assert isinstance(message, ToolMessage)
             overrides[index] = _compaction_marker(message)
-            rendered = self._render(messages, overrides)
+            rendered = self._render(messages, overrides, prefix=prefix)
             count = _message_chars(rendered)
             compacted += 1
         if count > self.char_budget:
-            raise ContextOverflowError(count, self.char_budget)
+            # Memory is lower priority than every protected canonical item. If
+            # the escaped projection does not fit, omit it as a whole rather
+            # than squeezing out root policy, the current user request,
+            # protocol skeletons, errors, or latest file observations.
+            if prefix:
+                rendered_without_memory = self._render(messages, overrides)
+                count_without_memory = _message_chars(rendered_without_memory)
+                if count_without_memory <= self.char_budget:
+                    rendered = rendered_without_memory
+                    count = count_without_memory
+                    memory_projection = None
+            if count > self.char_budget:
+                raise ContextOverflowError(count, self.char_budget)
+
+        if (
+            memory_projection is not None
+            and memory_projection.block
+            and not self._memory_projection_committed
+            and memory_projection.commit_usage is not None
+        ):
+            memory_projection.commit_usage()
+            self._memory_projection_committed = True
 
         omitted = sum(
             max(0, len(messages[index].content) - len(overrides[index]))
@@ -193,6 +251,7 @@ class ContextManager:
             char_count=count,
             compacted_results=compacted,
             omitted_chars=omitted,
+            memory_projection=memory_projection,
         )
 
     @staticmethod
@@ -214,9 +273,16 @@ class ContextManager:
 
     @staticmethod
     def _render(
-        messages: List[CanonicalMessage], overrides: Dict[int, str]
+        messages: List[CanonicalMessage],
+        overrides: Dict[int, str],
+        *,
+        prefix: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         rendered: List[Dict[str, Any]] = []
+        if prefix:
+            # Memory is an untrusted, non-instruction reference block at the
+            # lowest-priority position before the canonical system prompt.
+            rendered.append({"role": "system", "content": prefix})
         for index, message in enumerate(messages):
             if index in overrides and isinstance(message, ToolMessage):
                 rendered.append(

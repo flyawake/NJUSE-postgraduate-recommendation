@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@/lib/i18n";
+import { ThemeProvider } from "@/lib/theme";
 import { RunStatusBadge } from "@/components/RunStatusBadge";
 import { VerificationBadge } from "@/components/VerificationBadge";
 import { verificationKind } from "@/components/VerificationBadge";
 import { TaskComposer } from "@/components/TaskComposer";
+import { AppShell } from "@/components/AppShell";
 
 function renderWithI18n(element: React.ReactElement) {
   return render(<I18nProvider>{element}</I18nProvider>);
@@ -113,5 +115,37 @@ describe("TaskComposer", () => {
     expect(screen.getByLabelText("任务描述")).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "取消运行" }));
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("AppShell", () => {
+  it("closes the narrow sidebar drawer after navigation", async () => {
+    const originalWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    const onNavigate = vi.fn();
+    const user = userEvent.setup();
+    renderWithI18n(
+      <ThemeProvider>
+        <AppShell
+          view="conversations"
+          onNavigate={onNavigate}
+          workspace="C:/workspace"
+          profileLabel="fake"
+          inspector={null}
+        >
+          <div>conversation</div>
+        </AppShell>
+      </ThemeProvider>
+    );
+
+    await user.click(screen.getAllByRole("button", { name: "展开侧栏" })[0]);
+    expect(screen.getByRole("dialog", { name: "对话" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "记忆中心" }));
+    expect(onNavigate).toHaveBeenCalledWith("memories");
+    expect(screen.queryByRole("dialog", { name: "对话" })).not.toBeInTheDocument();
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: originalWidth,
+    });
   });
 });

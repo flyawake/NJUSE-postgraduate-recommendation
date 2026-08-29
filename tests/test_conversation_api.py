@@ -146,7 +146,7 @@ class TestConversationApi:
         ).json()
         started = client.post(
             f"/api/conversations/{conv['id']}/turns",
-            json={"content": "do it", "reasoning_effort": "high"},
+            json={"content": "do it", "profile_id": None, "reasoning_effort": "high"},
             headers=headers,
         )
         assert started.status_code == 202
@@ -163,12 +163,15 @@ class TestConversationApi:
             json={
                 "content": "queued message",
                 "mode": "queue",
+                "profile_id": "profile-a",
                 "reasoning_effort": "medium",
             },
             headers=headers,
         )
         assert snapshot.status_code == 200
-        assert snapshot.json()["items"][0]["reasoning_effort"] == "medium"
+        item = snapshot.json()["items"][0]
+        assert item["reasoning_effort"] == "medium"
+        assert item["profile_id"] == "profile-a"
 
     def test_inbox_endpoints(self, api):
         client, headers, _service, _model, ws = api

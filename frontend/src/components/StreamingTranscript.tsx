@@ -5,6 +5,7 @@ import type { StreamCheckpoint, ToolEvent } from "@/api/client";
 import { useI18n } from "@/lib/i18n";
 import { cx } from "@/lib/format";
 import { useThrottledValue } from "@/lib/useThrottledValue";
+import { MarkdownText } from "./MarkdownText";
 
 export interface StreamingTranscriptProps {
   events: ToolEvent[];
@@ -221,11 +222,8 @@ const StreamBlockView = memo(function StreamBlockView({
         </Collapsible.Root>
       ) : null}
       {showAssistantText && (hasText || terminalText) ? (
-        <div
-          className="whitespace-pre-wrap break-words text-sm leading-relaxed"
-          data-testid="streaming-assistant-text"
-        >
-          {block.text || terminalText || ""}
+        <div className="text-sm" data-testid="streaming-assistant-text">
+          <MarkdownText text={block.text || terminalText || ""} />
         </div>
       ) : null}
     </section>

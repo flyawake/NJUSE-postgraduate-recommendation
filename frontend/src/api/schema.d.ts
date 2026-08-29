@@ -282,6 +282,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/conversations/{conversation_id}/turns/{turn_id}/memory-usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Turn Memory Usage */
+        get: operations["turn_memory_usage_api_conversations__conversation_id__turns__turn_id__memory_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/conversations/{conversation_id}/turns/{turn_id}/stream": {
         parameters: {
             query?: never;
@@ -327,6 +344,112 @@ export interface paths {
         get: operations["health_api_health_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/memories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Memories */
+        get: operations["list_memories_api_memories_get"];
+        put?: never;
+        /** Create Memory */
+        post: operations["create_memory_api_memories_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/memories/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reset Memories */
+        post: operations["reset_memories_api_memories_reset_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/memories/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Memory Settings */
+        get: operations["get_memory_settings_api_memories_settings_get"];
+        put?: never;
+        /** Set Memory Settings */
+        post: operations["set_memory_settings_api_memories_settings_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/memories/{memory_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Memory */
+        get: operations["get_memory_api_memories__memory_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Memory */
+        delete: operations["delete_memory_api_memories__memory_id__delete"];
+        options?: never;
+        head?: never;
+        /** Edit Memory */
+        patch: operations["edit_memory_api_memories__memory_id__patch"];
+        trace?: never;
+    };
+    "/api/memories/{memory_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve Memory */
+        post: operations["approve_memory_api_memories__memory_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/memories/{memory_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject Memory */
+        post: operations["reject_memory_api_memories__memory_id__reject_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -465,6 +588,23 @@ export interface paths {
         };
         /** Run Events */
         get: operations["run_events_api_runs__run_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/turns/{turn_id}/memory-usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Turn Memory Usage Flat */
+        get: operations["turn_memory_usage_flat_api_turns__turn_id__memory_usage_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -728,6 +868,8 @@ export interface components {
              * @default queue
              */
             mode: string;
+            /** Profile Id */
+            profile_id?: string | null;
             /** Reasoning Effort */
             reasoning_effort?: string | null;
         };
@@ -755,6 +897,8 @@ export interface components {
             last_error_code?: string | null;
             /** Position */
             position: number;
+            /** Profile Id */
+            profile_id?: string | null;
             /** Reasoning Effort */
             reasoning_effort?: string | null;
             /** Requested Mode */
@@ -788,6 +932,176 @@ export interface components {
         InboxVersionRequest: {
             /** Expected Version */
             expected_version: number;
+        };
+        /** MemoryCreateRequest */
+        MemoryCreateRequest: {
+            /** Content */
+            content: string;
+            /** Idempotency Key */
+            idempotency_key?: string | null;
+            /** Kind */
+            kind: string;
+            /** Scope Key */
+            scope_key: string;
+            /** Scope Type */
+            scope_type: string;
+            /** Source Conversation Id */
+            source_conversation_id?: string | null;
+            /** Source Excerpt */
+            source_excerpt?: string | null;
+            /** Source Turn Id */
+            source_turn_id?: string | null;
+            /** Title */
+            title?: string | null;
+        };
+        /** MemoryDTO */
+        MemoryDTO: {
+            /** Confirmation */
+            confirmation: string;
+            /** Content */
+            content: string;
+            /** Created At */
+            created_at: string;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Last Used At */
+            last_used_at?: string | null;
+            /** Normalized Hash */
+            normalized_hash: string;
+            /** Scope Key */
+            scope_key: string;
+            /** Scope Type */
+            scope_type: string;
+            /** Source Conversation Id */
+            source_conversation_id?: string | null;
+            /** Source Excerpt */
+            source_excerpt?: string | null;
+            /** Source Turn Id */
+            source_turn_id?: string | null;
+            /** Sources */
+            sources?: {
+                [key: string]: unknown;
+            }[];
+            /** Status */
+            status: string;
+            /** Supersedes Id */
+            supersedes_id?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Updated At */
+            updated_at: string;
+            /** Use Count */
+            use_count: number;
+            /** Version */
+            version: number;
+        };
+        /** MemoryEditRequest */
+        MemoryEditRequest: {
+            /** Content */
+            content: string;
+            /** Expected Version */
+            expected_version: number;
+            /** Idempotency Key */
+            idempotency_key?: string | null;
+            /** Kind */
+            kind?: string | null;
+            /** Title */
+            title?: string | null;
+        };
+        /** MemoryPageDTO */
+        MemoryPageDTO: {
+            /** Items */
+            items: components["schemas"]["MemoryDTO"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** MemoryResetRequest */
+        MemoryResetRequest: {
+            /**
+             * Confirm
+             * @default false
+             */
+            confirm: boolean;
+            /** Expected Scope Version */
+            expected_scope_version?: number | null;
+            /** Idempotency Key */
+            idempotency_key?: string | null;
+            /** Scope Key */
+            scope_key: string;
+            /** Scope Type */
+            scope_type: string;
+        };
+        /** MemorySettingsDTO */
+        MemorySettingsDTO: {
+            /**
+             * Candidate Enabled
+             * @default false
+             */
+            candidate_enabled: boolean;
+            /** Enabled */
+            enabled: boolean;
+            /** Scope Key */
+            scope_key?: string | null;
+            /** Scope Type */
+            scope_type?: string | null;
+            /**
+             * Scope Version
+             * @default 0
+             */
+            scope_version: number;
+        };
+        /** MemorySettingsRequest */
+        MemorySettingsRequest: {
+            /** Candidate Enabled */
+            candidate_enabled?: boolean | null;
+            /** Enabled */
+            enabled: boolean;
+            /**
+             * Scope Key
+             * @default global
+             */
+            scope_key: string;
+            /**
+             * Scope Type
+             * @default global
+             */
+            scope_type: string;
+        };
+        /** MemoryUsageDTO */
+        MemoryUsageDTO: {
+            /** Entry Id */
+            entry_id: string;
+            /** Kind */
+            kind?: string | null;
+            /** Rank */
+            rank: number;
+            /** Reason */
+            reason: string;
+            /** Scope Key */
+            scope_key?: string | null;
+            /** Scope Type */
+            scope_type?: string | null;
+            /** Snapshot Hash */
+            snapshot_hash: string;
+            /** Source Conversation Id */
+            source_conversation_id?: string | null;
+            /** Source Turn Id */
+            source_turn_id?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Turn Id */
+            turn_id: string;
+            /** Used At */
+            used_at: string;
+        };
+        /** MemoryVersionRequest */
+        MemoryVersionRequest: {
+            /** Expected Version */
+            expected_version: number;
+            /** Idempotency Key */
+            idempotency_key?: string | null;
         };
         /** PreviewDTO */
         PreviewDTO: {
@@ -1014,6 +1328,8 @@ export interface components {
             content: string;
             /** Idempotency Key */
             idempotency_key?: string | null;
+            /** Profile Id */
+            profile_id?: string | null;
             /** Reasoning Effort */
             reasoning_effort?: string | null;
         };
@@ -1853,6 +2169,38 @@ export interface operations {
             };
         };
     };
+    turn_memory_usage_api_conversations__conversation_id__turns__turn_id__memory_usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryUsageDTO"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     stream_snapshot_api_conversations__conversation_id__turns__turn_id__stream_get: {
         parameters: {
             query?: never;
@@ -1936,6 +2284,344 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthDTO"];
+                };
+            };
+        };
+    };
+    list_memories_api_memories_get: {
+        parameters: {
+            query?: {
+                scope_type?: string | null;
+                scope_key?: string | null;
+                status?: string | null;
+                query?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryPageDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_memory_api_memories_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reset_memories_api_memories_reset_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryResetRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_memory_settings_api_memories_settings_get: {
+        parameters: {
+            query?: {
+                scope_type?: string | null;
+                scope_key?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemorySettingsDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_memory_settings_api_memories_settings_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemorySettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemorySettingsDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_memory_api_memories__memory_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_memory_api_memories__memory_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryVersionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_memory_api_memories__memory_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryEditRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_memory_api_memories__memory_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryVersionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_memory_api_memories__memory_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryVersionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -2300,6 +2986,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    turn_memory_usage_flat_api_turns__turn_id__memory_usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryUsageDTO"][];
                 };
             };
             /** @description Validation Error */

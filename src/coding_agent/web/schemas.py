@@ -50,6 +50,7 @@ class ConversationVersionRequest(StrictModel):
 class TurnCreateRequest(StrictModel):
     content: str = Field(min_length=1, max_length=MAX_TASK_CHARS)
     idempotency_key: Optional[str] = Field(default=None, max_length=128)
+    profile_id: Optional[str] = None
     reasoning_effort: Optional[str] = None
 
 
@@ -208,6 +209,7 @@ class InboxEnqueueRequest(StrictModel):
     content: str = Field(min_length=1, max_length=MAX_TASK_CHARS)
     mode: str = "queue"
     idempotency_key: Optional[str] = Field(default=None, max_length=128)
+    profile_id: Optional[str] = None
     reasoning_effort: Optional[str] = None
 
 
@@ -236,6 +238,7 @@ class InboxItemDTO(BaseModel):
     bound_turn_id: Optional[str] = None
     claimed_turn_id: Optional[str] = None
     idempotency_key: Optional[str] = None
+    profile_id: Optional[str] = None
     reasoning_effort: Optional[str] = None
     version: int
     last_error_code: Optional[str] = None
@@ -249,6 +252,96 @@ class InboxSnapshotDTO(BaseModel):
     queue_version: int
     items: List[InboxItemDTO] = Field(default_factory=list)
     recent_events: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class MemoryCreateRequest(StrictModel):
+    scope_type: str
+    scope_key: str
+    kind: str
+    content: str = Field(min_length=1, max_length=4000)
+    title: Optional[str] = Field(default=None, max_length=120)
+    source_conversation_id: Optional[str] = None
+    source_turn_id: Optional[str] = None
+    source_excerpt: Optional[str] = Field(default=None, max_length=500)
+    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=120)
+
+
+class MemoryEditRequest(StrictModel):
+    content: str = Field(min_length=1, max_length=4000)
+    kind: Optional[str] = None
+    title: Optional[str] = Field(default=None, max_length=120)
+    expected_version: int = Field(ge=1)
+    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=120)
+
+
+class MemoryVersionRequest(StrictModel):
+    expected_version: int = Field(ge=1)
+    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=120)
+
+
+class MemoryResetRequest(StrictModel):
+    scope_type: str
+    scope_key: str
+    confirm: bool = False
+    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    expected_scope_version: Optional[int] = Field(default=None, ge=0)
+
+
+class MemorySettingsRequest(StrictModel):
+    scope_type: str = "global"
+    scope_key: str = "global"
+    enabled: bool
+    candidate_enabled: Optional[bool] = None
+
+
+class MemoryDTO(BaseModel):
+    id: str
+    scope_type: str
+    scope_key: str
+    kind: str
+    title: Optional[str] = None
+    content: str
+    status: str
+    confirmation: str
+    source_conversation_id: Optional[str] = None
+    source_turn_id: Optional[str] = None
+    source_excerpt: Optional[str] = None
+    supersedes_id: Optional[str] = None
+    version: int
+    normalized_hash: str
+    created_at: str
+    updated_at: str
+    last_used_at: Optional[str] = None
+    use_count: int
+    sources: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class MemoryPageDTO(BaseModel):
+    items: List[MemoryDTO]
+    next_cursor: Optional[str] = None
+
+
+class MemoryUsageDTO(BaseModel):
+    turn_id: str
+    entry_id: str
+    rank: int
+    reason: str
+    snapshot_hash: str
+    used_at: str
+    scope_type: Optional[str] = None
+    scope_key: Optional[str] = None
+    kind: Optional[str] = None
+    title: Optional[str] = None
+    source_conversation_id: Optional[str] = None
+    source_turn_id: Optional[str] = None
+
+
+class MemorySettingsDTO(BaseModel):
+    enabled: bool
+    candidate_enabled: bool = False
+    scope_type: Optional[str] = None
+    scope_key: Optional[str] = None
+    scope_version: int = 0
 
 
 class StreamCheckpointDTO(BaseModel):

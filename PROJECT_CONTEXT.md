@@ -22,7 +22,7 @@
 
 task_002 已新增本地图形层：前端使用 TypeScript、React、Vite、Tailwind CSS 与可访问 UI primitives，Python 侧使用 FastAPI/ASGI、类型化 JSON API、SSE 和 ConversationService 适配既有 AgentLoop；旧 `/api/runs` 仅作为兼容投影。Node.js 只用于前端开发、测试和 production build；最终静态资源随 Python 包分发，评审者运行 GUI 不应额外安装 Node。前端以 Vitest/React Testing Library 和 Playwright Fake Model 闭环验证，UI 默认简体中文并提供完整英文切换。
 
-2026-08-28 产品演进方案确定的长期边界：以标准库 SQLite append-only fact/event source 承载 Conversation、Turn、Inbox 与 Memory；ModelClient 在 adapter 内兼容不同 wire API，向 AgentLoop 输出统一的 text/reasoning/tool/usage/error 流事件；Queue 与 Steer 是不同的持久领域状态，Steer 只在 AgentLoop 安全边界注入；长期记忆通过独立 MemoryService 按 global/workspace/conversation 作用域向 ContextManager 提供有预算、可追溯的投影。Conversation/Turn 与统一模型流事件已分别在 task_004/task_005 落地；Inbox/Memory 仍由后续任务实现。上述均保持自研 AgentLoop/ToolExecutor/ContextManager 为核心，不引入 agent 框架。
+2026-08-28 产品演进方案确定的长期边界：以标准库 SQLite append-only fact/event source 承载 Conversation、Turn、Inbox 与 Memory；ModelClient 在 adapter 内兼容不同 wire API，向 AgentLoop 输出统一的 text/reasoning/tool/usage/error 流事件；Queue 与 Steer 是不同的持久领域状态，Steer 只在 AgentLoop 安全边界注入；长期记忆通过独立 MemoryService 按 global/workspace/conversation 作用域向 ContextManager 提供有预算、可追溯的投影。Conversation/Turn、统一模型流事件、Inbox 与 Memory 已分别在 task_004-task_007 落地。上述均保持自研 AgentLoop/ToolExecutor/ContextManager 为核心，不引入 agent 框架。
 
 禁止使用任何 agent 框架或 Agent SDK，包括但不限于 LangChain、LlamaIndex、OpenAI Agents SDK、Claude Agent SDK、AutoGen、CrewAI。允许使用模型厂商的普通 API 客户端库、OpenAI 兼容网关和模型原生 tool calling 接口。不得依赖 API 服务端托管的代码执行或文件工具，如 Code Interpreter、Files API。
 
@@ -66,7 +66,9 @@ task_004 持久多轮会话已于 2026-08-28 通过 Master 源码验收并归档
 
 task_005 流式模型与可展示 reasoning 已于 2026-08-28 通过 Master 源码验收并归档：provider-neutral `ModelStreamEvent`、严格 `TurnStreamAccumulator`、Chat Completions/Responses 双 adapter、可见 reasoning/summary、Responses opaque continuation、全局 provider attempt、SQLite v5 增量 checkpoint、snapshot/SSE 幂等恢复和折叠 Think transcript 均已闭环。前端保持 Think→tool→下一 Think→final 的真实时间顺序，取消、partial retry、断线重连三次及 2,000 delta 性能边界均有反例。最终证据为 Python 304 passed/4 skipped、Vitest 53、Playwright 9、Ruff/typecheck/lint/build/wheel 通过；真实模型 smoke 因无合法凭据按规则 N/A。
 
-task_006 运行中输入已于 2026-08-29 通过 Master 源码验收并归档：SQLite v8 Inbox 以数据库状态迁移约束和单事务 claim/Turn/canonical/audit 创建保障 Host 权威与严格 FIFO；无 Turn 的 claimed Steer 会在重启时降级回 Queue，worker 启动失败会 blocked 并可 Retry，完成回调有每会话单消费者守卫。AgentLoop 仅在 READY-before-request 和 final-before-terminal 两个边界注入一条 Steer，并保留 canonical source/audit 区分。前端 busy Composer 的 Queue/Steer/Stop、Host snapshot 冲突收敛、draft ack、Inbox SSE/polling、zh-CN/en-US 和 100 条有界 QueueDock 已闭环。最终证据为 Python 325 passed/4 skipped、Vitest 54、Playwright 10、Ruff/typecheck/lint/API schema/build/wheel 通过；真实模型 smoke 仍因无合法凭据按规则 N/A。task_007 跨会话记忆保持未开始。
+task_006 运行中输入已于 2026-08-29 通过 Master 源码验收并归档：SQLite v8 Inbox 以数据库状态迁移约束和单事务 claim/Turn/canonical/audit 创建保障 Host 权威与严格 FIFO；无 Turn 的 claimed Steer 会在重启时降级回 Queue，worker 启动失败会 blocked 并可 Retry，完成回调有每会话单消费者守卫。AgentLoop 仅在 READY-before-request 和 final-before-terminal 两个边界注入一条 Steer，并保留 canonical source/audit 区分。前端 busy Composer 的 Queue/Steer/Stop、Host snapshot 冲突收敛、draft ack、Inbox SSE/polling、zh-CN/en-US 和 100 条有界 QueueDock 已闭环。最终证据为 Python 325 passed/4 skipped、Vitest 54、Playwright 10、Ruff/typecheck/lint/API schema/build/wheel 通过；真实模型 smoke 仍因无合法凭据按规则 N/A。
+
+task_007 可控记忆已于 2026-08-29 通过 Master 源码验收并归档：同一 `state.db` 增量升级到 schema v13，MemoryService 以 global/workspace/conversation canonical scope、confirmed-only active index、FTS5/terms 自愈回退、原子生命周期/审计、版本链、幂等键和 scope reset CAS 作为唯一事实边界；candidate 提取在主 turn 终局后独立异步、超时 fail-closed，未批准内容绝不注入。ContextManager 每 turn 只构建并采用一次有预算的低优先级 snapshot，保护正文溢出时整块丢弃且不写 usage；硬删除覆盖完整 supersede 链并仅保留无正文审计元数据。Memory Center 已具备搜索/筛选/分页、作用域 override、来源跳转、审批/编辑/拒绝/删除/reset 与响应式中英文界面。最终证据为 Python 375 passed/4 skipped、Vitest 61、Playwright 12、Ruff/typecheck/lint/API schema/build/wheel 通过，2000 条 warm/cold p95 阈值与人工生产浏览器验收通过。
 
 ## 演进路线
 
@@ -76,7 +78,7 @@ task_006 运行中输入已于 2026-08-29 通过 Master 源码验收并归档：
 4. **P0 持久多轮会话（task_004，已归档）**：已建立 Conversation/Turn/Run 与 SQLite append-only 事实源，完成独立上下文、切换、命名、归档/恢复、删除、后台运行、crash recovery、逐轮 ChangeSet 与历史文件审查。
 5. **P0 流式模型与可展示 reasoning（task_005，已归档）**：已实现统一 provider stream event、严格聚合器、DeepSeek/custom Chat `reasoning_content` 与 OpenAI Responses reasoning summary/opaque continuation 适配、增量 checkpoint/SSE 恢复及折叠 Think；只展示 provider 明确返回的可见内容，不暴露或伪造隐藏 chain-of-thought。
 6. **P1 运行中输入（task_006，已归档）**：已实现 Host 权威、持久、严格 FIFO 的 Queue，以及只在两个 AgentLoop 安全边界进入、失败回 Queue 的 Steer；busy Composer、Host snapshot 和有界 QueueDock 已通过验收。
-7. **P1 可控记忆（task_007，未开始）**：以 MemoryService、SQLite FTS5、作用域、来源、候选审批、冲突和删除实现跨会话知识共享；默认不自动永久保存全部聊天。
+7. **P1 可控记忆（task_007，已归档）**：已以 MemoryService、SQLite FTS5/terms 回退、canonical 作用域、来源、候选审批、CAS/幂等、版本链和硬删除实现跨会话知识共享；默认不自动永久保存全部聊天。
 8. **P0 发布与评测（task_008，未开始）**：全量集成、固定任务集、性能/安全/恢复/a11y、真实模型 GUI smoke、clean install 和最终 README.txt/视频门禁。
 9. **后续仓库理解与隔离执行**：在 task_008 基线数据上评估 repository map、符号上下文、补丁编辑、read-only/approval/沙箱运行时；只有固定评测证明收益时才进入新任务。
 

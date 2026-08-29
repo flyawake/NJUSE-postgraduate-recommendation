@@ -286,16 +286,72 @@ test.describe("Conversation product flow with the Fake Model", () => {
       .toBe(2);
   });
 
+  test("memory center saves a fact, recalls it in a new conversation, and deletes it", async ({ page }) => {
+    await page.goto("/");
+    await createConversation(page, process.env.E2E_WORKSPACE as string);
+    const sourceConversation = new URL(page.url()).searchParams.get("conversation");
+    await page.getByTestId("conversation-task-input").fill("/remember 项目使用 FastAPI 和 React");
+    await page.getByTestId("conversation-start").click();
+    const rememberDialog = page.getByRole("dialog", { name: "保存为记忆" });
+    await rememberDialog.getByLabel("标题").fill("项目栈");
+    await rememberDialog.getByRole("button", { name: "记住" }).click();
+    await expect(rememberDialog).not.toBeVisible();
+
+    await createConversation(page, process.env.E2E_WORKSPACE as string);
+    await send(page, "项目技术栈是什么？");
+    // Usage is recorded when the request projection is built, before the
+    // model turn necessarily releases its workspace lease.  Wait for the
+    // terminal answer before navigating to the source and starting another
+    // conversation in the same workspace.
+    await expect(page.getByTestId("final-answer")).toContainText("记忆召回", {
+      timeout: 45_000,
+    });
+    const usage = page.getByTestId("memory-usage-summary");
+    await expect(usage).toBeVisible({ timeout: 45_000 });
+    await expect(usage).toContainText("项目栈");
+    await usage.getByRole("button", { name: /来源/ }).click();
+    await expect.poll(() => new URL(page.url()).searchParams.get("conversation")).toBe(sourceConversation);
+
+    await page.getByTestId("nav-memories").click();
+    const row = page.locator("[data-testid^='memory-']").filter({ hasText: "项目栈" }).first();
+    await row.getByRole("button", { name: "删除" }).click();
+    const deleteDialog = page.getByRole("dialog", { name: "删除" });
+    await deleteDialog.getByRole("button", { name: "删除" }).click();
+    await expect(page.getByText("项目使用 FastAPI 和 React")).toHaveCount(0);
+
+    await createConversation(page, process.env.E2E_WORKSPACE as string);
+    await send(page, "项目技术栈是什么？");
+    await expect(page.getByTestId("final-answer")).toContainText("未使用已删除的记忆", {
+      timeout: 45_000,
+    });
+    await expect(page.getByTestId("memory-usage-summary")).toHaveCount(0);
+  });
+
+  test("composer /remember opens the save dialog without starting an agent turn", async ({ page }) => {
+    await page.goto("/");
+    await createConversation(page, process.env.E2E_WORKSPACE_FRESH as string);
+    const textarea = page.getByTestId("conversation-task-input");
+    await textarea.fill("/remember 项目使用 FastAPI");
+    await page.getByTestId("conversation-start").click();
+    const dialog = page.getByRole("dialog", { name: "保存为记忆" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByLabel("内容")).toHaveValue("项目使用 FastAPI");
+    await dialog.getByRole("button", { name: "记住" }).click();
+    await expect(dialog).not.toBeVisible();
+    await expect(page.getByTestId("conversation-task-input")).toHaveValue("");
+    await expect(page.getByTestId("final-answer")).toHaveCount(0);
+  });
+
   test("a hard server restart recovers the active turn as interrupted without replay", async ({ page }) => {
     test.setTimeout(90_000);
     await page.goto("/");
     await createConversation(
       page,
-      process.env.E2E_WORKSPACE as string,
+      process.env.E2E_WORKSPACE_RESTART as string,
       /慢速假模型/
     );
     await send(page, "重启恢复验证");
-    await expect(page.getByRole("button", { name: "取消运行" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("button", { name: "取消运行" })).toBeVisible({ timeout: 45_000 });
 
     const oldPid = Number(process.env.E2E_APP_PID);
     const port = process.env.E2E_APP_PORT as string;

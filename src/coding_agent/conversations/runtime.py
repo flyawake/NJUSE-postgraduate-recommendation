@@ -7,6 +7,7 @@ from here: the repository marks active turns as interrupted on startup.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -33,7 +34,13 @@ class WorkspaceLeaseManager:
         self._lock = threading.RLock()
         self._leases: Dict[str, str] = {}
 
+    @staticmethod
+    def _key(workspace_key: str) -> str:
+        """Accept either a canonical key or the equivalent local path spelling."""
+        return os.path.normcase(os.path.abspath(workspace_key))
+
     def acquire(self, workspace_key: str, conversation_id: str) -> bool:
+        workspace_key = self._key(workspace_key)
         with self._lock:
             if workspace_key in self._leases:
                 return False
@@ -41,11 +48,13 @@ class WorkspaceLeaseManager:
             return True
 
     def release(self, workspace_key: str, conversation_id: str) -> None:
+        workspace_key = self._key(workspace_key)
         with self._lock:
             if self._leases.get(workspace_key) == conversation_id:
                 del self._leases[workspace_key]
 
     def owner(self, workspace_key: str) -> Optional[str]:
+        workspace_key = self._key(workspace_key)
         with self._lock:
             return self._leases.get(workspace_key)
 

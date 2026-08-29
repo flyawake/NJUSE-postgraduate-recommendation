@@ -17,7 +17,7 @@ function readStoredTheme(): ThemePreference {
 }
 
 function systemTheme(): EffectiveTheme {
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ? "dark" : "light";
 }
 
 export interface ThemeController {

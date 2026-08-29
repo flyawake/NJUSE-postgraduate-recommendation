@@ -63,6 +63,15 @@ from .schemas import (
     InboxOrderRequest,
     InboxSnapshotDTO,
     InboxVersionRequest,
+    MemoryCreateRequest,
+    MemoryDTO,
+    MemoryEditRequest,
+    MemoryPageDTO,
+    MemoryResetRequest,
+    MemorySettingsDTO,
+    MemorySettingsRequest,
+    MemoryUsageDTO,
+    MemoryVersionRequest,
     PreviewDTO,
     ProfileDTO,
     ProfileInput,
@@ -193,11 +202,17 @@ def create_app(
         status = (
             404
             if exc.code
-            in ("conversation_not_found", "turn_not_found", "artifact_not_found")
+            in (
+                "conversation_not_found",
+                "turn_not_found",
+                "artifact_not_found",
+                "memory_not_found",
+            )
             else 409
             if exc.code
             in (
                 "version_conflict",
+                "idempotency_conflict",
                 "conversation_busy",
                 "workspace_busy",
                 "conversation_archived",
@@ -515,6 +530,7 @@ def create_app(
                     conversation_id,
                     user_text=body.content,
                     idempotency_key=body.idempotency_key,
+                    profile_id=body.profile_id,
                     reasoning_effort=body.reasoning_effort,
                 )
             )
@@ -634,6 +650,7 @@ def create_app(
                     content=body.content,
                     mode=body.mode,
                     idempotency_key=body.idempotency_key,
+                    profile_id=body.profile_id,
                     reasoning_effort=body.reasoning_effort,
                 )
             )
@@ -765,6 +782,163 @@ def create_app(
             return PreviewDTO(
                 **conversation_service.get_file_preview(
                     conversation_id, turn_id, change_id, mode=mode
+                )
+            )
+
+        @app.get("/api/memories", response_model=MemoryPageDTO)
+        async def list_memories(
+            scope_type: Optional[str] = None,
+            scope_key: Optional[str] = None,
+            status: Optional[str] = None,
+            query: Optional[str] = None,
+            limit: int = 100,
+            cursor: Optional[str] = None,
+        ) -> MemoryPageDTO:
+            page = conversation_service.list_memories(
+                scope_type=scope_type,
+                scope_key=scope_key,
+                status=status,
+                query=query,
+                limit=limit,
+                cursor=cursor,
+            )
+            return MemoryPageDTO(
+                items=[MemoryDTO(**item) for item in page["items"]],
+                next_cursor=page.get("next_cursor"),
+            )
+
+        @app.post("/api/memories", response_model=MemoryDTO, status_code=201)
+        async def create_memory(body: MemoryCreateRequest) -> MemoryDTO:
+            return MemoryDTO(
+                **conversation_service.create_memory(
+                    scope_type=body.scope_type,
+                    scope_key=body.scope_key,
+                    kind=body.kind,
+                    content=body.content,
+                    title=body.title,
+                    source_conversation_id=body.source_conversation_id,
+                    source_turn_id=body.source_turn_id,
+                    source_excerpt=body.source_excerpt,
+                    idempotency_key=body.idempotency_key,
+                )
+            )
+
+        @app.post("/api/memories/reset")
+        async def reset_memories(body: MemoryResetRequest) -> Dict[str, Any]:
+            if not body.confirm:
+                raise ConversationServiceError(
+                    "confirmation_required", "清空记忆需要显式确认", field="confirm"
+                )
+            return conversation_service.reset_memories(
+                scope_type=body.scope_type,
+                scope_key=body.scope_key,
+                idempotency_key=body.idempotency_key,
+                expected_scope_version=body.expected_scope_version,
+            )
+
+        @app.get("/api/memories/settings", response_model=MemorySettingsDTO)
+        async def get_memory_settings(
+            scope_type: Optional[str] = None,
+            scope_key: Optional[str] = None,
+        ) -> MemorySettingsDTO:
+            data = conversation_service.memory_settings(
+                scope_type=scope_type, scope_key=scope_key
+            )
+            return MemorySettingsDTO(
+                enabled=bool(data["enabled"]),
+                candidate_enabled=bool(data.get("candidate_enabled", False)),
+                scope_type=scope_type,
+                scope_key=scope_key,
+                scope_version=int(data.get("scope_version", 0)),
+            )
+
+        @app.post("/api/memories/settings", response_model=MemorySettingsDTO)
+        async def set_memory_settings(
+            body: MemorySettingsRequest,
+        ) -> MemorySettingsDTO:
+            data = conversation_service.memory_settings(
+                scope_type=body.scope_type,
+                scope_key=body.scope_key,
+                enabled=body.enabled,
+                candidate_enabled=body.candidate_enabled,
+            )
+            return MemorySettingsDTO(
+                enabled=bool(data.get("enabled", True)),
+                candidate_enabled=bool(data.get("candidate_enabled", False)),
+                scope_type=data.get("scope_type", body.scope_type),
+                scope_key=data.get("scope_key", body.scope_key),
+                scope_version=int(data.get("scope_version", 0)),
+            )
+
+        @app.get(
+            "/api/conversations/{conversation_id}/turns/{turn_id}/memory-usage",
+            response_model=list[MemoryUsageDTO],
+        )
+        async def turn_memory_usage(
+            conversation_id: str, turn_id: str
+        ) -> list[MemoryUsageDTO]:
+            conversation_service._require_turn(conversation_id, turn_id)
+            return [
+                MemoryUsageDTO(**item)
+                for item in conversation_service.turn_memory_usage(turn_id)
+            ]
+
+        @app.get(
+            "/api/turns/{turn_id}/memory-usage",
+            response_model=list[MemoryUsageDTO],
+        )
+        async def turn_memory_usage_flat(turn_id: str) -> list[MemoryUsageDTO]:
+            return [
+                MemoryUsageDTO(**item)
+                for item in conversation_service.turn_memory_usage(turn_id)
+            ]
+
+        @app.get("/api/memories/{memory_id}", response_model=MemoryDTO)
+        async def get_memory(memory_id: str) -> MemoryDTO:
+            return MemoryDTO(**conversation_service.get_memory(memory_id))
+
+        @app.patch("/api/memories/{memory_id}", response_model=MemoryDTO)
+        async def edit_memory(memory_id: str, body: MemoryEditRequest) -> MemoryDTO:
+            return MemoryDTO(
+                **conversation_service.edit_memory(
+                    memory_id,
+                    content=body.content,
+                    kind=body.kind,
+                    title=body.title,
+                    expected_version=body.expected_version,
+                    idempotency_key=body.idempotency_key,
+                )
+            )
+
+        @app.delete("/api/memories/{memory_id}", status_code=204)
+        async def delete_memory(memory_id: str, body: MemoryVersionRequest) -> None:
+            conversation_service.delete_memory(
+                memory_id,
+                expected_version=body.expected_version,
+                idempotency_key=body.idempotency_key,
+            )
+
+        @app.post("/api/memories/{memory_id}/approve", response_model=MemoryDTO)
+        async def approve_memory(
+            memory_id: str, body: MemoryVersionRequest
+        ) -> MemoryDTO:
+            return MemoryDTO(
+                **conversation_service.approve_memory(
+                    memory_id,
+                    expected_version=body.expected_version,
+                    idempotency_key=body.idempotency_key,
+                )
+            )
+
+        @app.post("/api/memories/{memory_id}/reject", response_model=MemoryDTO)
+        async def reject_memory(
+            memory_id: str, body: MemoryVersionRequest
+        ) -> MemoryDTO:
+            return MemoryDTO(
+                **conversation_service.reject_memory(
+                    memory_id,
+                    expected_version=body.expected_version,
+                    idempotency_key=body.idempotency_key,
                 )
             )
 

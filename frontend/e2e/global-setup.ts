@@ -119,6 +119,14 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     "def greet(name):\n    # TODO: return greeting\n    pass\n",
     "utf-8"
   );
+  // A dedicated workspace for the hard-restart test, so no earlier test can
+  // leave an active run in the same workspace and block its new conversation.
+  const restartWorkspace = mkdtempSync(path.join(os.tmpdir(), "ca-e2e-ws-restart-"));
+  writeFileSync(
+    path.join(restartWorkspace, "hello.py"),
+    "def greet(name):\n    # TODO: return greeting\n    pass\n",
+    "utf-8"
+  );
 
   const fake = spawn("python", ["-u", path.join(root, "frontend", "e2e", "fake_model_server.py"), "--port", String(fakePort)], {
     cwd: root,
@@ -194,6 +202,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   process.env.E2E_BASE_URL = baseUrl;
   process.env.E2E_WORKSPACE = workspace;
   process.env.E2E_WORKSPACE_FRESH = freshWorkspace;
+  process.env.E2E_WORKSPACE_RESTART = restartWorkspace;
   process.env.E2E_APP_PID = String(app.pid);
   process.env.E2E_APP_PORT = String(appPort);
   process.env.E2E_AGENT_HOME = home;

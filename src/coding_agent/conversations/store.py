@@ -8,6 +8,7 @@ history/public events in task_004. It is deliberately dependency-free
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import sqlite3
 import threading
@@ -17,6 +18,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from ..memory.analyzer import (
+    format_query_terms,
+    searchable_text,
+    terms_for_query,
+    tokenize,
+)
 from ..models import CanonicalMessage, UserMessage
 from .domain import (
     CanonicalGroupRecord,
@@ -28,7 +35,7 @@ from .domain import (
     payload_to_canonical_message,
 )
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 13
 DEFAULT_BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA_SQL = """
@@ -161,6 +168,7 @@ CREATE TABLE IF NOT EXISTS inbox_items (
     bound_turn_id TEXT,
     claimed_turn_id TEXT UNIQUE,
     idempotency_key TEXT,
+    profile_id TEXT,
     reasoning_effort TEXT,
     version INTEGER NOT NULL DEFAULT 1,
     last_error_code TEXT,
@@ -251,6 +259,160 @@ CREATE TABLE IF NOT EXISTS artifact_refs (
 );
 """
 
+_MEMORY_SCHEMA_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS memory_entries (
+        id TEXT PRIMARY KEY,
+        scope_type TEXT NOT NULL CHECK (scope_type IN ('global', 'workspace', 'conversation')),
+        scope_key TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('preference', 'fact', 'decision', 'procedure')),
+        title TEXT,
+        content TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (
+            status IN ('candidate', 'confirmed', 'superseded', 'rejected', 'deleted')
+        ),
+        confirmation TEXT NOT NULL CHECK (
+            confirmation IN ('explicit_ui', 'explicit_command', 'user_approved', 'imported')
+        ),
+        source_conversation_id TEXT,
+        source_turn_id TEXT,
+        source_excerpt TEXT,
+        supersedes_id TEXT,
+        version INTEGER NOT NULL DEFAULT 1,
+        normalized_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_used_at TEXT,
+        use_count INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_memory_scope_status
+        ON memory_entries(scope_type, scope_key, status, updated_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_memory_status_updated
+        ON memory_entries(status, updated_at)
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_single_successor
+        ON memory_entries(supersedes_id)
+        WHERE supersedes_id IS NOT NULL
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS memory_sources (
+        id TEXT PRIMARY KEY,
+        entry_id TEXT NOT NULL REFERENCES memory_entries(id) ON DELETE CASCADE,
+        conversation_id TEXT,
+        turn_id TEXT,
+        excerpt TEXT,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_memory_sources_entry
+        ON memory_sources(entry_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS memory_terms (
+        entry_id TEXT NOT NULL REFERENCES memory_entries(id) ON DELETE CASCADE,
+        term TEXT NOT NULL,
+        PRIMARY KEY (entry_id, term)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_memory_terms_term
+        ON memory_terms(term)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS memory_usage (
+        turn_id TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        rank INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        snapshot_hash TEXT NOT NULL,
+        used_at TEXT NOT NULL,
+        scope_type TEXT,
+        scope_key TEXT,
+        kind TEXT,
+        title TEXT,
+        source_conversation_id TEXT,
+        source_turn_id TEXT,
+        PRIMARY KEY (turn_id, entry_id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_memory_usage_turn
+        ON memory_usage(turn_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS memory_events (
+        id TEXT PRIMARY KEY,
+        entry_id TEXT,
+        kind TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS memory_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS memory_idempotency (
+        idempotency_key TEXT PRIMARY KEY,
+        operation TEXT NOT NULL,
+        target_id TEXT,
+        result_version INTEGER,
+        result_count INTEGER,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS memory_scope_versions (
+        scope_type TEXT NOT NULL,
+        scope_key TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (scope_type, scope_key)
+    )
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS enforce_memory_status_transition
+    BEFORE UPDATE OF status ON memory_entries
+    WHEN OLD.status <> NEW.status AND NOT (
+        (OLD.status = 'candidate' AND NEW.status IN ('confirmed', 'rejected', 'superseded'))
+        OR (OLD.status = 'confirmed' AND NEW.status = 'superseded')
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'invalid_memory_status_transition');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS enforce_memory_insert_invariants
+    BEFORE INSERT ON memory_entries
+    WHEN (NEW.scope_type = 'global' AND NEW.scope_key <> 'global')
+      OR (NEW.status = 'candidate' AND NEW.confirmation <> 'imported')
+      OR (NEW.status = 'confirmed' AND NEW.confirmation = 'imported')
+    BEGIN
+        SELECT RAISE(ABORT, 'invalid_memory_invariant');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS enforce_memory_update_invariants
+    BEFORE UPDATE OF scope_type, scope_key, status, confirmation ON memory_entries
+    WHEN (NEW.scope_type = 'global' AND NEW.scope_key <> 'global')
+      OR (NEW.status = 'candidate' AND NEW.confirmation <> 'imported')
+      OR (NEW.status = 'confirmed' AND NEW.confirmation = 'imported')
+      OR OLD.scope_type <> NEW.scope_type
+      OR OLD.scope_key <> NEW.scope_key
+    BEGIN
+        SELECT RAISE(ABORT, 'invalid_memory_invariant');
+    END
+    """,
+)
+
 
 _last_timestamp: float = 0.0
 
@@ -286,6 +448,46 @@ def _parse_cursor(cursor: str) -> Optional[Tuple[str, str]]:
     except Exception:
         return None
     return None
+
+
+def _create_memory_tables(conn: sqlite3.Connection) -> None:
+    """Create the task_007 memory tables and attempt the optional FTS5 index."""
+    for statement in _MEMORY_SCHEMA_STATEMENTS:
+        conn.execute(statement)
+    usage_columns = {
+        str(row["name"]) for row in conn.execute("PRAGMA table_info(memory_usage)")
+    }
+    for column in (
+        "scope_type",
+        "scope_key",
+        "kind",
+        "title",
+        "source_conversation_id",
+        "source_turn_id",
+    ):
+        if column not in usage_columns:
+            conn.execute(f"ALTER TABLE memory_usage ADD COLUMN {column} TEXT")
+    try:
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts "
+            "USING fts5(search_text, entry_id UNINDEXED)"
+        )
+        conn.execute(
+            "INSERT INTO memory_meta(key, value) VALUES ('index_backend', 'fts5') "
+            "ON CONFLICT(key) DO UPDATE SET value='fts5'"
+        )
+    except sqlite3.OperationalError:
+        conn.execute(
+            "INSERT INTO memory_meta(key, value) VALUES ('index_backend', 'terms') "
+            "ON CONFLICT(key) DO UPDATE SET value='terms'"
+        )
+
+
+def _memory_backend(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT value FROM memory_meta WHERE key='index_backend'"
+    ).fetchone()
+    return str(row["value"]) if row else "terms"
 
 
 class SQLiteConversationRepository:
@@ -351,6 +553,7 @@ class SQLiteConversationRepository:
                     if self._create_backups:
                         self._backup_before_upgrade(current_version)
                 conn.executescript(_SCHEMA_SQL)
+                _create_memory_tables(conn)
                 conn.execute("DELETE FROM schema_meta")
                 conn.execute(
                     "INSERT INTO schema_meta(version, applied_at) VALUES (?, ?)",
@@ -535,6 +738,19 @@ class SQLiteConversationRepository:
                             END
                             """
                         )
+                    if current_version <= 8:
+                        columns = {
+                            str(row["name"])
+                            for row in conn.execute(
+                                "PRAGMA table_info(inbox_items)"
+                            ).fetchall()
+                        }
+                        if "profile_id" not in columns:
+                            conn.execute(
+                                "ALTER TABLE inbox_items ADD COLUMN profile_id TEXT"
+                            )
+                    if current_version <= 12:
+                        _create_memory_tables(conn)
                     conn.execute("DELETE FROM schema_meta")
                     conn.execute(
                         "INSERT INTO schema_meta(version, applied_at) VALUES (?, ?)",
@@ -1884,6 +2100,7 @@ class SQLiteConversationRepository:
         requested_mode: str,
         idempotency_key: Optional[str] = None,
         bound_turn_id: Optional[str] = None,
+        profile_id: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
     ) -> Dict[str, Any]:
         item_id = uuid.uuid4().hex
@@ -1921,9 +2138,9 @@ class SQLiteConversationRepository:
                     """
                     INSERT INTO inbox_items(
                         id, conversation_id, content, requested_mode, state,
-                        position, bound_turn_id, idempotency_key, reasoning_effort,
-                        version, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                        position, bound_turn_id, idempotency_key, profile_id,
+                        reasoning_effort, version, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                     """,
                     (
                         item_id,
@@ -1934,6 +2151,7 @@ class SQLiteConversationRepository:
                         position,
                         bound_turn_id,
                         idempotency_key,
+                        profile_id,
                         reasoning_effort,
                         now,
                         now,
@@ -2527,6 +2745,7 @@ class SQLiteConversationRepository:
             "bound_turn_id": row["bound_turn_id"],
             "claimed_turn_id": row["claimed_turn_id"],
             "idempotency_key": row["idempotency_key"],
+            "profile_id": row["profile_id"],
             "reasoning_effort": row["reasoning_effort"],
             "version": int(row["version"]),
             "last_error_code": row["last_error_code"],
@@ -2765,6 +2984,934 @@ class SQLiteConversationRepository:
         item["binary"] = bool(item["binary"])
         item["warnings"] = json.loads(item["warnings"]) if item["warnings"] else []
         return item
+
+    # ------------------------------------------------------------ memory
+
+    def create_memory_entry(
+        self,
+        data: Dict[str, Any],
+        *,
+        event_kind: str,
+        event_payload: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        result_id = str(data["id"])
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                replay = self._memory_idempotency_replay(
+                    conn, idempotency_key, event_kind
+                )
+                if replay is not None:
+                    result_id = str(replay["target_id"] or "")
+                else:
+                    self._insert_memory_row(conn, data)
+                    self._insert_memory_event(
+                        conn,
+                        result_id,
+                        event_kind,
+                        event_payload or {},
+                    )
+                    self._bump_memory_scope_version(
+                        conn, str(data["scope_type"]), str(data["scope_key"])
+                    )
+                    self._record_memory_idempotency(
+                        conn,
+                        idempotency_key,
+                        event_kind,
+                        target_id=result_id,
+                        result_version=int(data.get("version", 1)),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        row = self.get_memory_entry(result_id)
+        if row is None:
+            raise ValueError("idempotency_target_deleted")
+        return row
+
+    def create_memory_revision(
+        self,
+        data: Dict[str, Any],
+        *,
+        supersede_entry_id: str,
+        expected_version: int,
+        event_payload: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        result_id = ""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                replay = self._memory_idempotency_replay(
+                    conn, idempotency_key, "edited"
+                )
+                if replay is not None:
+                    result_id = str(replay["target_id"] or "")
+                    conn.commit()
+                    row = self.get_memory_entry(result_id)
+                    if row is None:
+                        raise ValueError("idempotency_target_deleted")
+                    return row
+                current = conn.execute(
+                    "SELECT * FROM memory_entries WHERE id=?",
+                    (supersede_entry_id,),
+                ).fetchone()
+                if current is None:
+                    raise ValueError("memory_not_found")
+                if int(current["version"]) != expected_version:
+                    raise ValueError("version_conflict")
+                now = _utcnow()
+                revision = dict(data)
+                revision["id"] = uuid.uuid4().hex
+                revision["version"] = int(current["version"]) + 1
+                revision["supersedes_id"] = supersede_entry_id
+                revision["created_at"] = str(current["created_at"])
+                revision["updated_at"] = now
+                result_id = str(revision["id"])
+                self._insert_memory_row(conn, revision)
+                conn.execute(
+                    """
+                    UPDATE memory_entries
+                    SET status='superseded', updated_at=?, version=version+1
+                    WHERE id=? AND version=?
+                    """,
+                    (now, supersede_entry_id, expected_version),
+                )
+                self._delete_memory_index_rows(
+                    conn, supersede_entry_id, include_sources=False
+                )
+                self._insert_memory_event(
+                    conn,
+                    str(revision["id"]),
+                    "edited",
+                    event_payload or {"supersedes_id": supersede_entry_id},
+                )
+                self._bump_memory_scope_version(
+                    conn, str(current["scope_type"]), str(current["scope_key"])
+                )
+                self._record_memory_idempotency(
+                    conn,
+                    idempotency_key,
+                    "edited",
+                    target_id=result_id,
+                    result_version=int(revision["version"]),
+                )
+                conn.commit()
+                return self.get_memory_entry(result_id)  # type: ignore[return-value]
+            except Exception:
+                conn.rollback()
+                raise
+
+    def get_memory_entry(self, entry_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            row = conn.execute(
+                "SELECT * FROM memory_entries WHERE id=?", (entry_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            sources = conn.execute(
+                "SELECT * FROM memory_sources WHERE entry_id=? ORDER BY created_at, id",
+                (entry_id,),
+            ).fetchall()
+        result = dict(row)
+        result["sources"] = [dict(item) for item in sources]
+        return result
+
+    def list_memory_entries(
+        self,
+        *,
+        scope_type: Optional[str] = None,
+        scope_key: Optional[str] = None,
+        statuses: Optional[Sequence[str]] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        clauses: List[str] = []
+        params: List[Any] = []
+        if scope_type is not None:
+            clauses.append("scope_type=?")
+            params.append(scope_type)
+        if scope_key is not None:
+            clauses.append("scope_key=?")
+            params.append(scope_key)
+        if statuses:
+            clauses.append(f"status IN ({','.join('?' for _ in statuses)})")
+            params.extend(statuses)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            rows = (
+                self._connect()
+                .execute(
+                    f"""
+                SELECT * FROM memory_entries
+                {where}
+                ORDER BY updated_at DESC, id
+                LIMIT ?
+                """,
+                    (*params, max(1, int(limit))),
+                )
+                .fetchall()
+            )
+        return [dict(row) for row in rows]
+
+    def get_memory_entries_by_ids(
+        self, entry_ids: Sequence[str]
+    ) -> List[Dict[str, Any]]:
+        if not entry_ids:
+            return []
+        rows_by_id: Dict[str, Dict[str, Any]] = {}
+        # Query in chunks to stay within SQLite parameter limits for very large
+        # candidate sets (tests / 2000-entry fixtures remain comfortably small).
+        chunk_size = 500
+        for start in range(0, len(entry_ids), chunk_size):
+            chunk = list(entry_ids[start : start + chunk_size])
+            with self._lock:
+                rows = (
+                    self._connect()
+                    .execute(
+                        f"""
+                    SELECT * FROM memory_entries
+                    WHERE id IN ({",".join("?" for _ in chunk)})
+                    """,
+                        chunk,
+                    )
+                    .fetchall()
+                )
+            for row in rows:
+                rows_by_id[str(row["id"])] = dict(row)
+        return [
+            rows_by_id[str(entry_id)]
+            for entry_id in entry_ids
+            if entry_id in rows_by_id
+        ]
+
+    def update_memory_status(
+        self,
+        entry_id: str,
+        *,
+        status: str,
+        confirmation: str,
+        expected_version: int,
+        event_kind: str,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                replay = self._memory_idempotency_replay(
+                    conn, idempotency_key, event_kind
+                )
+                if replay is not None:
+                    conn.commit()
+                    row = self.get_memory_entry(entry_id)
+                    if row is None:
+                        raise ValueError("idempotency_target_deleted")
+                    return row
+                scope_row = conn.execute(
+                    "SELECT content, scope_type, scope_key FROM memory_entries WHERE id=?",
+                    (entry_id,),
+                ).fetchone()
+                if scope_row is None:
+                    raise ValueError("memory_not_found")
+                cur = conn.execute(
+                    """
+                    UPDATE memory_entries
+                    SET status=?, confirmation=?, version=version+1, updated_at=?
+                    WHERE id=? AND version=?
+                    """,
+                    (status, confirmation, _utcnow(), entry_id, expected_version),
+                )
+                if cur.rowcount == 0:
+                    raise ValueError("version_conflict")
+                if status == "confirmed":
+                    self._insert_memory_index_rows(
+                        conn, entry_id, str(scope_row["content"])
+                    )
+                else:
+                    self._delete_memory_index_rows(
+                        conn, entry_id, include_sources=False
+                    )
+                self._insert_memory_event(conn, entry_id, event_kind, {})
+                self._bump_memory_scope_version(
+                    conn,
+                    str(scope_row["scope_type"]),
+                    str(scope_row["scope_key"]),
+                )
+                self._record_memory_idempotency(
+                    conn,
+                    idempotency_key,
+                    event_kind,
+                    target_id=entry_id,
+                    result_version=expected_version + 1,
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        row = self.get_memory_entry(entry_id)
+        assert row is not None
+        return row
+
+    def delete_memory_entry(
+        self,
+        entry_id: str,
+        *,
+        expected_version: int,
+        idempotency_key: Optional[str] = None,
+    ) -> None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                replay = self._memory_idempotency_replay(
+                    conn, idempotency_key, "deleted"
+                )
+                if replay is not None:
+                    conn.commit()
+                    return
+                cur = conn.execute(
+                    "SELECT version, scope_type, scope_key FROM memory_entries WHERE id=?",
+                    (entry_id,),
+                ).fetchone()
+                if cur is None:
+                    raise ValueError("memory_not_found")
+                if int(cur["version"]) != expected_version:
+                    raise ValueError("version_conflict")
+                rows = conn.execute(
+                    "SELECT id, supersedes_id FROM memory_entries "
+                    "WHERE scope_type=? AND scope_key=?",
+                    (str(cur["scope_type"]), str(cur["scope_key"])),
+                ).fetchall()
+                links = {
+                    str(row["id"]): (
+                        str(row["supersedes_id"])
+                        if row["supersedes_id"] is not None
+                        else None
+                    )
+                    for row in rows
+                }
+                chain_ids = {entry_id}
+                changed = True
+                while changed:
+                    changed = False
+                    for current_id, predecessor_id in links.items():
+                        if (
+                            current_id in chain_ids or predecessor_id in chain_ids
+                        ) and current_id not in chain_ids:
+                            chain_ids.add(current_id)
+                            changed = True
+                        if (
+                            current_id in chain_ids
+                            and predecessor_id is not None
+                            and predecessor_id not in chain_ids
+                        ):
+                            chain_ids.add(predecessor_id)
+                            changed = True
+                self._insert_memory_event(
+                    conn,
+                    entry_id,
+                    "deleted",
+                    {"deleted_versions": len(chain_ids)},
+                )
+                self._bump_memory_scope_version(
+                    conn, str(cur["scope_type"]), str(cur["scope_key"])
+                )
+                for chained_id in chain_ids:
+                    self._delete_memory_index_rows(conn, chained_id)
+                placeholders = ",".join("?" for _ in chain_ids)
+                conn.execute(
+                    f"DELETE FROM memory_entries WHERE id IN ({placeholders})",
+                    tuple(chain_ids),
+                )
+                self._record_memory_idempotency(
+                    conn,
+                    idempotency_key,
+                    "deleted",
+                    target_id=entry_id,
+                    result_version=expected_version,
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def reset_memory_scope(
+        self,
+        scope_type: str,
+        scope_key: str,
+        *,
+        idempotency_key: Optional[str] = None,
+        expected_scope_version: Optional[int] = None,
+    ) -> int:
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                replay = self._memory_idempotency_replay(conn, idempotency_key, "reset")
+                if replay is not None:
+                    conn.commit()
+                    return int(replay["result_count"] or 0)
+                current_scope_version = self._memory_scope_version(
+                    conn, scope_type, scope_key
+                )
+                if (
+                    expected_scope_version is not None
+                    and current_scope_version != expected_scope_version
+                ):
+                    raise ValueError("version_conflict")
+                ids = [
+                    str(row["id"])
+                    for row in conn.execute(
+                        "SELECT id FROM memory_entries WHERE scope_type=? AND scope_key=?",
+                        (scope_type, scope_key),
+                    ).fetchall()
+                ]
+                for entry_id in ids:
+                    self._delete_memory_index_rows(conn, entry_id)
+                cur = conn.execute(
+                    "DELETE FROM memory_entries WHERE scope_type=? AND scope_key=?",
+                    (scope_type, scope_key),
+                )
+                self._insert_memory_event(
+                    conn,
+                    "",
+                    "reset",
+                    {
+                        "scope_type": scope_type,
+                        "scope_key_hash": hashlib.sha256(
+                            scope_key.encode("utf-8")
+                        ).hexdigest(),
+                        "deleted": max(0, cur.rowcount),
+                    },
+                )
+                self._bump_memory_scope_version(conn, scope_type, scope_key)
+                self._record_memory_idempotency(
+                    conn,
+                    idempotency_key,
+                    "reset",
+                    result_count=max(0, cur.rowcount),
+                )
+                conn.commit()
+                return max(0, cur.rowcount)
+            except Exception:
+                conn.rollback()
+                raise
+
+    def search_memory_ids(
+        self,
+        query: str,
+        *,
+        scope_types: Optional[Sequence[str]] = None,
+        scope_keys: Optional[Sequence[str]] = None,
+        scope_pairs: Optional[Sequence[Tuple[str, str]]] = None,
+        statuses: Optional[Sequence[str]] = None,
+        limit: int = 64,
+    ) -> List[str]:
+        terms = terms_for_query(query)
+        with self._lock:
+            conn = self._connect()
+            conditions: List[str] = []
+            params: List[Any] = []
+            if scope_types:
+                conditions.append(
+                    f"me.scope_type IN ({','.join('?' for _ in scope_types)})"
+                )
+                params.extend(scope_types)
+            if scope_keys:
+                conditions.append(
+                    f"me.scope_key IN ({','.join('?' for _ in scope_keys)})"
+                )
+                params.extend(scope_keys)
+            if scope_pairs:
+                pair_clauses = " OR ".join(
+                    "(me.scope_type = ? AND me.scope_key = ?)" for _ in scope_pairs
+                )
+                conditions.append(f"({pair_clauses})")
+                for item in scope_pairs:
+                    params.extend(item)
+            if statuses:
+                conditions.append(f"me.status IN ({','.join('?' for _ in statuses)})")
+                params.extend(statuses)
+            if not terms:
+                where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+                rows = conn.execute(
+                    f"""
+                    SELECT me.id FROM memory_entries me
+                    {where}
+                    ORDER BY me.updated_at DESC, me.id
+                    LIMIT ?
+                    """,
+                    (*params, max(1, int(limit))),
+                ).fetchall()
+                return [str(row["id"]) for row in rows]
+            backend = _memory_backend(conn)
+            if backend == "fts5":
+                match = format_query_terms(terms)
+                try:
+                    rows = conn.execute(
+                        """
+                        SELECT DISTINCT me.id
+                        FROM memory_entries me
+                        WHERE me.id IN (
+                            SELECT entry_id FROM memory_fts WHERE memory_fts MATCH ?
+                        )
+                        """
+                        + (f" AND {' AND '.join(conditions)}" if conditions else "")
+                        + " ORDER BY CASE me.scope_type "
+                        "WHEN 'conversation' THEN 3 WHEN 'workspace' THEN 2 ELSE 1 END DESC, "
+                        "me.id LIMIT ?",
+                        (match, *params, max(1, int(limit))),
+                    ).fetchall()
+                    return [str(row["id"]) for row in rows]
+                except sqlite3.OperationalError:
+                    # FTS query syntax failure falls back to the deterministic
+                    # terms table rather than failing retrieval.
+                    pass
+            placeholders = ",".join("?" for _ in terms)
+            rows = conn.execute(
+                """
+                SELECT DISTINCT me.id
+                FROM memory_entries me
+                JOIN memory_terms mt ON mt.entry_id = me.id
+                WHERE mt.term IN (%s)
+                """
+                % placeholders
+                + (f" AND {' AND '.join(conditions)}" if conditions else "")
+                + " GROUP BY me.id ORDER BY COUNT(DISTINCT mt.term) DESC, "
+                "CASE me.scope_type WHEN 'conversation' THEN 3 "
+                "WHEN 'workspace' THEN 2 ELSE 1 END DESC, me.id LIMIT ?",
+                (*terms, *params, max(1, int(limit))),
+            ).fetchall()
+            return [str(row["id"]) for row in rows]
+
+    def memory_rejected_hash_exists(
+        self, normalized_hash: str, scope_type: str, scope_key: str
+    ) -> bool:
+        with self._lock:
+            row = (
+                self._connect()
+                .execute(
+                    """
+                SELECT 1 FROM memory_entries
+                WHERE status='rejected' AND normalized_hash=?
+                  AND scope_type=? AND scope_key=?
+                LIMIT 1
+                """,
+                    (normalized_hash, scope_type, scope_key),
+                )
+                .fetchone()
+            )
+        return row is not None
+
+    def get_memory_meta(self, key: str) -> Optional[str]:
+        with self._lock:
+            row = (
+                self._connect()
+                .execute("SELECT value FROM memory_meta WHERE key=?", (key,))
+                .fetchone()
+            )
+        return str(row["value"]) if row else None
+
+    def get_memory_scope_version(self, scope_type: str, scope_key: str) -> int:
+        with self._lock:
+            return self._memory_scope_version(self._connect(), scope_type, scope_key)
+
+    @staticmethod
+    def _memory_scope_version(
+        conn: sqlite3.Connection, scope_type: str, scope_key: str
+    ) -> int:
+        row = conn.execute(
+            "SELECT version FROM memory_scope_versions "
+            "WHERE scope_type=? AND scope_key=?",
+            (scope_type, scope_key),
+        ).fetchone()
+        return int(row["version"]) if row is not None else 0
+
+    @staticmethod
+    def _bump_memory_scope_version(
+        conn: sqlite3.Connection, scope_type: str, scope_key: str
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO memory_scope_versions(scope_type, scope_key, version)
+            VALUES (?, ?, 1)
+            ON CONFLICT(scope_type, scope_key)
+            DO UPDATE SET version=memory_scope_versions.version+1
+            """,
+            (scope_type, scope_key),
+        )
+
+    def get_memory_idempotency_result(
+        self, idempotency_key: Optional[str], operation: str
+    ) -> Optional[Dict[str, Any]]:
+        if not idempotency_key:
+            return None
+        with self._lock:
+            row = (
+                self._connect()
+                .execute(
+                    "SELECT * FROM memory_idempotency WHERE idempotency_key=?",
+                    (idempotency_key,),
+                )
+                .fetchone()
+            )
+        if row is not None and str(row["operation"]) != operation:
+            raise ValueError("idempotency_conflict")
+        return dict(row) if row is not None else None
+
+    def set_memory_meta(self, key: str, value: str) -> None:
+        with self._lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT INTO memory_meta(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )
+            conn.commit()
+
+    def record_memory_usage(
+        self,
+        *,
+        turn_id: str,
+        entry_id: str,
+        rank: int,
+        reason: str,
+        snapshot_hash: str,
+    ) -> None:
+        row = self.get_memory_entry(entry_id)
+        if row is None:
+            return
+        self.record_memory_projection_usage(
+            turn_id=turn_id,
+            entries=[row],
+            reason=reason,
+            snapshot_hash=snapshot_hash,
+            ranks=[rank],
+        )
+
+    def record_memory_projection_usage(
+        self,
+        *,
+        turn_id: str,
+        entries: Sequence[Dict[str, Any]],
+        reason: str,
+        snapshot_hash: str,
+        ranks: Optional[Sequence[int]] = None,
+    ) -> None:
+        """Persist one immutable projection audit atomically and idempotently."""
+        with self._lock:
+            conn = self._connect()
+            now = _utcnow()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                for index, entry in enumerate(entries):
+                    rank = int(ranks[index]) if ranks is not None else index + 1
+                    cur = conn.execute(
+                        """
+                        INSERT OR IGNORE INTO memory_usage(
+                            turn_id, entry_id, rank, reason, snapshot_hash, used_at,
+                            scope_type, scope_key, kind, title,
+                            source_conversation_id, source_turn_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            turn_id,
+                            str(entry["id"]),
+                            rank,
+                            reason,
+                            snapshot_hash,
+                            now,
+                            entry.get("scope_type"),
+                            entry.get("scope_key"),
+                            entry.get("kind"),
+                            entry.get("title"),
+                            entry.get("source_conversation_id"),
+                            entry.get("source_turn_id"),
+                        ),
+                    )
+                    if cur.rowcount:
+                        conn.execute(
+                            """
+                            UPDATE memory_entries
+                            SET use_count=use_count+1, last_used_at=?
+                            WHERE id=?
+                            """,
+                            (now, str(entry["id"])),
+                        )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def verify_memory_index(self) -> bool:
+        with self._lock:
+            conn = self._connect()
+            rows = conn.execute(
+                "SELECT id, content FROM memory_entries WHERE status='confirmed'"
+            ).fetchall()
+            expected_terms = {
+                str(row["id"]): set(tokenize(str(row["content"]))) for row in rows
+            }
+            term_rows = conn.execute(
+                "SELECT entry_id, term FROM memory_terms ORDER BY entry_id, term"
+            ).fetchall()
+            actual_terms: Dict[str, set[str]] = {}
+            for row in term_rows:
+                actual_terms.setdefault(str(row["entry_id"]), set()).add(
+                    str(row["term"])
+                )
+            expected_terms = {
+                entry_id: terms for entry_id, terms in expected_terms.items() if terms
+            }
+            if expected_terms != actual_terms:
+                return False
+            if _memory_backend(conn) == "fts5":
+                expected_ids = {str(row["id"]) for row in rows}
+                actual_ids = {
+                    str(row["entry_id"])
+                    for row in conn.execute(
+                        "SELECT entry_id FROM memory_fts"
+                    ).fetchall()
+                }
+                return expected_ids == actual_ids
+            return True
+
+    def ensure_memory_index(self) -> str:
+        """Self-check and rebuild the active index, falling back if FTS is unusable."""
+        try:
+            valid = self.verify_memory_index()
+        except sqlite3.OperationalError:
+            valid = False
+            self.set_memory_meta("index_backend", "terms")
+        if not valid:
+            self.rebuild_memory_index()
+        if not self.verify_memory_index():
+            raise RuntimeError("memory_index_rebuild_failed")
+        with self._lock:
+            return _memory_backend(self._connect())
+
+    def rebuild_memory_index(self) -> None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("DELETE FROM memory_terms")
+                if _memory_backend(conn) == "fts5":
+                    conn.execute("DELETE FROM memory_fts")
+                rows = conn.execute(
+                    "SELECT id, content FROM memory_entries WHERE status='confirmed'"
+                ).fetchall()
+                for row in rows:
+                    entry_id = str(row["id"])
+                    for term in tokenize(str(row["content"])):
+                        conn.execute(
+                            "INSERT OR IGNORE INTO memory_terms(entry_id, term) "
+                            "VALUES (?, ?)",
+                            (entry_id, term),
+                        )
+                    if _memory_backend(conn) == "fts5":
+                        conn.execute(
+                            "INSERT OR REPLACE INTO memory_fts(entry_id, search_text) "
+                            "VALUES (?, ?)",
+                            (entry_id, searchable_text(str(row["content"]))),
+                        )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def list_memory_usage(self, turn_id: str) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = (
+                self._connect()
+                .execute(
+                    """
+                SELECT u.turn_id, u.entry_id, u.rank, u.reason, u.snapshot_hash,
+                       u.used_at,
+                       COALESCE(e.scope_type, u.scope_type) AS scope_type,
+                       COALESCE(e.scope_key, u.scope_key) AS scope_key,
+                       COALESCE(e.kind, u.kind) AS kind,
+                       COALESCE(e.title, u.title) AS title,
+                       COALESCE(e.source_conversation_id, u.source_conversation_id)
+                           AS source_conversation_id,
+                       COALESCE(e.source_turn_id, u.source_turn_id) AS source_turn_id
+                FROM memory_usage u
+                LEFT JOIN memory_entries e ON e.id = u.entry_id
+                WHERE u.turn_id=?
+                ORDER BY u.rank
+                """,
+                    (turn_id,),
+                )
+                .fetchall()
+            )
+        return [dict(row) for row in rows]
+
+    def log_memory_event(
+        self, entry_id: str, kind: str, payload: Dict[str, Any]
+    ) -> None:
+        with self._lock:
+            conn = self._connect()
+            self._insert_memory_event(conn, entry_id, kind, payload)
+            conn.commit()
+
+    @staticmethod
+    def _memory_idempotency_replay(
+        conn: sqlite3.Connection,
+        idempotency_key: Optional[str],
+        operation: str,
+    ) -> Optional[sqlite3.Row]:
+        if not idempotency_key:
+            return None
+        row = conn.execute(
+            "SELECT * FROM memory_idempotency WHERE idempotency_key=?",
+            (idempotency_key,),
+        ).fetchone()
+        if row is not None and str(row["operation"]) != operation:
+            raise ValueError("idempotency_conflict")
+        return row
+
+    @staticmethod
+    def _record_memory_idempotency(
+        conn: sqlite3.Connection,
+        idempotency_key: Optional[str],
+        operation: str,
+        *,
+        target_id: Optional[str] = None,
+        result_version: Optional[int] = None,
+        result_count: Optional[int] = None,
+    ) -> None:
+        if not idempotency_key:
+            return
+        conn.execute(
+            """
+            INSERT INTO memory_idempotency(
+                idempotency_key, operation, target_id, result_version,
+                result_count, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                idempotency_key,
+                operation,
+                target_id,
+                result_version,
+                result_count,
+                _utcnow(),
+            ),
+        )
+
+    @staticmethod
+    def _insert_memory_event(
+        conn: sqlite3.Connection,
+        entry_id: str,
+        kind: str,
+        payload: Dict[str, Any],
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO memory_events(id, entry_id, kind, payload_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                uuid.uuid4().hex,
+                entry_id or None,
+                kind,
+                json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                if payload
+                else "{}",
+                _utcnow(),
+            ),
+        )
+
+    def _insert_memory_row(
+        self, conn: sqlite3.Connection, data: Dict[str, Any]
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO memory_entries(
+                id, scope_type, scope_key, kind, title, content, status,
+                confirmation, source_conversation_id, source_turn_id,
+                source_excerpt, supersedes_id, version, normalized_hash,
+                created_at, updated_at, last_used_at, use_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data["id"],
+                data["scope_type"],
+                data["scope_key"],
+                data["kind"],
+                data.get("title"),
+                data["content"],
+                data["status"],
+                data["confirmation"],
+                data.get("source_conversation_id"),
+                data.get("source_turn_id"),
+                data.get("source_excerpt"),
+                data.get("supersedes_id"),
+                int(data.get("version", 1)),
+                data["normalized_hash"],
+                data["created_at"],
+                data["updated_at"],
+                data.get("last_used_at"),
+                int(data.get("use_count", 0)),
+            ),
+        )
+        if data.get("source_conversation_id") or data.get("source_turn_id"):
+            conn.execute(
+                """
+                INSERT INTO memory_sources(
+                    id, entry_id, conversation_id, turn_id, excerpt, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    uuid.uuid4().hex,
+                    data["id"],
+                    data.get("source_conversation_id"),
+                    data.get("source_turn_id"),
+                    data.get("source_excerpt"),
+                    data["created_at"],
+                ),
+            )
+        if str(data.get("status")) == "confirmed":
+            self._insert_memory_index_rows(
+                conn, str(data["id"]), str(data.get("content", ""))
+            )
+
+    @staticmethod
+    def _insert_memory_index_rows(
+        conn: sqlite3.Connection, entry_id: str, content: str
+    ) -> None:
+        terms = tokenize(content)
+        for term in terms:
+            conn.execute(
+                "INSERT OR IGNORE INTO memory_terms(entry_id, term) VALUES (?, ?)",
+                (entry_id, term),
+            )
+        if _memory_backend(conn) == "fts5":
+            conn.execute(
+                "INSERT OR REPLACE INTO memory_fts(entry_id, search_text) "
+                "VALUES (?, ?)",
+                (entry_id, searchable_text(content)),
+            )
+
+    def _delete_memory_index_rows(
+        self,
+        conn: sqlite3.Connection,
+        entry_id: str,
+        *,
+        include_sources: bool = True,
+    ) -> None:
+        if include_sources:
+            conn.execute("DELETE FROM memory_sources WHERE entry_id=?", (entry_id,))
+        conn.execute("DELETE FROM memory_terms WHERE entry_id=?", (entry_id,))
+        if _memory_backend(conn) == "fts5":
+            conn.execute("DELETE FROM memory_fts WHERE entry_id=?", (entry_id,))
+        # Deliberately keep memory_usage rows: they contain no secret content
+        # and preserve the audit trail of past turns after a hard delete.
 
     # ------------------------------------------------------------ helpers
 

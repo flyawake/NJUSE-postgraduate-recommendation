@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleStop, ListPlus, Send, Zap } from "lucide-react";
+import * as Dialog from "@radix-ui/react-dialog";
+import { BookOpen, CircleStop, ListPlus, Send, Zap } from "lucide-react";
 import { api } from "@/api/client";
 import type { ChangeSet, FileChange, ToolEvent, Turn } from "@/api/client";
 import { useI18n } from "@/lib/i18n";
 import { useGestureSwap } from "@/lib/gesturePreference";
 import { ActivityFeed } from "./ActivityFeed";
+import { MemoryUsageSummary } from "./MemoryUsageSummary";
 import { InlineError } from "./InlineError";
 import { QueueDock } from "./QueueDock";
 import { TurnChangeSummary } from "./TurnChangeSummary";
@@ -14,10 +16,15 @@ import { subscribeToConversationEvents, subscribeToInbox } from "@/lib/sse";
 export interface ConversationViewProps {
   conversationId: string;
   onOpenArtifact?: (turn: Turn, file: FileChange, files: FileChange[]) => void;
+  onOpenMemorySource?: (conversationId: string, turnId?: string | null) => void;
 }
 
 function draftKey(conversationId: string): string {
   return `coding-agent-conversation-draft:${conversationId}`;
+}
+
+function profileKey(conversationId: string): string {
+  return `coding-agent-conversation-profile:${conversationId}`;
 }
 
 function scrollKey(conversationId: string): string {
@@ -43,7 +50,7 @@ export function mergeEventTail(
   return [...byId.values()].sort((a, b) => a.id - b.id).slice(-limit);
 }
 
-export function ConversationView({ conversationId, onOpenArtifact }: ConversationViewProps) {
+export function ConversationView({ conversationId, onOpenArtifact, onOpenMemorySource }: ConversationViewProps) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [gestureSwap] = useGestureSwap();
@@ -54,6 +61,15 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
   });
   const [reasoningEffort, setReasoningEffort] = useState("");
   const [effortTouched, setEffortTouched] = useState(false);
+  const [profileId, setProfileId] = useState<string | null>(() => {
+    try { return localStorage.getItem(profileKey(conversationId)); } catch { return null; }
+  });
+  const [profileTouched, setProfileTouched] = useState(false);
+  const [rememberOpen, setRememberOpen] = useState(false);
+  const [rememberContent, setRememberContent] = useState("");
+  const [rememberTitle, setRememberTitle] = useState("");
+  const [rememberKind, setRememberKind] = useState("fact");
+  const [composerError, setComposerError] = useState<string | null>(null);
 
   useEffect(() => {
     try { sessionStorage.setItem(draftKey(conversationId), task); } catch { /* best effort */ }
@@ -87,15 +103,25 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
     queryFn: api.listProfiles,
     staleTime: 5_000,
   });
+  const selectedProfile = profilesQuery.data?.find(
+    (item) => item.id === (profileId ?? conversationQuery.data?.profile_id)
+  ) ?? null;
+  const availableProfiles = profilesQuery.data?.filter((profile) => profile.credential?.configured) ?? [];
   useEffect(() => {
+    setProfileTouched(false);
     setEffortTouched(false);
     setReasoningEffort("");
   }, [conversationId]);
   useEffect(() => {
+    if (profileTouched) return;
+    let stored: string | null = null;
+    try { stored = localStorage.getItem(profileKey(conversationId)); } catch { /* best effort */ }
+    setProfileId(stored || conversationQuery.data?.profile_id || null);
+  }, [conversationId, conversationQuery.data?.profile_id, profileTouched]);
+  useEffect(() => {
     if (effortTouched) return;
-    const profile = profilesQuery.data?.find((item) => item.id === conversationQuery.data?.profile_id);
-    setReasoningEffort(profile?.reasoning_effort ?? "");
-  }, [conversationQuery.data?.profile_id, profilesQuery.data, effortTouched]);
+    setReasoningEffort(selectedProfile?.reasoning_effort ?? "");
+  }, [selectedProfile?.id, selectedProfile?.reasoning_effort, effortTouched]);
   const turnsQuery = useQuery({
     queryKey: ["turns", conversationId],
     queryFn: () => api.listTurns(conversationId, { limit: 100 }),
@@ -116,6 +142,17 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
     enabled: turns.length > 0,
   });
   const activeTurn = turns.find((turn) => turn.active) ?? null;
+
+  useEffect(() => {
+    let sourceTurn: string | null = null;
+    try { sourceTurn = new URL(window.location.href).searchParams.get("turn"); } catch { return; }
+    if (!sourceTurn || !turns.some((turn) => turn.id === sourceTurn)) return;
+    requestAnimationFrame(() => {
+      const target = document.querySelector<HTMLElement>(`[data-testid="turn-${sourceTurn}"]`);
+      target?.scrollIntoView({ block: "center" });
+      target?.focus({ preventScroll: true });
+    });
+  }, [conversationId, turns]);
 
   const inboxQuery = useQuery({
     queryKey: ["inbox", conversationId],
@@ -170,6 +207,7 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
         content,
         mode,
         idempotency_key: key,
+        profile_id: profileId ?? null,
         reasoning_effort: reasoningEffort || null,
       }),
     onSuccess: async () => {
@@ -181,7 +219,7 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
   });
 
   const startMutation = useMutation({
-    mutationFn: ({ content, key }: { content: string; key: string }) => api.startTurn(conversationId, { content, idempotency_key: key, reasoning_effort: reasoningEffort || null }),
+    mutationFn: ({ content, key }: { content: string; key: string }) => api.startTurn(conversationId, { content, idempotency_key: key, profile_id: profileId ?? null, reasoning_effort: reasoningEffort || null }),
     onSuccess: async () => {
       setTask("");
       followingRef.current = true;
@@ -193,6 +231,33 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
       ]);
     },
   });
+  const saveMemory = useMutation({
+    mutationFn: () => {
+      if (!conversation || !conversation.workspace_key) {
+        throw new Error(t("memory.scopeKey"));
+      }
+      return api.createMemory({
+        scope_type: "workspace",
+        scope_key: conversation.workspace_key,
+        kind: rememberKind,
+        title: rememberTitle.trim() || undefined,
+        content: rememberContent.trim(),
+        source_conversation_id: conversationId,
+        source_turn_id: null,
+        idempotency_key: newIdempotencyKey(),
+      });
+    },
+    onSuccess: () => {
+      setRememberOpen(false);
+      setTask("");
+      setRememberContent("");
+      setRememberTitle("");
+      setRememberKind("fact");
+      queryClient.invalidateQueries({ queryKey: ["memories"] });
+    },
+    onError: (error) => setComposerError(error instanceof Error ? error.message : t("error.runFailure")),
+  });
+
   const cancelMutation = useMutation({
     mutationFn: (turnId: string) => api.cancelTurn(conversationId, turnId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["turns", conversationId] }),
@@ -201,6 +266,14 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
   const submitTask = (mode: "start" | "queue" | "steer") => {
     const content = task.trim();
     if (!content || conversationQuery.data?.state !== "active") return;
+    const rememberMatch = /^\/remember(?:\s+(.+))?$/i.exec(content);
+    if (rememberMatch) {
+      setRememberContent((rememberMatch[1] ?? "").trim());
+      setRememberTitle("");
+      setRememberKind("fact");
+      setRememberOpen(true);
+      return;
+    }
     if (activeTurn) {
       if (mode === "start" || mode === "queue") {
         if (enqueueMutation.isPending) return;
@@ -217,8 +290,20 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
     startMutation.mutate({ content, key: newIdempotencyKey() });
   };
 
+  const handleMessageProfileChange = (value: string) => {
+    const next = value || null;
+    setProfileId(next);
+    setProfileTouched(true);
+    const nextProfile = profilesQuery.data?.find((profile) => profile.id === next) ?? null;
+    setEffortTouched(false);
+    setReasoningEffort(nextProfile?.reasoning_effort ?? "");
+    try {
+      if (next) localStorage.setItem(profileKey(conversationId), next);
+      else localStorage.removeItem(profileKey(conversationId));
+    } catch { /* best effort */ }
+  };
+
   const conversation = conversationQuery.data;
-  const selectedProfile = profilesQuery.data?.find((profile) => profile.id === conversation?.profile_id) ?? null;
   const defaultThinkOpen = Boolean(selectedProfile?.show_reasoning);
   const supportsReasoningEffort = Boolean(selectedProfile && (
     selectedProfile.wire_api === "openai_responses" ||
@@ -257,6 +342,7 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
                 changeSet={changeSets.data?.[turn.id] ?? null}
                 defaultThinkOpen={defaultThinkOpen}
                 onOpenArtifact={onOpenArtifact}
+                onOpenMemorySource={onOpenMemorySource}
               />
             ))}
           </div>
@@ -264,6 +350,7 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
       </div>
       <div className="shrink-0 border-t border-border bg-surface/95 p-3">
         <div className="mx-auto max-w-[54rem]">
+          {composerError ? <InlineError kind="validation" message={composerError} /> : null}
           {startMutation.isError ? <InlineError kind="run_failure" message={startMutation.error instanceof Error ? startMutation.error.message : t("error.runFailure")} /> : null}
           {(inboxQuery.data?.items?.length ?? 0) > 0 ? (
             <QueueDock conversationId={conversationId} snapshot={inboxQuery.data} />
@@ -290,8 +377,26 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
               data-testid="conversation-task-input"
             />
             <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border pt-2">
+              <label htmlFor="conversation-model" className="mr-auto flex items-center gap-1.5 text-xs text-muted">
+                <span>{t("composer.model")}</span>
+                <select
+                  id="conversation-model"
+                  className="input h-8 w-auto max-w-[15rem] py-1 text-xs"
+                  value={profileId ?? ""}
+                  onChange={(event) => handleMessageProfileChange(event.target.value)}
+                  disabled={availableProfiles.length === 0}
+                  data-testid="conversation-model"
+                >
+                  <option value="">{t("composer.model.placeholder")}</option>
+                  {availableProfiles.map((profile) => (
+                    <option key={profile.id} value={profile.id}>
+                      {profile.display_name} · {profile.model}
+                    </option>
+                  ))}
+                </select>
+              </label>
               {supportsReasoningEffort ? (
-                <label htmlFor="conversation-reasoning-effort" className="mr-auto flex items-center gap-1.5 text-xs text-muted">
+                <label htmlFor="conversation-reasoning-effort" className="flex items-center gap-1.5 text-xs text-muted">
                   <span>{t("composer.reasoningEffort")}</span>
                   <select
                     id="conversation-reasoning-effort"
@@ -311,6 +416,22 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
                   </select>
                 </label>
               ) : null}
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={!task.trim()}
+                onClick={() => {
+                  setRememberContent(task.trim());
+                  setRememberTitle("");
+                  setRememberKind("fact");
+                  setRememberOpen(true);
+                }}
+                data-testid="conversation-remember"
+                aria-label={t("remember.open")}
+              >
+                <BookOpen aria-hidden size={15} />
+                {t("remember.open")}
+              </button>
               {activeTurn ? (
                 <>
                   {task.trim() ? (
@@ -359,6 +480,47 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
           </div>
         </div>
       </div>
+      <Dialog.Root open={rememberOpen} onOpenChange={setRememberOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-overlay" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(34rem,94vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-surface p-4 shadow-md outline-none">
+            <div className="flex items-center justify-between">
+              <Dialog.Title className="font-semibold">{t("remember.title")}</Dialog.Title>
+              <Dialog.Close asChild>
+                <button type="button" className="btn-icon" aria-label={t("common.close")}>
+                  <BookOpen aria-hidden size={15} />
+                </button>
+              </Dialog.Close>
+            </div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <label className="text-xs text-muted">
+                <span>{t("memory.kind")}</span>
+                <select className="input mt-1 h-8 w-full text-sm" value={rememberKind} onChange={(event) => setRememberKind(event.target.value)}>
+                  <option value="preference">{t("memory.kind.preference")}</option>
+                  <option value="fact">{t("memory.kind.fact")}</option>
+                  <option value="decision">{t("memory.kind.decision")}</option>
+                  <option value="procedure">{t("memory.kind.procedure")}</option>
+                </select>
+              </label>
+              <label className="text-xs text-muted">
+                <span>{t("memory.fieldTitle")}</span>
+                <input className="input mt-1 h-8 w-full text-sm" value={rememberTitle} onChange={(event) => setRememberTitle(event.target.value)} />
+              </label>
+            </div>
+            <label className="mt-2 block text-xs text-muted">
+              <span>{t("memory.content")}</span>
+              <textarea className="input mt-1 min-h-[8rem] w-full text-sm" value={rememberContent} onChange={(event) => setRememberContent(event.target.value)} />
+            </label>
+            <p className="mt-2 text-[11px] text-faint">{t("remember.scopeHint")}</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Dialog.Close asChild><button type="button" className="btn-secondary">{t("common.cancel")}</button></Dialog.Close>
+              <button type="button" className="btn-primary" disabled={!rememberContent.trim() || saveMemory.isPending} onClick={() => saveMemory.mutate()} data-testid="remember-confirm">
+                {t("remember.save")}
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }
@@ -369,12 +531,14 @@ function ConversationTurn({
   changeSet,
   defaultThinkOpen,
   onOpenArtifact,
+  onOpenMemorySource,
 }: {
   conversationId: string;
   turn: Turn;
   changeSet: ChangeSet | null;
   defaultThinkOpen: boolean;
   onOpenArtifact?: (turn: Turn, file: FileChange, files: FileChange[]) => void;
+  onOpenMemorySource?: (conversationId: string, turnId?: string | null) => void;
 }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -455,7 +619,7 @@ function ConversationTurn({
     };
   }, [conversationId, turn.id, turn.active, queryClient]);
   return (
-    <article className="border-b border-border py-3" data-testid={`turn-${turn.id}`}>
+    <article className="border-b border-border py-3" data-testid={`turn-${turn.id}`} tabIndex={-1}>
       <ActivityFeed
         retainedEvents={items}
         eventBatch={items}
@@ -470,6 +634,7 @@ function ConversationTurn({
         defaultThinkOpen={defaultThinkOpen}
         embedded
       />
+      <MemoryUsageSummary conversationId={conversationId} turnId={turn.id} onOpenSource={onOpenMemorySource} />
       {items.some((event) => event.kind === "steer_delivered") ? (
         <p className="mb-2 px-1 text-xs text-accent" role="status" data-testid="steer-caption">
           {t("conversation.steerCaption")}

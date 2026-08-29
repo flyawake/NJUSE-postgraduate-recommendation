@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Info, Settings2 } from "lucide-react";
+import { BookOpen, Info, Settings2 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { cx } from "@/lib/format";
 import type { ViewName } from "./AppShell";
@@ -13,6 +13,7 @@ export interface SidebarProps {
 }
 
 const NAV_ITEMS: Array<{ view: ViewName; labelKey: string; icon: typeof Settings2 }> = [
+  { view: "memories", labelKey: "nav.memories", icon: BookOpen },
   { view: "settings", labelKey: "nav.settings", icon: Settings2 },
   { view: "about", labelKey: "nav.about", icon: Info },
 ];

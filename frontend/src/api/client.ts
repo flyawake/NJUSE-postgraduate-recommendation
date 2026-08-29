@@ -31,6 +31,15 @@ export type InboxEnqueueRequest = components["schemas"]["InboxEnqueueRequest"];
 export type InboxEditRequest = components["schemas"]["InboxEditRequest"];
 export type InboxOrderRequest = components["schemas"]["InboxOrderRequest"];
 export type InboxVersionRequest = components["schemas"]["InboxVersionRequest"];
+export type Memory = components["schemas"]["MemoryDTO"];
+export type MemoryPage = components["schemas"]["MemoryPageDTO"];
+export type MemoryCreateRequest = components["schemas"]["MemoryCreateRequest"];
+export type MemoryEditRequest = components["schemas"]["MemoryEditRequest"];
+export type MemoryVersionRequest = components["schemas"]["MemoryVersionRequest"];
+export type MemoryResetRequest = components["schemas"]["MemoryResetRequest"];
+export type MemorySettingsRequest = components["schemas"]["MemorySettingsRequest"];
+export type MemorySettings = components["schemas"]["MemorySettingsDTO"];
+export type MemoryUsage = components["schemas"]["MemoryUsageDTO"];
 
 export class ApiError extends Error {
   readonly code: string;
@@ -263,6 +272,71 @@ export const api = {
     apiFetch<FilePreview>(
       `/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/changes/${encodeURIComponent(changeId)}/preview?mode=${encodeURIComponent(mode)}`
     ),
+
+  listMemories: (params?: { scope_type?: string; scope_key?: string; status?: string; query?: string; limit?: number; cursor?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.scope_type) query.set("scope_type", params.scope_type);
+    if (params?.scope_key) query.set("scope_key", params.scope_key);
+    if (params?.status) query.set("status", params.status);
+    if (params?.query) query.set("query", params.query);
+    if (params?.limit) query.set("limit", String(params.limit));
+    if (params?.cursor) query.set("cursor", params.cursor);
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return apiFetch<MemoryPage>(`/api/memories${suffix}`);
+  },
+
+  createMemory: (input: MemoryCreateRequest) =>
+    apiFetch<Memory>("/api/memories", { method: "POST", body: JSON.stringify(input) }),
+
+  getMemory: (id: string) =>
+    apiFetch<Memory>(`/api/memories/${encodeURIComponent(id)}`),
+
+  editMemory: (id: string, input: MemoryEditRequest) =>
+    apiFetch<Memory>(`/api/memories/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+
+  deleteMemory: (id: string, input: MemoryVersionRequest) =>
+    apiFetch<void>(`/api/memories/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      body: JSON.stringify(input),
+    }),
+
+  approveMemory: (id: string, input: MemoryVersionRequest) =>
+    apiFetch<Memory>(`/api/memories/${encodeURIComponent(id)}/approve`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  rejectMemory: (id: string, input: MemoryVersionRequest) =>
+    apiFetch<Memory>(`/api/memories/${encodeURIComponent(id)}/reject`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  resetMemories: (input: MemoryResetRequest) =>
+    apiFetch<{ scope_type: string; scope_key: string; deleted: number }>("/api/memories/reset", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  getMemorySettings: (scopeType?: string, scopeKey?: string) => {
+    const query = new URLSearchParams();
+    if (scopeType) query.set("scope_type", scopeType);
+    if (scopeKey) query.set("scope_key", scopeKey);
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return apiFetch<MemorySettings>(`/api/memories/settings${suffix}`);
+  },
+
+  setMemorySettings: (input: MemorySettingsRequest) =>
+    apiFetch<MemorySettings>("/api/memories/settings", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  getTurnMemoryUsage: (conversationId: string, turnId: string) =>
+    apiFetch<MemoryUsage[]>(`/api/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/memory-usage`),
 
   listProfiles: () => apiFetch<Profile[]>("/api/profiles"),
 

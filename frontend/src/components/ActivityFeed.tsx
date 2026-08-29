@@ -16,6 +16,7 @@ import {
 import { useI18n } from "@/lib/i18n";
 import type { StreamCheckpoint, ToolEvent } from "@/api/client";
 import { StreamingTranscript } from "./StreamingTranscript";
+import { MarkdownText } from "./MarkdownText";
 import {
   actionTarget,
   TranscriptProjector,
@@ -217,7 +218,9 @@ export function ActivityFeed({
           {state === "terminal" && terminalText ? (
             <section className="border-t border-border pt-5" data-testid="final-answer">
               <h3 className="mb-1.5 text-sm font-semibold">{t("feed.finalAnswer")}</h3>
-              <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">{terminalText}</div>
+              <div className="text-sm">
+                <MarkdownText text={terminalText} />
+              </div>
               {verificationStatus ? (
                 <p className="mt-2 text-xs font-medium text-muted">
                   {t("inspector.verification")}: {verificationLabel(verificationStatus, t)}

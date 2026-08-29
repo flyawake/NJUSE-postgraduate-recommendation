@@ -101,6 +101,25 @@ def _is_sse_stress_run(messages: list[dict]) -> bool:
     )
 
 
+def _memory_query_response(messages: list[dict]) -> dict | None:
+    """Answer the memory E2E from the actual projected request payload."""
+    if not any(
+        message.get("role") == "user"
+        and "项目技术栈是什么" in str(message.get("content") or "")
+        for message in messages
+    ):
+        return None
+    projected = any(
+        "<memory_context" in str(message.get("content") or "")
+        and "FastAPI" in str(message.get("content") or "")
+        and "React" in str(message.get("content") or "")
+        for message in messages
+    )
+    return _assistant_text(
+        "记忆召回：项目使用 FastAPI 和 React。" if projected else "未使用已删除的记忆。"
+    )
+
+
 def _stress_response(messages: list[dict]) -> dict:
     tool_results = sum(1 for message in messages if message.get("role") == "tool")
     if tool_results >= 13:
@@ -121,6 +140,9 @@ def _stress_response(messages: list[dict]) -> dict:
 def next_response(messages: list[dict]) -> dict:
     if _is_sse_stress_run(messages):
         return _stress_response(messages)
+    memory_response = _memory_query_response(messages)
+    if memory_response is not None:
+        return memory_response
     kind = _classify_last_tool_result(messages)
 
     if kind is None:

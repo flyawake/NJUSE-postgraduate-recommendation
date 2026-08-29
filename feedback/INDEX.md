@@ -12,3 +12,4 @@
 | [task_004_feedback.md](archive/task_004_feedback.md) | task_004 | 已归档 | 是 | Master 按用户授权直接闭环数据事务、崩溃恢复、command probe/CAS、生产 legacy adapter、会话三栏 UI 与 production E2E；结论通过。 |
 | [task_005_feedback.md](archive/task_005_feedback.md) | task_005 | 已归档 | 是 | Master 源码验收并直接整改：严格流协议、Chat/Responses 双 adapter、opaque continuation、幂等 checkpoint/SSE 恢复、Think UI 与性能边界全部闭环；Python 304/4 skipped、Vitest 53、Playwright 9，通过。 |
 | [task_006_feedback.md](archive/task_006_feedback.md) | task_006 | 已归档 | 是 | Master 源码验收整改通过：原子 claim、SQLite transition guard、restart/Retry、回调重入、Host snapshot、100 条有界 QueueDock 与 production E2E 均已闭环；Python 325/4 skipped、Vitest 54、Playwright 10。 |
+| [task_007_feedback.md](archive/task_007_feedback.md) | task_007 | 已归档 | 是 | Master 源码验收并直接整改：原子生命周期与审计、DB 约束、canonical scope、幂等/CAS、索引自愈、候选异步超时、单 turn snapshot、硬删除版本链、分页与响应式 Memory Center 全部闭环；Python 375/4 skipped、Vitest 61、Playwright 12，通过。 |

@@ -8,6 +8,8 @@ registry and persists canonical/public facts.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import logging
 import os
@@ -31,6 +33,8 @@ from ..config import (
 from ..context import CanonicalHistory, ContextManager
 from ..credentials import CredentialError, CredentialService
 from ..errors import ConfigError
+from ..memory.extractor import MemoryCandidateExtractor
+from ..memory.service import MemoryService, MemoryServiceError
 from ..model_client import ModelClient, ModelClientFactory
 from ..models import AgentEvent, RunResult, RunStatus, SystemMessage, UserMessage
 from ..prompt import SYSTEM_PROMPT
@@ -65,9 +69,48 @@ class ConversationServiceError(Exception):
 
 def _canonical_workspace_key(path: Path) -> str:
     try:
-        return str(path.resolve(strict=True))
+        resolved = path.resolve(strict=True)
     except (OSError, RuntimeError, ValueError):
-        return str(path.absolute())
+        resolved = path.absolute()
+    return os.path.normcase(str(resolved))
+
+
+def _memory_cursor_signature(
+    scope_type: Optional[str],
+    scope_key: Optional[str],
+    status: Optional[str],
+    query: Optional[str],
+) -> str:
+    payload = json.dumps(
+        [scope_type, scope_key, status, query or ""],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _encode_memory_cursor(offset: int, snapshot: str, signature: str) -> str:
+    raw = json.dumps([offset, snapshot, signature], separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
+
+
+def _decode_memory_cursor(cursor: str, signature: str) -> Tuple[int, str]:
+    try:
+        data = json.loads(base64.urlsafe_b64decode(cursor.encode("ascii")))
+        if (
+            not isinstance(data, list)
+            or len(data) != 3
+            or not isinstance(data[0], int)
+            or data[0] < 0
+            or not isinstance(data[1], str)
+            or data[2] != signature
+        ):
+            raise ValueError
+        return data[0], data[1]
+    except Exception as exc:
+        raise ConversationServiceError(
+            "invalid_cursor", "memory 分页游标无效", field="cursor"
+        ) from exc
 
 
 class _PersistEventSink:
@@ -239,6 +282,7 @@ class ConversationService:
             resolved_home / "state.db"
         )
         self._repository.initialize()
+        self._memory = MemoryService(self._repository)
         self._recover_active_turns = self._repository.recover_active_turns()
         for turn in self._recover_active_turns:
             self._repository.recover_pending_groups_for_turn(
@@ -319,6 +363,337 @@ class ConversationService:
     def get_conversation(self, conversation_id: str) -> Dict[str, Any]:
         record = self._require_conversation(conversation_id)
         return self._conversation_to_dict(record)
+
+    # ------------------------------------------------------------ memory
+
+    def _validated_memory_scope(
+        self, scope_type: str, scope_key: str
+    ) -> Tuple[str, str]:
+        if scope_type == "global":
+            if scope_key != "global":
+                raise ConversationServiceError(
+                    "invalid_scope_key", "global 作用域的 scope_key 必须为 global"
+                )
+            return scope_type, "global"
+        if scope_type == "conversation":
+            self._require_conversation(scope_key)
+            return scope_type, scope_key
+        if scope_type == "workspace":
+            try:
+                path = Path(scope_key).expanduser().resolve(strict=True)
+                if not path.is_dir():
+                    raise OSError("not_directory")
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ConversationServiceError(
+                    "invalid_scope_key",
+                    "workspace 作用域必须指向现有工作区目录",
+                    field="scope_key",
+                ) from exc
+            return scope_type, _canonical_workspace_key(path)
+        raise ConversationServiceError(
+            "invalid_scope", "scope_type 必须是 global/workspace/conversation"
+        )
+
+    def list_memories(
+        self,
+        *,
+        scope_type: Optional[str] = None,
+        scope_key: Optional[str] = None,
+        status: Optional[str] = None,
+        query: Optional[str] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if status and status not in {
+            "candidate",
+            "confirmed",
+            "superseded",
+            "rejected",
+            "deleted",
+        }:
+            raise ConversationServiceError(
+                "invalid_status", "无效的 memory status", field="status"
+            )
+        if scope_type and scope_key:
+            scope_type, scope_key = self._validated_memory_scope(scope_type, scope_key)
+        page_limit = max(1, min(limit, 100))
+        signature = _memory_cursor_signature(scope_type, scope_key, status, query)
+        offset, snapshot = (
+            _decode_memory_cursor(cursor, signature) if cursor else (0, "")
+        )
+        fetch_limit = 1_000
+        if query:
+            items = self._memory.search(
+                query,
+                scope_type=scope_type,
+                scope_key=scope_key,
+                limit=fetch_limit,
+                statuses=[status] if status else None,
+            )
+        else:
+            items = self._memory.list(
+                scope_type=scope_type,
+                scope_key=scope_key,
+                status=status,
+                limit=fetch_limit,
+            )
+        if not snapshot:
+            snapshot = max(
+                (str(item.get("updated_at", "")) for item in items), default=""
+            )
+        else:
+            items = [
+                item for item in items if str(item.get("updated_at", "")) <= snapshot
+            ]
+        page_items = items[offset : offset + page_limit]
+        next_offset = offset + len(page_items)
+        next_cursor = (
+            _encode_memory_cursor(next_offset, snapshot, signature)
+            if next_offset < len(items)
+            else None
+        )
+        return {"items": page_items, "next_cursor": next_cursor}
+
+    def create_memory(
+        self,
+        *,
+        scope_type: str,
+        scope_key: str,
+        kind: str,
+        content: str,
+        title: Optional[str] = None,
+        source_conversation_id: Optional[str] = None,
+        source_turn_id: Optional[str] = None,
+        source_excerpt: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            scope_type, scope_key = self._validated_memory_scope(scope_type, scope_key)
+            if source_turn_id and not source_conversation_id:
+                raise ConversationServiceError(
+                    "invalid_source",
+                    "source_turn_id 必须与 source_conversation_id 一起提供",
+                    field="source_turn_id",
+                )
+            if source_conversation_id:
+                self._require_conversation(source_conversation_id)
+                if source_turn_id:
+                    self._require_turn(source_conversation_id, source_turn_id)
+            return self._memory.create_confirmed_memory(
+                scope_type=scope_type,
+                scope_key=scope_key,
+                kind=kind,
+                content=content,
+                title=title,
+                source_conversation_id=source_conversation_id,
+                source_turn_id=source_turn_id,
+                source_excerpt=source_excerpt,
+                idempotency_key=idempotency_key,
+            )
+        except MemoryServiceError as exc:
+            raise ConversationServiceError(exc.code, str(exc), field=exc.field) from exc
+        except ValueError as exc:
+            if str(exc) == "idempotency_conflict":
+                raise ConversationServiceError(
+                    "idempotency_conflict", "幂等键已用于其他 memory 操作"
+                ) from exc
+            raise
+
+    def get_memory(self, memory_id: str) -> Dict[str, Any]:
+        try:
+            row = self._memory.get(memory_id)
+            if row is None:
+                raise MemoryServiceError("memory_not_found", "记忆不存在")
+            return row
+        except MemoryServiceError as exc:
+            raise ConversationServiceError(exc.code, str(exc), field=exc.field) from exc
+
+    def edit_memory(
+        self,
+        memory_id: str,
+        *,
+        content: str,
+        kind: Optional[str] = None,
+        title: Optional[str] = None,
+        expected_version: int,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            return self._memory.edit(
+                memory_id,
+                content=content,
+                kind=kind,
+                title=title,
+                expected_version=expected_version,
+                idempotency_key=idempotency_key,
+            )
+        except MemoryServiceError as exc:
+            raise ConversationServiceError(exc.code, str(exc), field=exc.field) from exc
+        except ValueError as exc:
+            if str(exc) == "idempotency_conflict":
+                raise ConversationServiceError(
+                    "idempotency_conflict", "幂等键已用于其他 memory 操作"
+                ) from exc
+            if str(exc) == "version_conflict":
+                raise ConversationServiceError(
+                    "version_conflict", "记忆已被其他端修改", field="version"
+                ) from exc
+            raise ConversationServiceError("memory_not_found", "记忆不存在") from exc
+
+    def delete_memory(
+        self,
+        memory_id: str,
+        *,
+        expected_version: int,
+        idempotency_key: Optional[str] = None,
+    ) -> None:
+        try:
+            self._memory.delete(
+                memory_id,
+                expected_version=expected_version,
+                idempotency_key=idempotency_key,
+            )
+        except MemoryServiceError as exc:
+            raise ConversationServiceError(exc.code, str(exc), field=exc.field) from exc
+        except ValueError as exc:
+            if str(exc) == "idempotency_conflict":
+                raise ConversationServiceError(
+                    "idempotency_conflict", "幂等键已用于其他 memory 操作"
+                ) from exc
+            if str(exc) == "version_conflict":
+                raise ConversationServiceError(
+                    "version_conflict", "记忆已被其他端修改", field="version"
+                ) from exc
+            raise ConversationServiceError("memory_not_found", "记忆不存在") from exc
+
+    def approve_memory(
+        self,
+        memory_id: str,
+        *,
+        expected_version: int,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            return self._memory.approve(
+                memory_id,
+                expected_version=expected_version,
+                idempotency_key=idempotency_key,
+            )
+        except MemoryServiceError as exc:
+            raise ConversationServiceError(exc.code, str(exc), field=exc.field) from exc
+        except ValueError as exc:
+            if str(exc) == "idempotency_conflict":
+                raise ConversationServiceError(
+                    "idempotency_conflict", "幂等键已用于其他 memory 操作"
+                ) from exc
+            if str(exc) == "version_conflict":
+                raise ConversationServiceError(
+                    "version_conflict", "记忆已被其他端修改", field="version"
+                ) from exc
+            raise ConversationServiceError("memory_not_found", "记忆不存在") from exc
+
+    def reject_memory(
+        self,
+        memory_id: str,
+        *,
+        expected_version: int,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            return self._memory.reject(
+                memory_id,
+                expected_version=expected_version,
+                idempotency_key=idempotency_key,
+            )
+        except MemoryServiceError as exc:
+            raise ConversationServiceError(exc.code, str(exc), field=exc.field) from exc
+        except ValueError as exc:
+            if str(exc) == "idempotency_conflict":
+                raise ConversationServiceError(
+                    "idempotency_conflict", "幂等键已用于其他 memory 操作"
+                ) from exc
+            if str(exc) == "version_conflict":
+                raise ConversationServiceError(
+                    "version_conflict", "记忆已被其他端修改", field="version"
+                ) from exc
+            raise ConversationServiceError("memory_not_found", "记忆不存在") from exc
+
+    def reset_memories(
+        self,
+        *,
+        scope_type: str,
+        scope_key: str,
+        idempotency_key: Optional[str] = None,
+        expected_scope_version: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        try:
+            scope_type, scope_key = self._validated_memory_scope(scope_type, scope_key)
+            deleted = self._memory.reset_scope(
+                scope_type,
+                scope_key,
+                idempotency_key=idempotency_key,
+                expected_scope_version=expected_scope_version,
+            )
+        except MemoryServiceError as exc:
+            raise ConversationServiceError(exc.code, str(exc), field=exc.field) from exc
+        except ValueError as exc:
+            if str(exc) == "idempotency_conflict":
+                raise ConversationServiceError(
+                    "idempotency_conflict", "幂等键已用于其他 memory 操作"
+                ) from exc
+            if str(exc) == "version_conflict":
+                raise ConversationServiceError(
+                    "version_conflict",
+                    "记忆作用域已被其他端修改",
+                    field="expected_scope_version",
+                ) from exc
+            raise
+        return {"scope_type": scope_type, "scope_key": scope_key, "deleted": deleted}
+
+    def turn_memory_usage(self, turn_id: str) -> List[Dict[str, Any]]:
+        return self._memory.turn_memory_usage(turn_id)
+
+    def memory_settings(
+        self,
+        *,
+        scope_type: Optional[str] = None,
+        scope_key: Optional[str] = None,
+        enabled: Optional[bool] = None,
+        candidate_enabled: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        if candidate_enabled is not None:
+            return self._memory.set_candidate_enabled(candidate_enabled)
+        if enabled is None:
+            if scope_type and scope_key:
+                scope_type, scope_key = self._validated_memory_scope(
+                    scope_type, scope_key
+                )
+            return {
+                "enabled": self._memory.is_memory_enabled(
+                    conversation_id=scope_key if scope_type == "conversation" else None,
+                    workspace_key=scope_key if scope_type == "workspace" else None,
+                ),
+                "candidate_enabled": self._memory.is_candidate_enabled(),
+                "scope_version": self._memory.scope_version(
+                    scope_type or "global", scope_key or "global"
+                ),
+            }
+        try:
+            resolved_type, resolved_key = self._validated_memory_scope(
+                scope_type or "global", scope_key or "global"
+            )
+            result = self._memory.set_memory_enabled(
+                scope_type=resolved_type,
+                scope_key=resolved_key,
+                enabled=enabled,
+            )
+        except MemoryServiceError as exc:
+            raise ConversationServiceError(exc.code, str(exc), field=exc.field) from exc
+        result["candidate_enabled"] = self._memory.is_candidate_enabled()
+        result["scope_version"] = self._memory.scope_version(
+            resolved_type, resolved_key
+        )
+        return result
 
     def rename_conversation(
         self, conversation_id: str, *, title: str, expected_version: int
@@ -411,6 +786,7 @@ class ConversationService:
         *,
         user_text: str,
         idempotency_key: Optional[str] = None,
+        profile_id: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
         inbox_item_id: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -433,7 +809,7 @@ class ConversationService:
             raise ConversationServiceError(
                 "invalid_task", "任务内容不能为空", field="task"
             )
-        connection, profile = self._resolve_connection(record.profile_id)
+        connection, profile = self._resolve_connection(profile_id or record.profile_id)
         workspace = Path(record.workspace_path)
         if not workspace.is_dir():
             raise ConversationServiceError(
@@ -531,6 +907,8 @@ class ConversationService:
                     collector,
                     turn.user_text,
                     history,
+                    connection,
+                    workspace_key,
                 ),
                 cancel_event=cancel_event,
                 on_finish=lambda: self._after_turn_finished(conversation_id),
@@ -708,6 +1086,7 @@ class ConversationService:
         content: str,
         mode: str,
         idempotency_key: Optional[str] = None,
+        profile_id: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
     ) -> Dict[str, Any]:
         record = self._require_conversation(conversation_id)
@@ -735,6 +1114,7 @@ class ConversationService:
                 requested_mode=mode,
                 idempotency_key=idempotency_key,
                 bound_turn_id=bound_turn_id,
+                profile_id=profile_id,
                 reasoning_effort=reasoning_effort,
             )
         except ValueError as exc:
@@ -744,6 +1124,7 @@ class ConversationService:
                     content=content,
                     requested_mode="queue",
                     idempotency_key=idempotency_key,
+                    profile_id=profile_id,
                     reasoning_effort=reasoning_effort,
                 )
             else:
@@ -933,6 +1314,7 @@ class ConversationService:
                     # new, auditable delivery attempt rather than returning a
                     # previously rejected turn.
                     idempotency_key=f"inbox:{item['id']}:{item['version']}",
+                    profile_id=item.get("profile_id"),
                     reasoning_effort=item.get("reasoning_effort"),
                     inbox_item_id=item["id"],
                 )
@@ -982,6 +1364,8 @@ class ConversationService:
         collector: ToolChangeCollector,
         task: str,
         history: CanonicalHistory,
+        connection: ResolvedModelConnection,
+        workspace_key: str,
     ) -> None:
         self._repository.update_turn_state(
             conversation_id, turn_id, state=TurnState.RUNNING.value
@@ -1000,11 +1384,78 @@ class ConversationService:
             self._finish_turn(
                 conversation_id, turn_id, run_id, result, journal, collector
             )
+            threading.Thread(
+                target=self._maybe_extract_memory_candidates,
+                kwargs={
+                    "connection": connection,
+                    "conversation_id": conversation_id,
+                    "turn_id": turn_id,
+                    "workspace_key": workspace_key,
+                    "task": task,
+                    "result": result,
+                },
+                name=f"memory-candidate-{turn_id[:8]}",
+                daemon=True,
+            ).start()
         else:
             self._repository.update_turn_state(
                 conversation_id, turn_id, state=TurnState.INTERRUPTED.value
             )
             journal.close()
+
+    def _maybe_extract_memory_candidates(
+        self,
+        *,
+        connection: ResolvedModelConnection,
+        conversation_id: str,
+        turn_id: str,
+        workspace_key: str,
+        task: str,
+        result: RunResult,
+    ) -> None:
+        """Optional P1 candidate extraction after a successful terminal turn.
+
+        It is deliberately best-effort and isolated: a model failure, timeout,
+        invalid JSON or bad proposal never changes the main turn's result.
+        """
+        if not self._memory.is_candidate_enabled():
+            return
+        if not self._memory.is_memory_enabled(
+            conversation_id=conversation_id, workspace_key=workspace_key
+        ):
+            return
+        final_text = result.final_text or ""
+        if not final_text.strip():
+            return
+        if not self._memory.extraction_input_is_safe(task, final_text):
+            return
+        try:
+            existing = self._memory.search(
+                task,
+                scope_type="workspace",
+                scope_key=workspace_key,
+                limit=8,
+            )
+            extractor = MemoryCandidateExtractor(self._client_factory(connection))
+            proposals = extractor.extract(
+                user_text=task,
+                assistant_text=final_text,
+                existing_memories=existing,
+            )
+            if proposals:
+                self._memory.ingest_candidate_proposals(
+                    proposals,
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                    workspace_key=workspace_key,
+                )
+                logger.info(
+                    "memory candidates proposed for turn %s: %d",
+                    turn_id,
+                    len(proposals),
+                )
+        except Exception:
+            logger.exception("memory candidate extraction failed for turn %s", turn_id)
 
     def _finish_turn(
         self,
@@ -1092,6 +1543,23 @@ class ConversationService:
         except CredentialError as exc:
             raise ConversationServiceError(exc.code, str(exc), field=exc.field) from exc
 
+    def _make_memory_provider(
+        self, conversation_id: str, turn_id: str, workspace: Path, task: str
+    ):
+        workspace_key = _canonical_workspace_key(workspace)
+
+        def provide():
+            # ContextManager caches the result, so this runs at most once per
+            # turn; MemoryService also persists memory_usage at that moment.
+            return self._memory.project_for_turn(
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                workspace_key=workspace_key,
+                user_text=task,
+            )
+
+        return provide
+
     def _build_loop(
         self,
         *,
@@ -1140,7 +1608,12 @@ class ConversationService:
             model_client=self._client_factory(connection),
             tool_registry=registry,
             tool_executor=executor,
-            context_manager=ContextManager(DEFAULT_CHAR_BUDGET),
+            context_manager=ContextManager(
+                DEFAULT_CHAR_BUDGET,
+                memory_provider=self._make_memory_provider(
+                    conversation_id, turn_id, workspace, task
+                ),
+            ),
             completion_policy=CompletionPolicy(),
             run_id=run_id,
             conversation_id=conversation_id,
