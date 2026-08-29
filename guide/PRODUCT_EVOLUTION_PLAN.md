@@ -77,7 +77,7 @@ Memory（独立服务）
 | 1 | [task_003](task_003/plan.md) | 产品文案、Codex 风格平面 feed、Composer Start/Stop、渲染隔离与 validation 根因修复 | task_002 | 不伪造会话/队列/reasoning |
 | 2 | [task_004](task_004/plan.md) | Conversation/Turn 持久化、左侧会话边栏、后台运行、每轮 ChangeSet、右侧文件/diff 预览 | task_003 | 不用前端数组模拟会话，也不以 current git diff 冒充历史 turn diff |
 | 3 | [task_005](task_005/plan.md) | provider-neutral streaming、可展示 reasoning/summary、折叠 Think | task_004 | 不暴露隐藏思维、不假称所有 provider 支持 |
-| 4 | [task_006](task_006/plan.md) | durable Queue/Steer、AgentLoop 安全插入、busy Composer | task_004、task_005 | 不把 Queue 当即时中断 |
+| 4 | [task_006](archive/task_006/plan.md) | durable Queue/Steer、AgentLoop 安全插入、busy Composer（已归档） | task_004、task_005 | 不把 Queue 当即时中断 |
 | 5 | [task_007](task_007/plan.md) | 可控跨会话记忆、来源/作用域/审批/删除 | task_004；建议在 task_006 后 | 不默认自动记住全部聊天 |
 | 6 | [task_008](task_008/plan.md) | 集成、性能、安全、恢复、真实模型、交付材料 | task_003-task_007 | 不接收未规划的新功能 |
 

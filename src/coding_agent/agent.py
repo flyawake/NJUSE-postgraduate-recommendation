@@ -105,6 +105,9 @@ class AgentLoop:
         completion_policy: CompletionPolicy,
         event_sink,
         run_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+        inbox_port: Optional[Any] = None,
         max_steps: int = DEFAULT_MAX_STEPS,
         max_provider_attempts: int = DEFAULT_MAX_PROVIDER_ATTEMPTS,
         tool_failure_round_limit: int = DEFAULT_TOOL_FAILURE_ROUND_LIMIT,
@@ -125,6 +128,9 @@ class AgentLoop:
         self._completion = completion_policy
         self._event_sink = event_sink
         self._run_id = run_id or uuid.uuid4().hex
+        self._conversation_id = conversation_id
+        self._turn_id = turn_id
+        self._inbox_port = inbox_port
         self._max_steps = max_steps
         self._max_provider_attempts = max_provider_attempts
         self._tool_failure_round_limit = tool_failure_round_limit
@@ -264,12 +270,41 @@ class AgentLoop:
         if self._journal is not None:
             self._journal.append(message)
 
+    def _poll_steer(self) -> bool:
+        """Claim at most one pending steer at a safe boundary.
+
+        Returns True if a steer user message was appended to canonical history.
+        Cancellation always wins: a stop request means no steer is claimed here.
+        """
+        if self._inbox_port is None or self._is_cancelled():
+            return False
+        item = self._inbox_port.poll_steer(self._step_count)
+        if item is None:
+            return False
+        item_id = str(item["id"])
+        # The item may have been atomically demoted by terminal recovery
+        # after poll but before claim.  Never append a stale steer merely
+        # because the earlier read returned one.
+        if not self._inbox_port.claim_steer(item_id):
+            return False
+        self._append_history(UserMessage(str(item["content"]), source="steer"))
+        self._inbox_port.deliver_steer(item_id)
+        self._emit(
+            event_types.EVENT_STEER_DELIVERED,
+            step=self._step_count,
+            payload={"item_id": item_id, "chars": len(str(item["content"]))},
+        )
+        return True
+
     # ------------------------------------------------------------- states
 
     def _handle_ready(self) -> None:
         if self._step_count >= self._max_steps:
             self._finish(RunStatus.ERROR, StopReason.MAX_STEPS)
             return
+        # Safe point 1: after the previous tool group/canonical commit is
+        # fully settled and before building the next model request.
+        self._poll_steer()
         self._last_view = self._context.build_request(self._history)
         self._step_count += 1
         self._emit(
@@ -584,6 +619,12 @@ class AgentLoop:
     def _handle_completion(self) -> None:
         turn = self._last_assistant
         assert turn is not None
+        # Safe point 2: the assistant text is already in canonical history and
+        # no tool is executing; if the user queued a steer for this turn, put
+        # it into model context before deciding whether the turn should end.
+        if self._poll_steer():
+            self._transit(LoopPhase.READY)
+            return
         if not self._mutated_paths:
             self._verification = VerificationStatus.NOT_APPLICABLE
         decision = self._completion.decide(

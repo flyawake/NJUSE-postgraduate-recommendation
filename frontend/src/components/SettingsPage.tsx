@@ -7,6 +7,7 @@ import { api } from "@/api/client";
 import type { Profile } from "@/api/client";
 import { useI18n } from "@/lib/i18n";
 import { apiErrorText } from "@/lib/errorText";
+import { useGestureSwap } from "@/lib/gesturePreference";
 import { InlineError } from "./InlineError";
 import { ProfileForm } from "./ProfileForm";
 import { CredentialField } from "./CredentialField";
@@ -19,6 +20,7 @@ function isProfileUsable(profile: Profile): boolean {
 export function SettingsPage() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
+  const [gestureSwap, setGestureSwap] = useGestureSwap();
   const [tab, setTab] = useState<"list" | "form">("list");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Profile | null>(null);
@@ -68,6 +70,16 @@ export function SettingsPage() {
         <h1 className="text-lg font-semibold">{t("settings.title")}</h1>
         <p className="mt-1 text-sm text-muted">{t("settings.subtitle")}</p>
       </header>
+
+      <label className="flex items-center gap-2 rounded-md border border-border bg-surface p-3 text-sm">
+        <input
+          type="checkbox"
+          checked={gestureSwap}
+          onChange={(event) => setGestureSwap(event.target.checked)}
+          data-testid="gesture-swap"
+        />
+        <span>{t("settings.gestureSwap")}</span>
+      </label>
 
       <Tabs.Root value={tab} onValueChange={(next) => setTab(next as "list" | "form")} data-testid="settings-tabs">
         <Tabs.List className="flex gap-1 border-b border-border">
@@ -180,7 +192,6 @@ export function SettingsPage() {
                   credential_ref: editing.credential_ref ?? null,
                   wire_api: editing.wire_api,
                   reasoning_mode: editing.reasoning_mode,
-                  reasoning_effort: editing.reasoning_effort,
                   show_reasoning: editing.show_reasoning,
                 }}
                 onSaved={() => undefined}

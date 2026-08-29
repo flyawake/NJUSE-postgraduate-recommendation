@@ -81,6 +81,7 @@ class RuntimeRegistry:
         run_id: str,
         target: Callable[[], None],
         cancel_event: Optional[threading.Event] = None,
+        on_finish: Optional[Callable[[], None]] = None,
     ) -> Tuple[str, Optional[str]]:
         """Start one worker under a workspace lease.
 
@@ -110,6 +111,7 @@ class RuntimeRegistry:
                 run_id,
                 cancel_event,
                 target,
+                on_finish,
             )
             self._runtimes[conversation_id] = {
                 "turn_id": turn_id,
@@ -173,6 +175,7 @@ class RuntimeRegistry:
         run_id: str,
         cancel_event: threading.Event,
         target: Callable[[], None],
+        on_finish: Optional[Callable[[], None]] = None,
     ) -> None:
         try:
             target()
@@ -180,3 +183,5 @@ class RuntimeRegistry:
             with self._lock:
                 self._runtimes.pop(conversation_id, None)
             self._leases.release(workspace_key, conversation_id)
+            if on_finish is not None:
+                on_finish()

@@ -233,12 +233,22 @@ class _ChatCompletionsMixin:
         if tools:
             payload["tools"] = list(tools)
             payload["tool_choice"] = "auto"
-        # ``reasoning_effort`` is not part of the generic compatible Chat
-        # contract (notably DeepSeek rejects it). Never inject an optional
-        # provider parameter unless the selected provider is known to accept
-        # it and the user explicitly requested a value.
-        if options.reasoning_effort and self._provider_id == "openai":
-            payload["reasoning_effort"] = options.reasoning_effort
+        # OpenAI and DeepSeek accept ``reasoning_effort`` as an optional
+        # provider parameter; other compatible gateways generally do not.
+        # DeepSeek additionally requires the ``thinking`` toggle in
+        # ``extra_body`` to actually enable/disable the reasoning mode.
+        if options.reasoning_effort and self._provider_id in ("openai", "deepseek"):
+            effort = options.reasoning_effort
+            if self._provider_id == "deepseek" and effort == "medium":
+                # DeepSeek maps medium to high at the API level.
+                effort = "high"
+            payload["reasoning_effort"] = effort
+        if self._provider_id == "deepseek":
+            payload["extra_body"] = {
+                "thinking": {
+                    "type": "enabled" if options.reasoning_mode != "off" else "disabled"
+                }
+            }
         return payload
 
     def _map_chat_error(self, exc: Exception) -> ModelRequestError:
@@ -281,7 +291,11 @@ class OpenAIModelClient(_ChatCompletionsMixin):
                 REASONING_NONE if provider_id == "openai" else REASONING_RAW_VISIBLE
             ),
             reasoning_efforts=(
-                ("low", "medium", "high") if provider_id == "openai" else ()
+                ("low", "medium", "high", "max")
+                if provider_id == "deepseek"
+                else ("low", "medium", "high")
+                if provider_id == "openai"
+                else ()
             ),
             usage_in_stream=True,
             supports_cancel=True,

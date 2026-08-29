@@ -233,9 +233,10 @@ def validate_profile(
         raise ProfileError(
             "reasoning_mode 必须是 auto/off/visible", field="reasoning_mode"
         )
-    if reasoning_effort not in (None, "low", "medium", "high"):
+    if reasoning_effort not in (None, "low", "medium", "high", "max"):
         raise ProfileError(
-            "reasoning_effort 必须是 low/medium/high 或空", field="reasoning_effort"
+            "reasoning_effort 必须是 low/medium/high/max 或空",
+            field="reasoning_effort",
         )
     if reasoning_mode == "off" and reasoning_effort is not None:
         raise ProfileError(
@@ -249,7 +250,7 @@ def validate_profile(
         )
     if (
         wire_api == WIRE_API_CHAT_COMPLETIONS
-        and provider_id != "openai"
+        and provider_id not in ("openai", "deepseek")
         and reasoning_effort is not None
     ):
         raise ProfileError(

@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ..agent import AgentLoop
 from ..artifacts.store import ArtifactStore
@@ -48,6 +48,7 @@ from .domain import (
     TurnState,
     title_from_user_text,
 )
+from .inbox import InboxPort
 from .journal import CanonicalJournal
 from .runtime import RuntimeRegistry, RuntimeRegistryError
 from .store import SQLiteConversationRepository
@@ -243,6 +244,7 @@ class ConversationService:
             self._repository.recover_pending_groups_for_turn(
                 turn.conversation_id, turn.id
             )
+        self._repository.recover_claimed_steers()
         self.runtime = RuntimeRegistry(max_workers=max_workers)
         self._artifact_store = ArtifactStore(resolved_home / "artifacts")
         # A crash can occur after an atomic CAS rename but before the DB ref
@@ -252,6 +254,8 @@ class ConversationService:
         for blob_id in self._artifact_store.list_digests() - referenced_blobs:
             self._artifact_store.delete(blob_id)
         self._shutdown_lock = threading.RLock()
+        self._queue_consumer_locks: Dict[str, threading.Lock] = {}
+        self._queue_consumer_locks_lock = threading.RLock()
 
     # ------------------------------------------------------------ read APIs
 
@@ -407,6 +411,8 @@ class ConversationService:
         *,
         user_text: str,
         idempotency_key: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+        inbox_item_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         record = self._require_conversation(conversation_id)
         if record.state != ConversationState.ACTIVE.value:
@@ -447,11 +453,16 @@ class ConversationService:
                 run_id=run_id,
                 idempotency_key=idempotency_key,
                 messages=initial_messages,
+                inbox_item_id=inbox_item_id,
             )
         except ValueError as exc:
             if str(exc) == "conversation_busy":
                 raise ConversationServiceError(
                     "conversation_busy", "该会话已有正在运行的 turn"
+                ) from exc
+            if str(exc) == "inbox_item_not_queued":
+                raise ConversationServiceError(
+                    "inbox_item_not_queued", "队列项已被其他操作更新"
                 ) from exc
             raise
         if not created:
@@ -459,7 +470,7 @@ class ConversationService:
         # Deterministic default title from the first user message.
         if record.title_source == "auto" and turn.ordinal == 1:
             self._repository.set_auto_title(
-                conversation_id, title_from_user_text(user_text)
+                conversation_id, title_from_user_text(turn.user_text)
             )
         cancel_event = threading.Event()
         history = CanonicalHistory()
@@ -472,8 +483,10 @@ class ConversationService:
             loop = self._build_loop(
                 connection=connection,
                 workspace=workspace,
-                task=user_text,
+                task=turn.user_text,
                 run_id=run_id,
+                conversation_id=conversation_id,
+                turn_id=turn.id,
                 cancel_event=cancel_event,
                 sink=sink,
                 journal=journal,
@@ -481,7 +494,11 @@ class ConversationService:
                 history=history,
                 request_options=ModelRequestOptions(
                     reasoning_mode=profile.reasoning_mode if profile else "auto",
-                    reasoning_effort=profile.reasoning_effort if profile else None,
+                    reasoning_effort=(
+                        reasoning_effort
+                        if reasoning_effort is not None
+                        else (profile.reasoning_effort if profile else None)
+                    ),
                 ),
             )
         except Exception as exc:
@@ -489,6 +506,10 @@ class ConversationService:
                 conversation_id, turn.id, state=TurnState.REJECTED.value
             )
             self._repository.abandon_groups_for_rejected_turn(conversation_id, turn.id)
+            if inbox_item_id is not None:
+                self._repository.block_inbox_item(
+                    conversation_id, inbox_item_id, "turn_rejected"
+                )
             logger.warning(
                 "turn %s rejected during loop build: %s", turn.id, type(exc).__name__
             )
@@ -508,16 +529,21 @@ class ConversationService:
                     run_id,
                     journal,
                     collector,
-                    user_text.strip(),
+                    turn.user_text,
                     history,
                 ),
                 cancel_event=cancel_event,
+                on_finish=lambda: self._after_turn_finished(conversation_id),
             )
         except RuntimeRegistryError as exc:
             self._repository.update_turn_state(
                 conversation_id, turn.id, state=TurnState.REJECTED.value
             )
             self._repository.abandon_groups_for_rejected_turn(conversation_id, turn.id)
+            if inbox_item_id is not None:
+                self._repository.block_inbox_item(
+                    conversation_id, inbox_item_id, exc.code
+                )
             raise ConversationServiceError(
                 exc.code,
                 str(exc),
@@ -669,6 +695,187 @@ class ConversationService:
         base["truncated"] = len(lines) > MAX_DIFF_LINES
         return base
 
+    # ------------------------------------------------------------ inbox
+
+    def get_inbox(self, conversation_id: str) -> Dict[str, Any]:
+        self._require_conversation(conversation_id)
+        return self._repository.get_inbox_snapshot(conversation_id)
+
+    def enqueue_inbox(
+        self,
+        conversation_id: str,
+        *,
+        content: str,
+        mode: str,
+        idempotency_key: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        record = self._require_conversation(conversation_id)
+        if record.state != ConversationState.ACTIVE.value:
+            raise ConversationServiceError(
+                "conversation_archived", "已归档会话不能新增加入队列"
+            )
+        if not content or not content.strip():
+            raise ConversationServiceError(
+                "invalid_task", "消息内容不能为空", field="content"
+            )
+        if mode not in ("queue", "steer"):
+            raise ConversationServiceError("invalid_mode", "mode 必须是 queue/steer")
+        active = self._repository.get_active_turn(conversation_id)
+        bound_turn_id = active.id if active else None
+        if mode == "steer" and bound_turn_id is None:
+            raise ConversationServiceError(
+                "turn_not_steerable",
+                "当前没有可插入的 active turn，消息已作为普通 Queue 处理",
+            )
+        try:
+            self._repository.enqueue_inbox_item(
+                conversation_id,
+                content=content,
+                requested_mode=mode,
+                idempotency_key=idempotency_key,
+                bound_turn_id=bound_turn_id,
+                reasoning_effort=reasoning_effort,
+            )
+        except ValueError as exc:
+            if str(exc) == "turn_not_steerable":
+                self._repository.enqueue_inbox_item(
+                    conversation_id,
+                    content=content,
+                    requested_mode="queue",
+                    idempotency_key=idempotency_key,
+                    reasoning_effort=reasoning_effort,
+                )
+            else:
+                raise
+        return self._repository.get_inbox_snapshot(conversation_id)
+
+    def edit_inbox(
+        self,
+        conversation_id: str,
+        item_id: str,
+        *,
+        content: Optional[str] = None,
+        mode: Optional[str] = None,
+        expected_version: int,
+    ) -> Dict[str, Any]:
+        try:
+            self._repository.edit_inbox_item(
+                conversation_id,
+                item_id,
+                content=content,
+                requested_mode=mode,
+                expected_version=expected_version,
+            )
+        except KeyError as exc:
+            raise ConversationServiceError("item_not_found", "队列项不存在") from exc
+        except ValueError as exc:
+            code = (
+                "item_not_editable"
+                if str(exc) == "item_not_editable"
+                else "version_conflict"
+            )
+            raise ConversationServiceError(code, str(exc)) from exc
+        return self._repository.get_inbox_snapshot(conversation_id)
+
+    def remove_inbox(
+        self,
+        conversation_id: str,
+        item_id: str,
+        *,
+        expected_version: int,
+    ) -> Dict[str, Any]:
+        try:
+            self._repository.remove_inbox_item(
+                conversation_id, item_id, expected_version=expected_version
+            )
+        except KeyError as exc:
+            raise ConversationServiceError("item_not_found", "队列项不存在") from exc
+        except ValueError as exc:
+            code = (
+                "item_not_editable"
+                if str(exc) == "item_not_editable"
+                else "version_conflict"
+            )
+            raise ConversationServiceError(code, str(exc)) from exc
+        return self._repository.get_inbox_snapshot(conversation_id)
+
+    def reorder_inbox(
+        self,
+        conversation_id: str,
+        *,
+        ordered_ids: Sequence[str],
+        expected_queue_version: int,
+    ) -> Dict[str, Any]:
+        try:
+            self._repository.reorder_inbox_items(
+                conversation_id,
+                ordered_ids,
+                expected_queue_version=expected_queue_version,
+            )
+        except ValueError as exc:
+            code = (
+                "version_conflict"
+                if str(exc) == "version_conflict"
+                else "invalid_reorder"
+            )
+            raise ConversationServiceError(code, str(exc)) from exc
+        return self._repository.get_inbox_snapshot(conversation_id)
+
+    def steer_inbox(
+        self,
+        conversation_id: str,
+        item_id: str,
+        *,
+        expected_version: int,
+    ) -> Dict[str, Any]:
+        active = self._repository.get_active_turn(conversation_id)
+        if active is None:
+            raise ConversationServiceError(
+                "turn_not_steerable", "当前没有可插入的 active turn"
+            )
+        try:
+            self._repository.request_steer(
+                conversation_id,
+                item_id,
+                expected_version=expected_version,
+            )
+        except KeyError as exc:
+            raise ConversationServiceError("item_not_found", "队列项不存在") from exc
+        except ValueError as exc:
+            code = (
+                "turn_not_steerable"
+                if str(exc) == "turn_not_steerable"
+                else "version_conflict"
+                if str(exc) == "version_conflict"
+                else "item_not_steerable"
+            )
+            raise ConversationServiceError(code, str(exc)) from exc
+        return self._repository.get_inbox_snapshot(conversation_id)
+
+    def retry_inbox(
+        self,
+        conversation_id: str,
+        item_id: str,
+        *,
+        expected_version: int,
+    ) -> Dict[str, Any]:
+        try:
+            self._repository.retry_inbox_item(
+                conversation_id, item_id, expected_version=expected_version
+            )
+        except KeyError as exc:
+            raise ConversationServiceError("item_not_found", "队列项不存在") from exc
+        except ValueError as exc:
+            code = (
+                "version_conflict"
+                if str(exc) == "version_conflict"
+                else "item_not_blocked"
+            )
+            raise ConversationServiceError(code, str(exc)) from exc
+        self._start_next_from_queue(conversation_id)
+        return self._repository.get_inbox_snapshot(conversation_id)
+
     # ------------------------------------------------------------ shutdown
 
     def shutdown(self, timeout: float = 5.0) -> None:
@@ -680,6 +887,68 @@ class ConversationService:
             )
 
     # ------------------------------------------------------------ internals
+
+    def _after_turn_finished(self, conversation_id: str) -> None:
+        """Called after a worker is removed from the runtime registry.
+
+        This is the single queue consumer entry: pending steers are demoted to
+        Queue, and at most one queued item is claimed to create the next turn.
+        """
+        with self._queue_consumer_locks_lock:
+            lock = self._queue_consumer_locks.setdefault(
+                conversation_id, threading.Lock()
+            )
+        if not lock.acquire(blocking=False):
+            return
+        try:
+            self._repository.demote_all_steer_pending(conversation_id)
+            self._start_next_from_queue(conversation_id)
+        except Exception:
+            logger.exception(
+                "queue consumer failed for conversation %s", conversation_id
+            )
+        finally:
+            lock.release()
+
+    def _start_next_from_queue(self, conversation_id: str) -> None:
+        # A mutation can remove the preliminary head before this consumer's
+        # transaction starts.  Re-read in a loop instead of recursing, while
+        # still starting no more than one actual turn per invocation.
+        while True:
+            if self.runtime.is_active(conversation_id):
+                return
+            record = self._repository.get_conversation(conversation_id)
+            if record is None or record.state != ConversationState.ACTIVE.value:
+                return
+            queued = self._repository.list_queued_items(conversation_id)
+            if not queued:
+                return
+            item = queued[0]
+            try:
+                self.start_turn(
+                    conversation_id,
+                    user_text=item["content"],
+                    # A queue item is at-most-once for a particular durable
+                    # version.  Explicit retry advances that version and is a
+                    # new, auditable delivery attempt rather than returning a
+                    # previously rejected turn.
+                    idempotency_key=f"inbox:{item['id']}:{item['version']}",
+                    reasoning_effort=item.get("reasoning_effort"),
+                    inbox_item_id=item["id"],
+                )
+                return
+            except ConversationServiceError as exc:
+                if exc.code == "conversation_busy":
+                    return
+                if exc.code == "inbox_item_not_queued":
+                    continue
+                logger.warning(
+                    "queue item %s blocked during auto-start: %s",
+                    item["id"],
+                    exc.code,
+                )
+                self._repository.block_inbox_item(conversation_id, item["id"], exc.code)
+                return
 
     def _set_state(
         self, conversation_id: str, state: str, expected_version: int
@@ -830,6 +1099,8 @@ class ConversationService:
         workspace: Path,
         task: str,
         run_id: str,
+        conversation_id: str,
+        turn_id: str,
         cancel_event: threading.Event,
         sink,
         journal: CanonicalJournal,
@@ -838,12 +1109,16 @@ class ConversationService:
         request_options: Optional[ModelRequestOptions] = None,
     ) -> AgentLoop:
         options = request_options or ModelRequestOptions()
+        inbox_port = InboxPort(self._repository, conversation_id, turn_id)
         if self._loop_builder is not None:
             return self._loop_builder(
                 connection=connection,
                 workspace=workspace,
                 task=task,
                 run_id=run_id,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                inbox_port=inbox_port,
                 cancel_event=cancel_event,
                 sink=sink,
                 journal=journal,
@@ -868,6 +1143,9 @@ class ConversationService:
             context_manager=ContextManager(DEFAULT_CHAR_BUDGET),
             completion_policy=CompletionPolicy(),
             run_id=run_id,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            inbox_port=inbox_port,
             max_steps=DEFAULT_MAX_STEPS,
             is_cancelled=cancel_event.is_set,
             event_sink=sink,

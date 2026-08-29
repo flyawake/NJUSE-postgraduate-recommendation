@@ -17,7 +17,13 @@ from coding_agent.context import ContextManager
 from coding_agent.conversations.service import _PersistEventSink
 from coding_agent.errors import ModelRequestError
 from coding_agent.model_client import OpenAIModelClient
-from coding_agent.models import AgentEvent, AssistantMessage, LoopPhase, RunStatus
+from coding_agent.models import (
+    AgentEvent,
+    AssistantMessage,
+    LoopPhase,
+    RunStatus,
+    UserMessage,
+)
 from coding_agent.streaming import (
     ReasoningDelta,
     ReasoningSummaryDelta,
@@ -276,6 +282,28 @@ class TestReasoningRoundTrip:
         rendered = to_provider_message(message)
         assert rendered["reasoning_content"] == "visible thought"
         assert rendered["tool_calls"][0]["id"] == "c1"
+
+    def test_deepseek_payload_enables_thinking_and_maps_effort(self):
+        from coding_agent.model_client import OpenAIModelClient
+        from coding_agent.streaming import ModelRequestOptions
+
+        client = OpenAIModelClient(
+            api_key="k",
+            model="deepseek-v4-pro",
+            base_url="https://api.deepseek.com",
+            provider_id="deepseek",
+            client=SimpleNamespace(),
+        )
+        payload = client._chat_payload(
+            [{"role": "user", "content": "x"}],
+            [],
+            stream=True,
+            options=ModelRequestOptions(
+                reasoning_mode="visible", reasoning_effort="medium"
+            ),
+        )
+        assert payload["reasoning_effort"] == "high"
+        assert payload["extra_body"] == {"thinking": {"type": "enabled"}}
 
     def test_chat_payload_strips_reasoning_when_off(self):
         from coding_agent.model_client import OpenAIModelClient
@@ -753,6 +781,61 @@ class TestReasoningOff:
         # for internal continuation, but it is never published as a public
         # delta or used as ordinary user text.
         assert assistant_messages[0].reasoning is not None
+
+
+class FakeInboxPort:
+    def __init__(self) -> None:
+        self.claimed: list[str] = []
+        self.delivered: list[str] = []
+        self._gave = False
+
+    def poll_steer(self, boundary_id: int):
+        if self._gave:
+            return None
+        self._gave = True
+        return {"id": "steer-1", "content": "继续修复"}
+
+    def claim_steer(self, item_id: str) -> bool:
+        self.claimed.append(item_id)
+        return True
+
+    def deliver_steer(self, item_id: str) -> None:
+        self.delivered.append(item_id)
+
+
+class TestAgentLoopSteer:
+    def test_steer_is_appended_with_source_marker(self, tmp_path):
+        model = FakeStreamingModel()
+        port = FakeInboxPort()
+        tracker = FileObservationTracker()
+        registry = build_default_tools(Workspace(tmp_path), tracker)
+        executor = ToolExecutor(registry, WorkspaceToolPolicy())
+        sink = _RecordingSink()
+        loop = AgentLoop(
+            model_client=model,
+            tool_registry=registry,
+            tool_executor=executor,
+            context_manager=ContextManager(120_000),
+            completion_policy=CompletionPolicy(),
+            event_sink=sink,
+            run_id="r",
+            conversation_id="conv",
+            turn_id="turn",
+            inbox_port=port,
+            is_cancelled=lambda: False,
+        )
+        result = loop.run("修复测试")
+        assert result.status is RunStatus.SUCCESS
+        assert port.claimed == ["steer-1"]
+        assert port.delivered == ["steer-1"]
+        steer_messages = [
+            m
+            for m in loop.history
+            if isinstance(m, UserMessage) and m.source == "steer"
+        ]
+        assert len(steer_messages) == 1
+        assert steer_messages[0].content == "继续修复"
+        assert "steer_delivered" in sink.types()
 
 
 class TestAgentLoopStreaming:

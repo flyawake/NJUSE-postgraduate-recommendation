@@ -92,6 +92,16 @@ export async function subscribeToRunEvents(
   );
 }
 
+export async function subscribeToInbox(
+  conversationId: string,
+  options: SubscribeOptions
+): Promise<void> {
+  await consumeSse(
+    `/api/conversations/${encodeURIComponent(conversationId)}/inbox/sse`,
+    options
+  );
+}
+
 export async function subscribeToConversationEvents(
   conversationId: string,
   turnId: string,

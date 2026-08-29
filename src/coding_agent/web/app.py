@@ -58,6 +58,11 @@ from .schemas import (
     ErrorResponse,
     FileChangeDTO,
     HealthDTO,
+    InboxEditRequest,
+    InboxEnqueueRequest,
+    InboxOrderRequest,
+    InboxSnapshotDTO,
+    InboxVersionRequest,
     PreviewDTO,
     ProfileDTO,
     ProfileInput,
@@ -510,6 +515,7 @@ def create_app(
                     conversation_id,
                     user_text=body.content,
                     idempotency_key=body.idempotency_key,
+                    reasoning_effort=body.reasoning_effort,
                 )
             )
 
@@ -590,6 +596,122 @@ def create_app(
             return StreamSnapshotDTO(
                 checkpoints=conversation_service.get_stream_snapshot(
                     conversation_id, turn_id
+                )
+            )
+
+        @app.get(
+            "/api/conversations/{conversation_id}/inbox/sse",
+            include_in_schema=False,
+        )
+        async def inbox_sse(conversation_id: str):
+            return StreamingResponse(
+                _inbox_event_stream(conversation_service, conversation_id),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
+        @app.get(
+            "/api/conversations/{conversation_id}/inbox",
+            response_model=InboxSnapshotDTO,
+        )
+        async def get_inbox(conversation_id: str) -> InboxSnapshotDTO:
+            return InboxSnapshotDTO(**conversation_service.get_inbox(conversation_id))
+
+        @app.post(
+            "/api/conversations/{conversation_id}/inbox",
+            response_model=InboxSnapshotDTO,
+        )
+        async def enqueue_inbox(
+            conversation_id: str, body: InboxEnqueueRequest
+        ) -> InboxSnapshotDTO:
+            return InboxSnapshotDTO(
+                **conversation_service.enqueue_inbox(
+                    conversation_id,
+                    content=body.content,
+                    mode=body.mode,
+                    idempotency_key=body.idempotency_key,
+                    reasoning_effort=body.reasoning_effort,
+                )
+            )
+
+        @app.patch(
+            "/api/conversations/{conversation_id}/inbox/{item_id}",
+            response_model=InboxSnapshotDTO,
+        )
+        async def edit_inbox(
+            conversation_id: str, item_id: str, body: InboxEditRequest
+        ) -> InboxSnapshotDTO:
+            return InboxSnapshotDTO(
+                **conversation_service.edit_inbox(
+                    conversation_id,
+                    item_id,
+                    content=body.content,
+                    mode=body.mode,
+                    expected_version=body.expected_version,
+                )
+            )
+
+        @app.delete(
+            "/api/conversations/{conversation_id}/inbox/{item_id}",
+            response_model=InboxSnapshotDTO,
+        )
+        async def remove_inbox(
+            conversation_id: str, item_id: str, body: InboxVersionRequest
+        ) -> InboxSnapshotDTO:
+            return InboxSnapshotDTO(
+                **conversation_service.remove_inbox(
+                    conversation_id,
+                    item_id,
+                    expected_version=body.expected_version,
+                )
+            )
+
+        @app.put(
+            "/api/conversations/{conversation_id}/inbox/order",
+            response_model=InboxSnapshotDTO,
+        )
+        async def reorder_inbox(
+            conversation_id: str, body: InboxOrderRequest
+        ) -> InboxSnapshotDTO:
+            return InboxSnapshotDTO(
+                **conversation_service.reorder_inbox(
+                    conversation_id,
+                    ordered_ids=body.ordered_ids,
+                    expected_queue_version=body.expected_queue_version,
+                )
+            )
+
+        @app.post(
+            "/api/conversations/{conversation_id}/inbox/{item_id}/steer",
+            response_model=InboxSnapshotDTO,
+        )
+        async def steer_inbox(
+            conversation_id: str, item_id: str, body: InboxVersionRequest
+        ) -> InboxSnapshotDTO:
+            return InboxSnapshotDTO(
+                **conversation_service.steer_inbox(
+                    conversation_id,
+                    item_id,
+                    expected_version=body.expected_version,
+                )
+            )
+
+        @app.post(
+            "/api/conversations/{conversation_id}/inbox/{item_id}/retry",
+            response_model=InboxSnapshotDTO,
+        )
+        async def retry_inbox(
+            conversation_id: str, item_id: str, body: InboxVersionRequest
+        ) -> InboxSnapshotDTO:
+            return InboxSnapshotDTO(
+                **conversation_service.retry_inbox(
+                    conversation_id,
+                    item_id,
+                    expected_version=body.expected_version,
                 )
             )
 
@@ -834,6 +956,24 @@ async def _conversation_event_stream(
             idle_ticks = 0
             yield ": ping\n\n"
         await asyncio.sleep(0.2)
+
+
+async def _inbox_event_stream(
+    conversation_service: ConversationService,
+    conversation_id: str,
+) -> AsyncIterator[str]:
+    last_version: Optional[int] = None
+    while True:
+        snapshot = conversation_service.get_inbox(conversation_id)
+        version = int(snapshot.get("queue_version", 1))
+        if last_version is None or version != last_version:
+            yield _sse(
+                "inbox_snapshot" if last_version is None else "inbox_changed",
+                snapshot,
+                event_id=str(version),
+            )
+            last_version = version
+        await asyncio.sleep(0.5)
 
 
 async def _event_stream(

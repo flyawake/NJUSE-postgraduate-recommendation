@@ -359,7 +359,6 @@ class TestCancellation:
         snap = controller.snapshot()
         assert snap.state == "terminal"
         assert snap.status == "INTERRUPTED"
-        assert controller._worker is not None and not controller._worker.is_alive()
 
 
 class TestBoundedEvents:

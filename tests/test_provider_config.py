@@ -107,6 +107,23 @@ class TestProfileValidation:
         with pytest.raises(ProfileError, match="wire_api"):
             make_profile(wire_api="anthropic_messages")
 
+    def test_deepseek_chat_allows_reasoning_effort(self):
+        profile = make_profile(
+            provider_id="deepseek",
+            wire_api="openai_chat_completions",
+            reasoning_mode="visible",
+            reasoning_effort="high",
+        )
+        assert profile.reasoning_effort == "high"
+
+    def test_deepseek_chat_accepts_max_effort(self):
+        profile = make_profile(
+            provider_id="deepseek",
+            wire_api="openai_chat_completions",
+            reasoning_effort="max",
+        )
+        assert profile.reasoning_effort == "max"
+
     def test_rejects_empty_model(self):
         with pytest.raises(ProfileError, match="model"):
             make_profile(model="  ")
@@ -125,7 +142,7 @@ class TestProfileValidation:
         with pytest.raises(ProfileError, match="Responses"):
             make_profile(wire_api="openai_responses")
         with pytest.raises(ProfileError, match="reasoning_effort"):
-            make_profile(reasoning_effort="high")
+            make_profile(provider_id="custom", reasoning_effort="high")
         with pytest.raises(ProfileError, match="reasoning_effort"):
             make_profile(reasoning_mode="off", reasoning_effort="low")
         with pytest.raises(ProfileError, match="不提供可展示"):

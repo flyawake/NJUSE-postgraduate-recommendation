@@ -40,7 +40,7 @@ describe("ProfileForm credential readiness", () => {
     await user.type(screen.getByLabelText("名称"), "主模型");
     await user.click(screen.getByRole("button", { name: "保存 profile" }));
 
-    expect(screen.getByText("请填写凭据引用；没有引用的 profile 无法解析凭据。")).toBeInTheDocument();
+    expect(screen.getByText("请填写 API Key 引用；没有引用的 profile 无法解析 API Key。")).toBeInTheDocument();
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -63,7 +63,7 @@ describe("ProfileForm credential readiness", () => {
 
     await user.click(screen.getByRole("radio", { name: /OpenAI/ }));
     await user.type(screen.getByLabelText("名称"), "主模型");
-    await user.type(screen.getByLabelText("凭据引用"), "openai");
+    await user.type(screen.getByLabelText("API Key 引用"), "openai");
     await user.click(screen.getByRole("button", { name: "保存 profile" }));
 
     await waitFor(() => expect(create).toHaveBeenCalledOnce());
@@ -108,7 +108,7 @@ describe("ProfileForm credential readiness", () => {
       </QueryClientProvider>
     );
 
-    await user.type(screen.getByLabelText("凭据引用"), "openai-main");
+    await user.type(screen.getByLabelText("API Key 引用"), "openai-main");
     await user.click(screen.getByRole("button", { name: "保存修改" }));
 
     await waitFor(() => expect(update).toHaveBeenCalledOnce());

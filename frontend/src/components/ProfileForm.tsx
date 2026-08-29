@@ -23,7 +23,6 @@ export interface ProfileFormProps {
     credential_ref: string | null;
     wire_api?: string;
     reasoning_mode?: string;
-    reasoning_effort?: string | null;
     show_reasoning?: boolean;
   };
   onSaved: (profileId: string) => void;
@@ -52,7 +51,6 @@ export function ProfileForm({ mode, presets, editing, onSaved, onCancel }: Profi
   const [credentialRef, setCredentialRef] = useState(editing?.credential_ref ?? "");
   const [wireApi, setWireApi] = useState(editing?.wire_api ?? "openai_chat_completions");
   const [reasoningMode, setReasoningMode] = useState(editing?.reasoning_mode ?? "auto");
-  const [reasoningEffort, setReasoningEffort] = useState(editing?.reasoning_effort ?? "");
   const [showReasoning, setShowReasoning] = useState(editing?.show_reasoning ?? false);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -60,8 +58,6 @@ export function ProfileForm({ mode, presets, editing, onSaved, onCancel }: Profi
   const effectiveProvider = mode === "create"
     ? providerId
     : (editing?.provider_id ?? providerId);
-  const supportsReasoningEffort = wireApi === "openai_responses"
-    || (wireApi === "openai_chat_completions" && effectiveProvider === "openai");
   const supportsVisibleReasoning = wireApi === "openai_responses"
     || effectiveProvider !== "openai";
 
@@ -73,10 +69,9 @@ export function ProfileForm({ mode, presets, editing, onSaved, onCancel }: Profi
       credentialRef !== (editing?.credential_ref ?? "") ||
       wireApi !== (editing?.wire_api ?? "openai_chat_completions") ||
       reasoningMode !== (editing?.reasoning_mode ?? "auto") ||
-      reasoningEffort !== (editing?.reasoning_effort ?? "") ||
       showReasoning !== (editing?.show_reasoning ?? false) ||
       (mode === "create" && providerId !== ""),
-    [mode, displayName, baseUrl, model, credentialRef, wireApi, reasoningMode, reasoningEffort, showReasoning, providerId, editing]
+    [mode, displayName, baseUrl, model, credentialRef, wireApi, reasoningMode, showReasoning, providerId, editing]
   );
 
   const saveMutation = useMutation({
@@ -89,7 +84,6 @@ export function ProfileForm({ mode, presets, editing, onSaved, onCancel }: Profi
         credential_ref: credentialRef.trim() ? credentialRef.trim() : null,
         wire_api: wireApi,
         reasoning_mode: reasoningMode,
-        reasoning_effort: reasoningEffort || null,
         show_reasoning: showReasoning,
       };
       return mode === "create"
@@ -156,7 +150,6 @@ export function ProfileForm({ mode, presets, editing, onSaved, onCancel }: Profi
                       if (preset.provider_id === "deepseek" && wireApi === "openai_responses") {
                         setWireApi("openai_chat_completions");
                       }
-                      if (preset.provider_id !== "openai") setReasoningEffort("");
                       if (!baseUrl.trim() && preset.default_base_url) setBaseUrl(preset.default_base_url);
                       if (!model.trim() && preset.default_model) setModel(preset.default_model);
                     }}
@@ -231,7 +224,6 @@ export function ProfileForm({ mode, presets, editing, onSaved, onCancel }: Profi
             const next = event.target.value;
             setWireApi(next);
             if (next === "openai_chat_completions") {
-              if (effectiveProvider !== "openai") setReasoningEffort("");
               if (effectiveProvider === "openai" && reasoningMode === "visible") {
                 setReasoningMode("auto");
               }
@@ -246,45 +238,22 @@ export function ProfileForm({ mode, presets, editing, onSaved, onCancel }: Profi
         <p className="mt-1 text-xs text-faint">{t("form.wireApiHint")}</p>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div>
-          <label htmlFor="form-reasoning-mode" className="mb-1 block text-sm font-medium">
-            {t("form.reasoningMode")}
-          </label>
-          <select
-            id="form-reasoning-mode"
-            className="input"
-            value={reasoningMode}
-            onChange={(event) => {
-              const next = event.target.value;
-              setReasoningMode(next);
-              if (next === "off") setReasoningEffort("");
-            }}
-          >
-            <option value="auto">{t("form.reasoningMode.auto")}</option>
-            <option value="off">{t("form.reasoningMode.off")}</option>
-            <option value="visible" disabled={!supportsVisibleReasoning}>
-              {t("form.reasoningMode.visible")}
-            </option>
-          </select>
-        </div>
-        <div>
-          <label htmlFor="form-reasoning-effort" className="mb-1 block text-sm font-medium">
-            {t("form.reasoningEffort")}
-          </label>
-          <select
-            id="form-reasoning-effort"
-            className="input"
-            value={reasoningEffort}
-            onChange={(event) => setReasoningEffort(event.target.value)}
-            disabled={!supportsReasoningEffort}
-          >
-            <option value="">{t("form.reasoningEffort.none")}</option>
-            <option value="low">{t("form.reasoningEffort.low")}</option>
-            <option value="medium">{t("form.reasoningEffort.medium")}</option>
-            <option value="high">{t("form.reasoningEffort.high")}</option>
-          </select>
-        </div>
+      <div>
+        <label htmlFor="form-reasoning-mode" className="mb-1 block text-sm font-medium">
+          {t("form.reasoningMode")}
+        </label>
+        <select
+          id="form-reasoning-mode"
+          className="input"
+          value={reasoningMode}
+          onChange={(event) => setReasoningMode(event.target.value)}
+        >
+          <option value="auto">{t("form.reasoningMode.auto")}</option>
+          <option value="off">{t("form.reasoningMode.off")}</option>
+          <option value="visible" disabled={!supportsVisibleReasoning}>
+            {t("form.reasoningMode.visible")}
+          </option>
+        </select>
       </div>
       <label className="flex items-center gap-2 text-sm text-muted">
         <input

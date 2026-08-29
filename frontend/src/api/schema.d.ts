@@ -75,6 +75,93 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/conversations/{conversation_id}/inbox": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Inbox */
+        get: operations["get_inbox_api_conversations__conversation_id__inbox_get"];
+        put?: never;
+        /** Enqueue Inbox */
+        post: operations["enqueue_inbox_api_conversations__conversation_id__inbox_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/conversations/{conversation_id}/inbox/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Reorder Inbox */
+        put: operations["reorder_inbox_api_conversations__conversation_id__inbox_order_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/conversations/{conversation_id}/inbox/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove Inbox */
+        delete: operations["remove_inbox_api_conversations__conversation_id__inbox__item_id__delete"];
+        options?: never;
+        head?: never;
+        /** Edit Inbox */
+        patch: operations["edit_inbox_api_conversations__conversation_id__inbox__item_id__patch"];
+        trace?: never;
+    };
+    "/api/conversations/{conversation_id}/inbox/{item_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Inbox */
+        post: operations["retry_inbox_api_conversations__conversation_id__inbox__item_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/conversations/{conversation_id}/inbox/{item_id}/steer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Steer Inbox */
+        post: operations["steer_inbox_api_conversations__conversation_id__inbox__item_id__steer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/conversations/{conversation_id}/turns": {
         parameters: {
             query?: never;
@@ -621,6 +708,87 @@ export interface components {
             /** Version */
             version: string;
         };
+        /** InboxEditRequest */
+        InboxEditRequest: {
+            /** Content */
+            content?: string | null;
+            /** Expected Version */
+            expected_version: number;
+            /** Mode */
+            mode?: string | null;
+        };
+        /** InboxEnqueueRequest */
+        InboxEnqueueRequest: {
+            /** Content */
+            content: string;
+            /** Idempotency Key */
+            idempotency_key?: string | null;
+            /**
+             * Mode
+             * @default queue
+             */
+            mode: string;
+            /** Reasoning Effort */
+            reasoning_effort?: string | null;
+        };
+        /** InboxItemDTO */
+        InboxItemDTO: {
+            /** Bound Turn Id */
+            bound_turn_id?: string | null;
+            /** Claimed At */
+            claimed_at?: string | null;
+            /** Claimed Turn Id */
+            claimed_turn_id?: string | null;
+            /** Content */
+            content: string;
+            /** Conversation Id */
+            conversation_id: string;
+            /** Created At */
+            created_at: string;
+            /** Delivered At */
+            delivered_at?: string | null;
+            /** Id */
+            id: string;
+            /** Idempotency Key */
+            idempotency_key?: string | null;
+            /** Last Error Code */
+            last_error_code?: string | null;
+            /** Position */
+            position: number;
+            /** Reasoning Effort */
+            reasoning_effort?: string | null;
+            /** Requested Mode */
+            requested_mode: string;
+            /** State */
+            state: string;
+            /** Updated At */
+            updated_at: string;
+            /** Version */
+            version: number;
+        };
+        /** InboxOrderRequest */
+        InboxOrderRequest: {
+            /** Expected Queue Version */
+            expected_queue_version: number;
+            /** Ordered Ids */
+            ordered_ids: string[];
+        };
+        /** InboxSnapshotDTO */
+        InboxSnapshotDTO: {
+            /** Items */
+            items?: components["schemas"]["InboxItemDTO"][];
+            /** Queue Version */
+            queue_version: number;
+            /** Recent Events */
+            recent_events?: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** InboxVersionRequest */
+        InboxVersionRequest: {
+            /** Expected Version */
+            expected_version: number;
+        };
         /** PreviewDTO */
         PreviewDTO: {
             /**
@@ -846,6 +1014,8 @@ export interface components {
             content: string;
             /** Idempotency Key */
             idempotency_key?: string | null;
+            /** Reasoning Effort */
+            reasoning_effort?: string | null;
         };
         /** TurnDTO */
         TurnDTO: {
@@ -1157,6 +1327,251 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_inbox_api_conversations__conversation_id__inbox_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxSnapshotDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enqueue_inbox_api_conversations__conversation_id__inbox_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InboxEnqueueRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxSnapshotDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reorder_inbox_api_conversations__conversation_id__inbox_order_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InboxOrderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxSnapshotDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_inbox_api_conversations__conversation_id__inbox__item_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InboxVersionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxSnapshotDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_inbox_api_conversations__conversation_id__inbox__item_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InboxEditRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxSnapshotDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_inbox_api_conversations__conversation_id__inbox__item_id__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InboxVersionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxSnapshotDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    steer_inbox_api_conversations__conversation_id__inbox__item_id__steer_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InboxVersionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxSnapshotDTO"];
                 };
             };
             /** @description Validation Error */

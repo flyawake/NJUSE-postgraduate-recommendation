@@ -62,9 +62,11 @@ Python 代码必须通过 Ruff format、Ruff lint 和 pytest。task_002 前端�
 
 可运行、可测试的端到端 Coding Agent 内核与本地图形应用首版均已通过验收。2026-08-28 已完成下一阶段详细工程规划，详见 `guide/PRODUCT_EVOLUTION_PLAN.md`。task_003 产品化界面与性能边界已通过最终源码复验：用户化文案/布局、连续平面活动流、Composer Start/Stop、workspace validation 隔离与竞态恢复、O(batch) 有界事件投影、安全结构化 action target 和生产测试边界均已闭环；最终证据为 Python 248 passed/4 skipped、Vitest 44、Playwright 7、audit 0。
 
-task_004 持久多轮会话已于 2026-08-28 通过 Master 源码验收并归档：标准库 SQLite schema v3 保存 Conversation/Turn/canonical/public event/ChangeSet/Artifact 引用，支持事务幂等、投影校验、同会话/同 workspace 并发守卫和 crash→interrupted 无重放恢复；生产 `/api/runs` 通过 ConversationService compatibility adapter，不再建立第二个生产事实源。产品壳已变为左侧会话管理、中间多轮 transcript、默认关闭且按需打开的右侧历史文件审查；rename、归档/恢复、永久删除、独立 draft/scroll、后台运行徽标、逐 turn 净 ChangeSet、immutable before/after CAS、current divergence 和窄屏 drawer 均落地。最终证据为 Python 全仓 272 passed/4 skipped 加 3 项新增定向反例、Vitest 46、Playwright 完整 5 场景、npm audit 0 与 wheel 成功。Queue/Steer 与跨会话记忆仍分别属于 task_006/task_007，不得在前端临时状态中伪实现。
+task_004 持久多轮会话已于 2026-08-28 通过 Master 源码验收并归档：标准库 SQLite schema v3 保存 Conversation/Turn/canonical/public event/ChangeSet/Artifact 引用，支持事务幂等、投影校验、同会话/同 workspace 并发守卫和 crash→interrupted 无重放恢复；生产 `/api/runs` 通过 ConversationService compatibility adapter，不再建立第二个生产事实源。产品壳已变为左侧会话管理、中间多轮 transcript、默认关闭且按需打开的右侧历史文件审查；rename、归档/恢复、永久删除、独立 draft/scroll、后台运行徽标、逐 turn 净 ChangeSet、immutable before/after CAS、current divergence 和窄屏 drawer 均落地。最终证据为 Python 全仓 272 passed/4 skipped 加 3 项新增定向反例、Vitest 46、Playwright 完整 5 场景、npm audit 0 与 wheel 成功。跨会话记忆仍属于 task_007，不得在前端临时状态中伪实现。
 
-task_005 流式模型与可展示 reasoning 已于 2026-08-28 通过 Master 源码验收并归档：provider-neutral `ModelStreamEvent`、严格 `TurnStreamAccumulator`、Chat Completions/Responses 双 adapter、可见 reasoning/summary、Responses opaque continuation、全局 provider attempt、SQLite v5 增量 checkpoint、snapshot/SSE 幂等恢复和折叠 Think transcript 均已闭环。前端保持 Think→tool→下一 Think→final 的真实时间顺序，取消、partial retry、断线重连三次及 2,000 delta 性能边界均有反例。最终证据为 Python 304 passed/4 skipped、Vitest 53、Playwright 9、Ruff/typecheck/lint/build/wheel 通过；真实模型 smoke 因无合法凭据按规则 N/A。下一实施任务为 task_006；跨会话记忆仍属于 task_007。
+task_005 流式模型与可展示 reasoning 已于 2026-08-28 通过 Master 源码验收并归档：provider-neutral `ModelStreamEvent`、严格 `TurnStreamAccumulator`、Chat Completions/Responses 双 adapter、可见 reasoning/summary、Responses opaque continuation、全局 provider attempt、SQLite v5 增量 checkpoint、snapshot/SSE 幂等恢复和折叠 Think transcript 均已闭环。前端保持 Think→tool→下一 Think→final 的真实时间顺序，取消、partial retry、断线重连三次及 2,000 delta 性能边界均有反例。最终证据为 Python 304 passed/4 skipped、Vitest 53、Playwright 9、Ruff/typecheck/lint/build/wheel 通过；真实模型 smoke 因无合法凭据按规则 N/A。
+
+task_006 运行中输入已于 2026-08-29 通过 Master 源码验收并归档：SQLite v8 Inbox 以数据库状态迁移约束和单事务 claim/Turn/canonical/audit 创建保障 Host 权威与严格 FIFO；无 Turn 的 claimed Steer 会在重启时降级回 Queue，worker 启动失败会 blocked 并可 Retry，完成回调有每会话单消费者守卫。AgentLoop 仅在 READY-before-request 和 final-before-terminal 两个边界注入一条 Steer，并保留 canonical source/audit 区分。前端 busy Composer 的 Queue/Steer/Stop、Host snapshot 冲突收敛、draft ack、Inbox SSE/polling、zh-CN/en-US 和 100 条有界 QueueDock 已闭环。最终证据为 Python 325 passed/4 skipped、Vitest 54、Playwright 10、Ruff/typecheck/lint/API schema/build/wheel 通过；真实模型 smoke 仍因无合法凭据按规则 N/A。task_007 跨会话记忆保持未开始。
 
 ## 演进路线
 
@@ -73,7 +75,7 @@ task_005 流式模型与可展示 reasoning 已于 2026-08-28 通过 Master 源�
 3. **P0 产品化界面与性能边界（task_003，已归档）**：已完成普通界面产品化、连续 transcript 与平面可展开工具活动、Composer Start/Stop、workspace validation 隔离与同键竞态恢复、O(batch) 有界投影、安全结构化 action target 和响应式视觉证据。
 4. **P0 持久多轮会话（task_004，已归档）**：已建立 Conversation/Turn/Run 与 SQLite append-only 事实源，完成独立上下文、切换、命名、归档/恢复、删除、后台运行、crash recovery、逐轮 ChangeSet 与历史文件审查。
 5. **P0 流式模型与可展示 reasoning（task_005，已归档）**：已实现统一 provider stream event、严格聚合器、DeepSeek/custom Chat `reasoning_content` 与 OpenAI Responses reasoning summary/opaque continuation 适配、增量 checkpoint/SSE 恢复及折叠 Think；只展示 provider 明确返回的可见内容，不暴露或伪造隐藏 chain-of-thought。
-6. **P1 运行中输入（task_006，未开始）**：实现 Host 权威、持久、严格 FIFO 的 Queue，以及只在下一安全 step 边界进入、失败回 Queue 的 Steer；完善 busy Composer 与队列管理。
+6. **P1 运行中输入（task_006，已归档）**：已实现 Host 权威、持久、严格 FIFO 的 Queue，以及只在两个 AgentLoop 安全边界进入、失败回 Queue 的 Steer；busy Composer、Host snapshot 和有界 QueueDock 已通过验收。
 7. **P1 可控记忆（task_007，未开始）**：以 MemoryService、SQLite FTS5、作用域、来源、候选审批、冲突和删除实现跨会话知识共享；默认不自动永久保存全部聊天。
 8. **P0 发布与评测（task_008，未开始）**：全量集成、固定任务集、性能/安全/恢复/a11y、真实模型 GUI smoke、clean install 和最终 README.txt/视频门禁。
 9. **后续仓库理解与隔离执行**：在 task_008 基线数据上评估 repository map、符号上下文、补丁编辑、read-only/approval/沙箱运行时；只有固定评测证明收益时才进入新任务。

@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleStop, Send } from "lucide-react";
+import { CircleStop, ListPlus, Send, Zap } from "lucide-react";
 import { api } from "@/api/client";
 import type { ChangeSet, FileChange, ToolEvent, Turn } from "@/api/client";
 import { useI18n } from "@/lib/i18n";
+import { useGestureSwap } from "@/lib/gesturePreference";
 import { ActivityFeed } from "./ActivityFeed";
 import { InlineError } from "./InlineError";
+import { QueueDock } from "./QueueDock";
 import { TurnChangeSummary } from "./TurnChangeSummary";
-import { subscribeToConversationEvents } from "@/lib/sse";
+import { subscribeToConversationEvents, subscribeToInbox } from "@/lib/sse";
 
 export interface ConversationViewProps {
   conversationId: string;
@@ -44,11 +46,14 @@ export function mergeEventTail(
 export function ConversationView({ conversationId, onOpenArtifact }: ConversationViewProps) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
+  const [gestureSwap] = useGestureSwap();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const followingRef = useRef(true);
   const [task, setTask] = useState(() => {
     try { return sessionStorage.getItem(draftKey(conversationId)) ?? ""; } catch { return ""; }
   });
+  const [reasoningEffort, setReasoningEffort] = useState("");
+  const [effortTouched, setEffortTouched] = useState(false);
 
   useEffect(() => {
     try { sessionStorage.setItem(draftKey(conversationId), task); } catch { /* best effort */ }
@@ -82,6 +87,15 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
     queryFn: api.listProfiles,
     staleTime: 5_000,
   });
+  useEffect(() => {
+    setEffortTouched(false);
+    setReasoningEffort("");
+  }, [conversationId]);
+  useEffect(() => {
+    if (effortTouched) return;
+    const profile = profilesQuery.data?.find((item) => item.id === conversationQuery.data?.profile_id);
+    setReasoningEffort(profile?.reasoning_effort ?? "");
+  }, [conversationQuery.data?.profile_id, profilesQuery.data, effortTouched]);
   const turnsQuery = useQuery({
     queryKey: ["turns", conversationId],
     queryFn: () => api.listTurns(conversationId, { limit: 100 }),
@@ -103,8 +117,71 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
   });
   const activeTurn = turns.find((turn) => turn.active) ?? null;
 
+  const inboxQuery = useQuery({
+    queryKey: ["inbox", conversationId],
+    queryFn: () => api.getInbox(conversationId),
+    refetchInterval: activeTurn ? 700 : false,
+  });
+
+  useEffect(() => {
+    let disposed = false;
+    const controller = new AbortController();
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    const connect = () => {
+      if (disposed) return;
+      subscribeToInbox(conversationId, {
+        signal: controller.signal,
+        onEvent: (message) => {
+          if (
+            message.event === "inbox_snapshot" ||
+            message.event === "inbox_changed"
+          ) {
+            queryClient.invalidateQueries({ queryKey: ["inbox", conversationId] });
+          }
+        },
+        onError: () => {
+          if (disposed) return;
+          reconnectTimer = setTimeout(connect, 1_500);
+        },
+      }).catch(() => {
+        if (disposed) return;
+        reconnectTimer = setTimeout(connect, 1_500);
+      });
+    };
+    connect();
+    return () => {
+      disposed = true;
+      controller.abort();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+    };
+  }, [conversationId, queryClient]);
+
+  const enqueueMutation = useMutation({
+    mutationFn: ({
+      content,
+      mode,
+      key,
+    }: {
+      content: string;
+      mode: "queue" | "steer";
+      key: string;
+    }) =>
+      api.enqueueInbox(conversationId, {
+        content,
+        mode,
+        idempotency_key: key,
+        reasoning_effort: reasoningEffort || null,
+      }),
+    onSuccess: async () => {
+      setTask("");
+    },
+    // A version conflict has no optimistic local source of truth.  Refetch
+    // on both success and failure so the Host snapshot always wins.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["inbox", conversationId] }),
+  });
+
   const startMutation = useMutation({
-    mutationFn: ({ content, key }: { content: string; key: string }) => api.startTurn(conversationId, { content, idempotency_key: key }),
+    mutationFn: ({ content, key }: { content: string; key: string }) => api.startTurn(conversationId, { content, idempotency_key: key, reasoning_effort: reasoningEffort || null }),
     onSuccess: async () => {
       setTask("");
       followingRef.current = true;
@@ -121,19 +198,35 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["turns", conversationId] }),
   });
 
-  const submitTask = () => {
+  const submitTask = (mode: "start" | "queue" | "steer") => {
     const content = task.trim();
-    if (!content || startMutation.isPending || activeTurn || conversationQuery.data?.state !== "active") return;
+    if (!content || conversationQuery.data?.state !== "active") return;
+    if (activeTurn) {
+      if (mode === "start" || mode === "queue") {
+        if (enqueueMutation.isPending) return;
+        enqueueMutation.mutate({ content, mode: "queue", key: newIdempotencyKey() });
+      } else {
+        if (enqueueMutation.isPending) return;
+        enqueueMutation.mutate({ content, mode: "steer", key: newIdempotencyKey() });
+      }
+      return;
+    }
+    if (mode !== "start" || startMutation.isPending) return;
     followingRef.current = true;
     try { sessionStorage.setItem(followKey(conversationId), "1"); } catch { /* best effort */ }
     startMutation.mutate({ content, key: newIdempotencyKey() });
   };
 
   const conversation = conversationQuery.data;
-  const defaultThinkOpen = Boolean(
-    profilesQuery.data?.find((profile) => profile.id === conversation?.profile_id)
-      ?.show_reasoning
-  );
+  const selectedProfile = profilesQuery.data?.find((profile) => profile.id === conversation?.profile_id) ?? null;
+  const defaultThinkOpen = Boolean(selectedProfile?.show_reasoning);
+  const supportsReasoningEffort = Boolean(selectedProfile && (
+    selectedProfile.wire_api === "openai_responses" ||
+    (selectedProfile.wire_api === "openai_chat_completions" && ["openai", "deepseek"].includes(selectedProfile.provider_id))
+  ));
+  const effortOptions = selectedProfile?.provider_id === "deepseek"
+    ? ["", "low", "medium", "high", "max"]
+    : ["", "low", "medium", "high"];
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="border-b border-border px-4 py-3">
@@ -172,14 +265,23 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
       <div className="shrink-0 border-t border-border bg-surface/95 p-3">
         <div className="mx-auto max-w-[54rem]">
           {startMutation.isError ? <InlineError kind="run_failure" message={startMutation.error instanceof Error ? startMutation.error.message : t("error.runFailure")} /> : null}
+          {(inboxQuery.data?.items?.length ?? 0) > 0 ? (
+            <QueueDock conversationId={conversationId} snapshot={inboxQuery.data} />
+          ) : null}
           <div className="rounded-lg border border-border bg-surface p-2 shadow-sm">
             <textarea
               value={task}
               onChange={(event) => setTask(event.target.value)}
               onKeyDown={(event) => {
+                if (event.shiftKey && event.key === "Enter") return;
                 if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
                   event.preventDefault();
-                  submitTask();
+                  submitTask(activeTurn ? (gestureSwap ? "queue" : "steer") : "start");
+                  return;
+                }
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  submitTask(activeTurn ? (gestureSwap ? "steer" : "queue") : "start");
                 }
               }}
               className="min-h-[4rem] w-full resize-y bg-transparent p-2 text-sm outline-none"
@@ -187,14 +289,68 @@ export function ConversationView({ conversationId, onOpenArtifact }: Conversatio
               aria-label={t("composer.label")}
               data-testid="conversation-task-input"
             />
-            <div className="flex justify-end border-t border-border pt-2">
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border pt-2">
+              {supportsReasoningEffort ? (
+                <label htmlFor="conversation-reasoning-effort" className="mr-auto flex items-center gap-1.5 text-xs text-muted">
+                  <span>{t("composer.reasoningEffort")}</span>
+                  <select
+                    id="conversation-reasoning-effort"
+                    className="input h-8 w-auto py-1 text-xs"
+                    value={reasoningEffort}
+                    onChange={(event) => {
+                      setReasoningEffort(event.target.value);
+                      setEffortTouched(true);
+                    }}
+                    data-testid="conversation-reasoning-effort"
+                  >
+                    {effortOptions.map((value) => (
+                      <option key={value || "default"} value={value}>
+                        {value ? t(`composer.reasoningEffort.${value}`) : t("composer.reasoningEffort.default")}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               {activeTurn ? (
-                <button type="button" className="btn-danger" disabled={cancelMutation.isPending} onClick={() => cancelMutation.mutate(activeTurn.id)}>
-                  <CircleStop aria-hidden size={15} />
-                  {cancelMutation.isPending ? t("composer.cancelling") : t("composer.cancel")}
-                </button>
+                <>
+                  {task.trim() ? (
+                    <>
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        disabled={enqueueMutation.isPending}
+                        onClick={() => submitTask("queue")}
+                        data-testid="conversation-queue"
+                      >
+                        <ListPlus aria-hidden size={15} />
+                        {enqueueMutation.isPending ? t("composer.starting") : t("composer.queue")}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        disabled={enqueueMutation.isPending || cancelMutation.isPending}
+                        onClick={() => submitTask("steer")}
+                        data-testid="conversation-steer"
+                      >
+                        <Zap aria-hidden size={15} />
+                        {t("composer.steer")}
+                      </button>
+                    </>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="btn-danger"
+                    disabled={cancelMutation.isPending}
+                    onClick={() => cancelMutation.mutate(activeTurn.id)}
+                    data-testid="conversation-stop"
+                    aria-label={t("composer.cancel")}
+                  >
+                    <CircleStop aria-hidden size={15} />
+                    {cancelMutation.isPending ? t("composer.cancelling") : t("composer.stopCompact")}
+                  </button>
+                </>
               ) : (
-                <button type="button" className="btn-primary" disabled={!task.trim() || startMutation.isPending || conversation?.state !== "active"} onClick={submitTask} data-testid="conversation-start">
+                <button type="button" className="btn-primary" disabled={!task.trim() || startMutation.isPending || conversation?.state !== "active"} onClick={() => submitTask("start")} data-testid="conversation-start">
                   <Send aria-hidden size={15} />
                   {startMutation.isPending ? t("composer.starting") : t("composer.start")}
                 </button>
@@ -314,6 +470,11 @@ function ConversationTurn({
         defaultThinkOpen={defaultThinkOpen}
         embedded
       />
+      {items.some((event) => event.kind === "steer_delivered") ? (
+        <p className="mb-2 px-1 text-xs text-accent" role="status" data-testid="steer-caption">
+          {t("conversation.steerCaption")}
+        </p>
+      ) : null}
       {!turn.active && !turn.result?.final_text && turn.state === "interrupted" ? (
         <p className="mb-2 px-1 text-xs text-warning" role="status">{t("conversation.turnInterrupted")}</p>
       ) : null}

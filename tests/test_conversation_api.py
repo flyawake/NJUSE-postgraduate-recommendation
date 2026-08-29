@@ -137,6 +137,91 @@ class TestConversationApi:
         assert changes.status_code == 200
         assert changes.json()["file_count"] == 0
 
+    def test_start_turn_accepts_reasoning_effort(self, api):
+        client, headers, _service, _model, ws = api
+        conv = client.post(
+            "/api/conversations",
+            json={"workspace": str(ws), "profile_id": None},
+            headers=headers,
+        ).json()
+        started = client.post(
+            f"/api/conversations/{conv['id']}/turns",
+            json={"content": "do it", "reasoning_effort": "high"},
+            headers=headers,
+        )
+        assert started.status_code == 202
+
+    def test_inbox_stores_reasoning_effort(self, api):
+        client, headers, _service, _model, ws = api
+        conv = client.post(
+            "/api/conversations",
+            json={"workspace": str(ws), "profile_id": None},
+            headers=headers,
+        ).json()
+        snapshot = client.post(
+            f"/api/conversations/{conv['id']}/inbox",
+            json={
+                "content": "queued message",
+                "mode": "queue",
+                "reasoning_effort": "medium",
+            },
+            headers=headers,
+        )
+        assert snapshot.status_code == 200
+        assert snapshot.json()["items"][0]["reasoning_effort"] == "medium"
+
+    def test_inbox_endpoints(self, api):
+        client, headers, _service, _model, ws = api
+        conv = client.post(
+            "/api/conversations",
+            json={"workspace": str(ws), "profile_id": None},
+            headers=headers,
+        ).json()
+        snapshot = client.post(
+            f"/api/conversations/{conv['id']}/inbox",
+            json={"content": "queued message", "mode": "queue"},
+            headers=headers,
+        )
+        assert snapshot.status_code == 200
+        item = snapshot.json()["items"][0]
+        assert item["state"] == "queued"
+        edited = client.patch(
+            f"/api/conversations/{conv['id']}/inbox/{item['id']}",
+            json={"content": "edited", "expected_version": item["version"]},
+            headers=headers,
+        )
+        assert edited.status_code == 200
+        assert edited.json()["items"][0]["content"] == "edited"
+        removed = client.request(
+            "DELETE",
+            f"/api/conversations/{conv['id']}/inbox/{item['id']}",
+            json={"expected_version": edited.json()["items"][0]["version"]},
+            headers=headers,
+        )
+        assert removed.status_code == 200
+        assert removed.json()["items"] == []
+
+    def test_steer_without_active_turn_returns_stable_error(self, api):
+        client, headers, _service, _model, ws = api
+        conv = client.post(
+            "/api/conversations",
+            json={"workspace": str(ws), "profile_id": None},
+            headers=headers,
+        ).json()
+        snap = client.post(
+            f"/api/conversations/{conv['id']}/inbox",
+            json={"content": "steer me", "mode": "queue"},
+            headers=headers,
+        ).json()
+        item = snap["items"][0]
+        response = client.post(
+            f"/api/conversations/{conv['id']}/inbox/{item['id']}/steer",
+            json={"expected_version": item["version"]},
+            headers=headers,
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "turn_not_steerable"
+
     def test_stream_snapshot_endpoint(self, api):
         client, headers, _service, _model, ws = api
         conv = client.post(

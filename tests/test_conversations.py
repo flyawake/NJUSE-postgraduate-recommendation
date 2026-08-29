@@ -29,6 +29,7 @@ from coding_agent.models import (
     ToolCall,
     UserMessage,
 )
+from coding_agent.prompt import SYSTEM_PROMPT
 from coding_agent.streaming import StreamCompleted, StreamStarted, TextDelta
 from coding_agent.tools.base import PreparedCall, ToolEffect, ToolOutcome, ToolSpec
 
@@ -131,6 +132,137 @@ def make_service(tmp_path, model, env=None):
 
 
 class TestRepositoryBasics:
+    def test_v5_inbox_migration_is_idempotent_and_adds_state_guard(self, tmp_path):
+        database = tmp_path / "state.db"
+        baseline = SQLiteConversationRepository(database)
+        baseline.initialize()
+        conn = baseline._connect()
+        conn.execute("DROP TRIGGER enforce_inbox_state_transition")
+        conn.execute("DROP TABLE inbox_events")
+        conn.execute("DROP TABLE inbox_items")
+        conn.execute("DROP TABLE inbox_meta")
+        conn.execute("DELETE FROM schema_meta")
+        conn.execute("INSERT INTO schema_meta(version, applied_at) VALUES (5, 'old')")
+        conn.commit()
+        baseline.close()
+
+        migrated = SQLiteConversationRepository(database)
+        migrated.initialize()
+        columns = {
+            str(row["name"])
+            for row in migrated._connect().execute("PRAGMA table_info(inbox_items)")
+        }
+        assert "reasoning_effort" in columns
+        trigger = (
+            migrated._connect()
+            .execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' "
+                "AND name='enforce_inbox_state_transition'"
+            )
+            .fetchone()
+        )
+        assert trigger is not None
+        # A second startup is a no-op, not a destructive re-migration.
+        migrated.initialize()
+
+    def test_inbox_state_transitions_are_enforced_by_sqlite(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        repo = SQLiteConversationRepository(tmp_path / "state.db")
+        repo.initialize()
+        conversation = repo.create_conversation(
+            workspace_path=str(workspace),
+            workspace_key=str(workspace),
+            profile_id=None,
+            title="state trigger",
+        )
+        item = repo.enqueue_inbox_item(
+            conversation.id, content="remove permanently", requested_mode="queue"
+        )
+        repo.remove_inbox_item(conversation.id, item["id"], item["version"])
+        with pytest.raises(
+            sqlite3.IntegrityError, match="invalid_inbox_state_transition"
+        ):
+            repo._connect().execute(
+                "UPDATE inbox_items SET state='queued' WHERE id=?", (item["id"],)
+            )
+
+    def test_atomic_queue_claim_recovers_without_ghost_turn(self, tmp_path):
+        """Crash after the claim transaction has one durable, non-running turn."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        database = tmp_path / "state.db"
+        repo = SQLiteConversationRepository(database)
+        repo.initialize()
+        conversation = repo.create_conversation(
+            workspace_path=str(workspace),
+            workspace_key=str(workspace),
+            profile_id=None,
+            title="queue recovery",
+        )
+        item = repo.enqueue_inbox_item(
+            conversation.id, content="recover queue", requested_mode="queue"
+        )
+        turn, created = repo.create_turn_with_initial_messages(
+            conversation.id,
+            user_text="recover queue",
+            run_id="run-queue-recovery",
+            idempotency_key=f"inbox:{item['id']}:{item['version']}",
+            messages=(
+                SystemMessage(SYSTEM_PROMPT),
+                UserMessage("recover queue", source="user"),
+            ),
+            inbox_item_id=item["id"],
+        )
+        assert created
+        repo.close()
+
+        restarted = SQLiteConversationRepository(database)
+        restarted.initialize()
+        recovered = restarted.recover_active_turns()
+        assert [record.id for record in recovered] == [turn.id]
+        assert restarted.get_active_turn(conversation.id) is None
+        snapshot = restarted.get_inbox_snapshot(conversation.id)
+        assert snapshot["items"][0]["state"] == "delivered"
+        assert snapshot["items"][0]["claimed_turn_id"] == turn.id
+
+    def test_restart_demotes_claimed_steer_to_fifo_queue(self, tmp_path):
+        """A steer claimed before its acknowledgement is never silently lost."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        repo = SQLiteConversationRepository(tmp_path / "state.db")
+        repo.initialize()
+        conversation = repo.create_conversation(
+            workspace_path=str(workspace),
+            workspace_key=str(workspace),
+            profile_id=None,
+            title="steer recovery",
+        )
+        turn, _ = repo.create_turn_with_initial_messages(
+            conversation.id,
+            user_text="initial",
+            run_id="run-steer-recovery",
+            idempotency_key="initial",
+            messages=(
+                SystemMessage(SYSTEM_PROMPT),
+                UserMessage("initial", source="user"),
+            ),
+        )
+        item = repo.enqueue_inbox_item(
+            conversation.id,
+            content="keep this steer",
+            requested_mode="steer",
+            bound_turn_id=turn.id,
+        )
+        assert repo.mark_steer_claimed_for_delivery(
+            conversation.id, turn.id, item["id"]
+        )
+        repo.recover_active_turns()
+        assert repo.recover_claimed_steers() == [item["id"]]
+        snapshot = repo.get_inbox_snapshot(conversation.id)
+        assert snapshot["items"][0]["state"] == "queued"
+        assert snapshot["items"][0]["bound_turn_id"] is None
+
     def test_v4_stream_checkpoint_migration_adds_event_cursor(self, tmp_path):
         path = tmp_path / "v4.db"
         conn = sqlite3.connect(path)
@@ -501,6 +633,279 @@ class TestConversationService:
                 getattr(message, "content", "") == "first task in A"
                 for message in history
             )
+        finally:
+            service.shutdown(timeout=5)
+
+    def test_inbox_snapshot_and_crud(self, tmp_path, workspace_factory):
+        service = make_service(tmp_path, FinalModel())
+        try:
+            ws = workspace_factory()
+            conv = service.create_conversation(workspace_path=str(ws), profile_id=None)
+            snap = service.enqueue_inbox(
+                conv["id"], content="first queued", mode="queue"
+            )
+            assert snap["queue_version"] == 2
+            item = snap["items"][0]
+            assert item["state"] == "queued"
+            snap2 = service.edit_inbox(
+                conv["id"],
+                item["id"],
+                content="edited queued",
+                expected_version=item["version"],
+            )
+            assert snap2["items"][0]["content"] == "edited queued"
+            snap3 = service.remove_inbox(
+                conv["id"],
+                item["id"],
+                expected_version=snap2["items"][0]["version"],
+            )
+            assert snap3["items"] == []
+        finally:
+            service.shutdown(timeout=5)
+
+    def test_queue_fifo_single_consumer(self, tmp_path, workspace_factory):
+        service = make_service(tmp_path, FinalModel())
+        try:
+            ws = workspace_factory()
+            conv = service.create_conversation(workspace_path=str(ws), profile_id=None)
+            first = service.start_turn(conv["id"], user_text="initial")
+            wait_turn(service, conv["id"], first["id"])
+            for text in ("one", "two", "three"):
+                service.enqueue_inbox(conv["id"], content=text, mode="queue")
+            service._after_turn_finished(conv["id"])
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                turns = service.list_turns(conv["id"])["items"]
+                inbox = service.get_inbox(conv["id"])
+                if len(turns) == 4 and all(
+                    item["state"] == "delivered" for item in inbox["items"]
+                ):
+                    break
+                time.sleep(0.05)
+            else:
+                raise AssertionError("queue did not drain one turn at a time")
+            turns = service.list_turns(conv["id"])["items"]
+            texts = [
+                turn["user_text"]
+                for turn in sorted(turns, key=lambda turn: turn["ordinal"])
+            ]
+            assert texts == ["initial", "one", "two", "three"]
+            inbox = service.get_inbox(conv["id"])
+            assert all(item["state"] == "delivered" for item in inbox["items"])
+        finally:
+            service.shutdown(timeout=5)
+
+    def test_concurrent_idempotent_enqueue_creates_one_item(
+        self, tmp_path, workspace_factory
+    ):
+        service = make_service(tmp_path, FinalModel())
+        try:
+            ws = workspace_factory()
+            conv = service.create_conversation(workspace_path=str(ws), profile_id=None)
+            results: list[dict] = []
+
+            def enqueue() -> None:
+                results.append(
+                    service.enqueue_inbox(
+                        conv["id"],
+                        content="same message",
+                        mode="queue",
+                        idempotency_key="same-key",
+                    )
+                )
+
+            threads = [threading.Thread(target=enqueue) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+            items = results[0]["items"]
+            assert len(items) == 1
+        finally:
+            service.shutdown(timeout=5)
+
+    def test_queue_claim_uses_transactional_current_content(
+        self, tmp_path, workspace_factory, monkeypatch
+    ):
+        """An edit between the consumer's read and claim changes the opener.
+
+        The Barrier fixes the interleaving: it is not a timing-dependent
+        sleep.  The turn, canonical message, and delivered inbox row must all
+        contain the version that committed before the claim transaction.
+        """
+        service = make_service(tmp_path, FinalModel())
+        try:
+            ws = workspace_factory()
+            conv = service.create_conversation(workspace_path=str(ws), profile_id=None)
+            item = service.enqueue_inbox(
+                conv["id"], content="before edit", mode="queue"
+            )["items"][0]
+            barrier = threading.Barrier(2)
+            start_turn = service.start_turn
+
+            def paused_start(*args, **kwargs):
+                barrier.wait(timeout=5)
+                return start_turn(*args, **kwargs)
+
+            monkeypatch.setattr(service, "start_turn", paused_start)
+            consumer = threading.Thread(
+                target=service._start_next_from_queue, args=(conv["id"],)
+            )
+            consumer.start()
+            barrier.wait(timeout=5)
+            service.edit_inbox(
+                conv["id"],
+                item["id"],
+                content="after edit",
+                expected_version=item["version"],
+            )
+            consumer.join(timeout=5)
+            assert not consumer.is_alive()
+            turns = service.list_turns(conv["id"])["items"]
+            assert len(turns) == 1
+            assert turns[0]["user_text"] == "after edit"
+            history = service._repository.get_canonical_history(conv["id"])
+            assert any(
+                isinstance(message, UserMessage) and message.content == "after edit"
+                for message in history
+            )
+            inbox = service.get_inbox(conv["id"])["items"]
+            assert inbox[0]["state"] == "delivered"
+            assert inbox[0]["claimed_turn_id"] == turns[0]["id"]
+        finally:
+            service.shutdown(timeout=5)
+
+    def test_removed_queue_item_cannot_create_turn(
+        self, tmp_path, workspace_factory, monkeypatch
+    ):
+        """A successful delete wins over a later claim of the stale head."""
+        service = make_service(tmp_path, FinalModel())
+        try:
+            ws = workspace_factory()
+            conv = service.create_conversation(workspace_path=str(ws), profile_id=None)
+            item = service.enqueue_inbox(
+                conv["id"], content="remove before claim", mode="queue"
+            )["items"][0]
+            barrier = threading.Barrier(2)
+            start_turn = service.start_turn
+
+            def paused_start(*args, **kwargs):
+                barrier.wait(timeout=5)
+                return start_turn(*args, **kwargs)
+
+            monkeypatch.setattr(service, "start_turn", paused_start)
+            consumer = threading.Thread(
+                target=service._start_next_from_queue, args=(conv["id"],)
+            )
+            consumer.start()
+            barrier.wait(timeout=5)
+            service.remove_inbox(
+                conv["id"], item["id"], expected_version=item["version"]
+            )
+            consumer.join(timeout=5)
+            assert not consumer.is_alive()
+            assert service.list_turns(conv["id"])["items"] == []
+            assert service.get_inbox(conv["id"])["items"] == []
+        finally:
+            service.shutdown(timeout=5)
+
+    def test_reentrant_terminal_callback_claims_only_one_item(
+        self, tmp_path, workspace_factory, monkeypatch
+    ):
+        """The terminal callback has a per-conversation single-consumer lock."""
+        service = make_service(tmp_path, FinalModel())
+        try:
+            ws = workspace_factory()
+            conv = service.create_conversation(workspace_path=str(ws), profile_id=None)
+            service.enqueue_inbox(conv["id"], content="only once", mode="queue")
+            entered = threading.Event()
+            release = threading.Event()
+            start_turn = service.start_turn
+
+            def paused_start(*args, **kwargs):
+                entered.set()
+                assert release.wait(timeout=5)
+                return start_turn(*args, **kwargs)
+
+            monkeypatch.setattr(service, "start_turn", paused_start)
+            first = threading.Thread(
+                target=service._after_turn_finished, args=(conv["id"],)
+            )
+            first.start()
+            assert entered.wait(timeout=5)
+            second = threading.Thread(
+                target=service._after_turn_finished, args=(conv["id"],)
+            )
+            second.start()
+            second.join(timeout=5)
+            assert not second.is_alive()
+            release.set()
+            first.join(timeout=5)
+            assert not first.is_alive()
+            assert len(service.list_turns(conv["id"])["items"]) == 1
+        finally:
+            service.shutdown(timeout=5)
+
+    def test_failed_queue_start_blocks_then_retry_consumes_item(
+        self, tmp_path, workspace_factory, monkeypatch
+    ):
+        """A failure after atomic turn creation leaves a recoverable queue row."""
+        service = make_service(tmp_path, FinalModel())
+        try:
+            ws = workspace_factory()
+            conv = service.create_conversation(workspace_path=str(ws), profile_id=None)
+            service.enqueue_inbox(conv["id"], content="recover me", mode="queue")
+            build_loop = service._build_loop
+
+            def fail_build(**_kwargs):
+                raise RuntimeError("injected loop build failure")
+
+            monkeypatch.setattr(service, "_build_loop", fail_build)
+            service._start_next_from_queue(conv["id"])
+            failed_item = service.get_inbox(conv["id"])["items"][0]
+            assert failed_item["state"] == "blocked"
+            failed_turn = service.list_turns(conv["id"])["items"]
+            assert len(failed_turn) == 1
+            assert failed_turn[0]["state"] == "rejected"
+
+            monkeypatch.setattr(service, "_build_loop", build_loop)
+            service.retry_inbox(
+                conv["id"], failed_item["id"], expected_version=failed_item["version"]
+            )
+            inbox = service.get_inbox(conv["id"])["items"]
+            assert inbox[0]["state"] == "delivered"
+            turns = service.list_turns(conv["id"])["items"]
+            assert len(turns) == 2
+            assert turns[1]["user_text"] == "recover me"
+        finally:
+            service.shutdown(timeout=5)
+
+    def test_large_queue_snapshot_bounded(self, tmp_path, workspace_factory):
+        service = make_service(tmp_path, FinalModel())
+        try:
+            ws = workspace_factory()
+            conv = service.create_conversation(workspace_path=str(ws), profile_id=None)
+            for index in range(100):
+                service.enqueue_inbox(conv["id"], content=f"item-{index}", mode="queue")
+            snapshot = service.get_inbox(conv["id"])
+            assert len(snapshot["items"]) == 100
+            assert snapshot["queue_version"] == 101
+        finally:
+            service.shutdown(timeout=5)
+
+    def test_steer_requires_active_turn(self, tmp_path, workspace_factory):
+        service = make_service(tmp_path, FinalModel())
+        try:
+            ws = workspace_factory()
+            conv = service.create_conversation(workspace_path=str(ws), profile_id=None)
+            service.enqueue_inbox(conv["id"], content="steer me", mode="queue")
+            snap = service.get_inbox(conv["id"])
+            item = snap["items"][0]
+            with pytest.raises(ConversationServiceError) as exc:
+                service.steer_inbox(
+                    conv["id"], item["id"], expected_version=item["version"]
+                )
+            assert exc.value.code == "turn_not_steerable"
         finally:
             service.shutdown(timeout=5)
 

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from ..models import CanonicalMessage
+from ..models import CanonicalMessage, UserMessage
 from .domain import (
     CanonicalGroupRecord,
     CanonicalGroupState,
@@ -28,7 +28,7 @@ from .domain import (
     payload_to_canonical_message,
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 8
 DEFAULT_BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA_SQL = """
@@ -141,6 +141,62 @@ CREATE TABLE IF NOT EXISTS stream_checkpoints (
     updated_at TEXT NOT NULL,
     UNIQUE (turn_id, attempt, channel)
 );
+
+CREATE TABLE IF NOT EXISTS inbox_meta (
+    conversation_id TEXT PRIMARY KEY
+        REFERENCES conversations(id) ON DELETE CASCADE,
+    queue_version INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS inbox_items (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    requested_mode TEXT NOT NULL CHECK (requested_mode IN ('queue', 'steer')),
+    state TEXT NOT NULL CHECK (
+        state IN ('queued', 'steer_pending', 'claimed', 'delivered',
+                  'blocked', 'removed')
+    ),
+    position INTEGER NOT NULL,
+    bound_turn_id TEXT,
+    claimed_turn_id TEXT UNIQUE,
+    idempotency_key TEXT,
+    reasoning_effort TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    last_error_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    claimed_at TEXT,
+    delivered_at TEXT,
+    UNIQUE (conversation_id, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_inbox_queue
+    ON inbox_items(conversation_id, state, position, id);
+
+CREATE TABLE IF NOT EXISTS inbox_events (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    item_id TEXT,
+    event_seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (conversation_id, event_seq)
+);
+
+CREATE TRIGGER IF NOT EXISTS enforce_inbox_state_transition
+BEFORE UPDATE OF state ON inbox_items
+WHEN OLD.state <> NEW.state AND NOT (
+    (OLD.state = 'queued' AND NEW.state IN ('steer_pending', 'claimed', 'delivered', 'blocked', 'removed'))
+    OR (OLD.state = 'steer_pending' AND NEW.state IN ('queued', 'claimed', 'delivered', 'blocked', 'removed'))
+    OR (OLD.state = 'claimed' AND NEW.state IN ('queued', 'delivered', 'blocked'))
+    OR (OLD.state = 'delivered' AND NEW.state IN ('blocked'))
+    OR (OLD.state = 'blocked' AND NEW.state IN ('queued', 'steer_pending', 'removed'))
+)
+BEGIN
+    SELECT RAISE(ABORT, 'invalid_inbox_state_transition');
+END;
 
 CREATE TABLE IF NOT EXISTS turn_change_sets (
     id TEXT PRIMARY KEY,
@@ -380,6 +436,105 @@ class SQLiteConversationRepository:
                                 "ALTER TABLE stream_checkpoints "
                                 "ADD COLUMN event_seq INTEGER NOT NULL DEFAULT 0"
                             )
+                    if current_version <= 5:
+                        conn.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS inbox_meta (
+                                conversation_id TEXT PRIMARY KEY
+                                    REFERENCES conversations(id) ON DELETE CASCADE,
+                                queue_version INTEGER NOT NULL DEFAULT 1
+                            )
+                            """
+                        )
+                        conn.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS inbox_items (
+                                id TEXT PRIMARY KEY,
+                                conversation_id TEXT NOT NULL
+                                    REFERENCES conversations(id) ON DELETE CASCADE,
+                                content TEXT NOT NULL,
+                                requested_mode TEXT NOT NULL
+                                    CHECK (requested_mode IN ('queue', 'steer')),
+                                state TEXT NOT NULL CHECK (
+                                    state IN ('queued', 'steer_pending', 'claimed',
+                                              'delivered', 'blocked', 'removed')
+                                ),
+                                position INTEGER NOT NULL,
+                                bound_turn_id TEXT,
+                                claimed_turn_id TEXT UNIQUE,
+                                idempotency_key TEXT,
+                                version INTEGER NOT NULL DEFAULT 1,
+                                last_error_code TEXT,
+                                created_at TEXT NOT NULL,
+                                updated_at TEXT NOT NULL,
+                                claimed_at TEXT,
+                                delivered_at TEXT,
+                                UNIQUE (conversation_id, idempotency_key)
+                            )
+                            """
+                        )
+                        conn.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_inbox_queue
+                                ON inbox_items(conversation_id, state, position, id)
+                            """
+                        )
+                        conn.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS inbox_events (
+                                id TEXT PRIMARY KEY,
+                                conversation_id TEXT NOT NULL
+                                    REFERENCES conversations(id) ON DELETE CASCADE,
+                                item_id TEXT,
+                                event_seq INTEGER NOT NULL,
+                                kind TEXT NOT NULL,
+                                payload_json TEXT NOT NULL,
+                                created_at TEXT NOT NULL,
+                                UNIQUE (conversation_id, event_seq)
+                            )
+                            """
+                        )
+                        has_conversations = conn.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
+                        ).fetchone()
+                        if has_conversations is not None:
+                            for row in conn.execute(
+                                "SELECT id FROM conversations"
+                            ).fetchall():
+                                conn.execute(
+                                    "INSERT OR IGNORE INTO inbox_meta(conversation_id)"
+                                    " VALUES (?)",
+                                    (str(row["id"]),),
+                                )
+                    if current_version <= 6:
+                        columns = {
+                            str(row["name"])
+                            for row in conn.execute(
+                                "PRAGMA table_info(inbox_items)"
+                            ).fetchall()
+                        }
+                        if "reasoning_effort" not in columns:
+                            conn.execute(
+                                "ALTER TABLE inbox_items "
+                                "ADD COLUMN reasoning_effort TEXT"
+                            )
+                    if current_version <= 7:
+                        conn.execute(
+                            """
+                            CREATE TRIGGER IF NOT EXISTS enforce_inbox_state_transition
+                            BEFORE UPDATE OF state ON inbox_items
+                            WHEN OLD.state <> NEW.state AND NOT (
+                                (OLD.state = 'queued' AND NEW.state IN ('steer_pending', 'claimed', 'delivered', 'blocked', 'removed'))
+                                OR (OLD.state = 'steer_pending' AND NEW.state IN ('queued', 'claimed', 'delivered', 'blocked', 'removed'))
+                                OR (OLD.state = 'claimed' AND NEW.state IN ('queued', 'delivered', 'blocked'))
+                                OR (OLD.state = 'delivered' AND NEW.state IN ('blocked'))
+                                OR (OLD.state = 'blocked' AND NEW.state IN ('queued', 'steer_pending', 'removed'))
+                            )
+                            BEGIN
+                                SELECT RAISE(ABORT, 'invalid_inbox_state_transition');
+                            END
+                            """
+                        )
                     conn.execute("DELETE FROM schema_meta")
                     conn.execute(
                         "INSERT INTO schema_meta(version, applied_at) VALUES (?, ?)",
@@ -508,6 +663,10 @@ class SQLiteConversationRepository:
                         "last_activity_at": now,
                     },
                     now,
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO inbox_meta(conversation_id) VALUES (?)",
+                    (conversation_id,),
                 )
                 conn.commit()
             except Exception:
@@ -779,6 +938,7 @@ class SQLiteConversationRepository:
         run_id: str,
         idempotency_key: Optional[str],
         messages: Sequence[CanonicalMessage],
+        inbox_item_id: Optional[str] = None,
     ) -> Tuple[TurnRecord, bool]:
         """Atomically create a turn and its committed initial canonical group.
 
@@ -795,6 +955,29 @@ class SQLiteConversationRepository:
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                inbox_item: Optional[sqlite3.Row] = None
+                effective_user_text = user_text
+                effective_messages = messages
+                if inbox_item_id is not None:
+                    inbox_item = conn.execute(
+                        """
+                        SELECT * FROM inbox_items
+                        WHERE id=? AND conversation_id=? AND state='queued'
+                        """,
+                        (inbox_item_id, conversation_id),
+                    ).fetchone()
+                    if inbox_item is None:
+                        raise ValueError("inbox_item_not_queued")
+                    # The queue row is the transaction's authority.  An edit
+                    # committed after the consumer's preliminary read must be
+                    # the text that becomes the turn opener.
+                    effective_user_text = str(inbox_item["content"])
+                    effective_messages = tuple(
+                        UserMessage(effective_user_text, source="user")
+                        if isinstance(message, UserMessage) and message.source == "user"
+                        else message
+                        for message in messages
+                    )
                 if idempotency_key:
                     existing = conn.execute(
                         """
@@ -839,7 +1022,7 @@ class SQLiteConversationRepository:
                         conversation_id,
                         ordinal,
                         run_id,
-                        user_text,
+                        effective_user_text,
                         now,
                         now,
                         idempotency_key,
@@ -878,7 +1061,7 @@ class SQLiteConversationRepository:
                     )
                     + 1
                 )
-                for offset, message in enumerate(messages):
+                for offset, message in enumerate(effective_messages):
                     payload = canonical_message_to_payload(message)
                     conn.execute(
                         """
@@ -913,6 +1096,40 @@ class SQLiteConversationRepository:
                     },
                     now,
                 )
+                if inbox_item is not None:
+                    claim_cursor = conn.execute(
+                        """
+                        UPDATE inbox_items SET state='delivered', claimed_turn_id=?,
+                            claimed_at=?, delivered_at=?, updated_at=?,
+                            version=version+1
+                        WHERE id=? AND conversation_id=? AND state='queued'
+                        """,
+                        (
+                            turn_id,
+                            now,
+                            now,
+                            now,
+                            inbox_item_id,
+                            conversation_id,
+                        ),
+                    )
+                    if claim_cursor.rowcount != 1:
+                        raise ValueError("inbox_item_not_queued")
+                    self._append_inbox_event(
+                        conn,
+                        conversation_id,
+                        inbox_item_id,
+                        "claimed",
+                        {"turn_id": turn_id},
+                    )
+                    self._append_inbox_event(
+                        conn,
+                        conversation_id,
+                        inbox_item_id,
+                        "delivered",
+                        {"source": "queue"},
+                    )
+                    self._bump_inbox_version(conn, conversation_id)
                 row = conn.execute(
                     "SELECT * FROM turns WHERE id=?", (turn_id,)
                 ).fetchone()
@@ -1624,6 +1841,700 @@ class SQLiteConversationRepository:
                 (conversation_id, turn_id),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------ inbox
+
+    def get_inbox_snapshot(self, conversation_id: str) -> Dict[str, Any]:
+        self._ensure_inbox_meta(conversation_id)
+        with self._lock:
+            conn = self._connect()
+            version_row = conn.execute(
+                "SELECT queue_version FROM inbox_meta WHERE conversation_id=?",
+                (conversation_id,),
+            ).fetchone()
+            rows = conn.execute(
+                """
+                SELECT * FROM inbox_items
+                WHERE conversation_id=? AND state != 'removed'
+                ORDER BY position, id
+                """,
+                (conversation_id,),
+            ).fetchall()
+            events = conn.execute(
+                """
+                SELECT event_seq, kind FROM inbox_events
+                WHERE conversation_id=? ORDER BY event_seq DESC LIMIT 50
+                """,
+                (conversation_id,),
+            ).fetchall()
+        return {
+            "queue_version": int(version_row["queue_version"]) if version_row else 1,
+            "items": [self._row_to_inbox_item(row) for row in rows],
+            "recent_events": [
+                {"seq": int(row["event_seq"]), "kind": str(row["kind"])}
+                for row in reversed(events)
+            ],
+        }
+
+    def enqueue_inbox_item(
+        self,
+        conversation_id: str,
+        *,
+        content: str,
+        requested_mode: str,
+        idempotency_key: Optional[str] = None,
+        bound_turn_id: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        item_id = uuid.uuid4().hex
+        now = _utcnow()
+        state = "steer_pending" if requested_mode == "steer" else "queued"
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                if idempotency_key:
+                    existing = conn.execute(
+                        """
+                        SELECT * FROM inbox_items
+                        WHERE conversation_id=? AND idempotency_key=?
+                        """,
+                        (conversation_id, idempotency_key),
+                    ).fetchone()
+                    if existing is not None:
+                        conn.commit()
+                        return self._row_to_inbox_item(existing)
+                if requested_mode == "steer" and not bound_turn_id:
+                    raise ValueError("turn_not_steerable")
+                if requested_mode == "steer" and state == "steer_pending":
+                    state = "steer_pending"
+                position = int(
+                    conn.execute(
+                        """
+                        SELECT COALESCE(MAX(position), 0) + 1 AS value
+                        FROM inbox_items WHERE conversation_id=? AND state != 'removed'
+                        """,
+                        (conversation_id,),
+                    ).fetchone()["value"]
+                )
+                conn.execute(
+                    """
+                    INSERT INTO inbox_items(
+                        id, conversation_id, content, requested_mode, state,
+                        position, bound_turn_id, idempotency_key, reasoning_effort,
+                        version, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    """,
+                    (
+                        item_id,
+                        conversation_id,
+                        content,
+                        requested_mode,
+                        state,
+                        position,
+                        bound_turn_id,
+                        idempotency_key,
+                        reasoning_effort,
+                        now,
+                        now,
+                    ),
+                )
+                self._bump_inbox_version(conn, conversation_id)
+                self._append_inbox_event(
+                    conn,
+                    conversation_id,
+                    item_id,
+                    "enqueued",
+                    {"mode": requested_mode, "state": state},
+                )
+                item = conn.execute(
+                    "SELECT * FROM inbox_items WHERE id=?", (item_id,)
+                ).fetchone()
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return self._row_to_inbox_item(item)
+
+    def edit_inbox_item(
+        self,
+        conversation_id: str,
+        item_id: str,
+        *,
+        content: Optional[str] = None,
+        requested_mode: Optional[str] = None,
+        expected_version: int,
+    ) -> Dict[str, Any]:
+        now = _utcnow()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM inbox_items WHERE id=? AND conversation_id=?",
+                    (item_id, conversation_id),
+                ).fetchone()
+                if row is None or row["state"] == "removed":
+                    raise KeyError("item_not_found")
+                if row["state"] not in ("queued", "steer_pending", "blocked"):
+                    raise ValueError("item_not_editable")
+                if int(row["version"]) != expected_version:
+                    raise ValueError("version_conflict")
+                new_content = content if content is not None else row["content"]
+                new_mode = (
+                    requested_mode
+                    if requested_mode is not None
+                    else row["requested_mode"]
+                )
+                conn.execute(
+                    """
+                    UPDATE inbox_items SET content=?, requested_mode=?,
+                        version=version+1, updated_at=?
+                    WHERE id=? AND conversation_id=? AND version=?
+                    """,
+                    (
+                        new_content,
+                        new_mode,
+                        now,
+                        item_id,
+                        conversation_id,
+                        expected_version,
+                    ),
+                )
+                if conn.total_changes == 0:
+                    raise ValueError("version_conflict")
+                self._append_inbox_event(
+                    conn,
+                    conversation_id,
+                    item_id,
+                    "edited",
+                    {"version": expected_version + 1},
+                )
+                self._bump_inbox_version(conn, conversation_id)
+                item = conn.execute(
+                    "SELECT * FROM inbox_items WHERE id=?", (item_id,)
+                ).fetchone()
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return self._row_to_inbox_item(item)
+
+    def remove_inbox_item(
+        self, conversation_id: str, item_id: str, expected_version: int
+    ) -> None:
+        now = _utcnow()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM inbox_items WHERE id=? AND conversation_id=?",
+                    (item_id, conversation_id),
+                ).fetchone()
+                if row is None or row["state"] == "removed":
+                    raise KeyError("item_not_found")
+                if row["state"] not in ("queued", "steer_pending", "blocked"):
+                    raise ValueError("item_not_editable")
+                if int(row["version"]) != expected_version:
+                    raise ValueError("version_conflict")
+                conn.execute(
+                    """
+                    UPDATE inbox_items SET state='removed', content='',
+                        version=version+1, updated_at=?
+                    WHERE id=? AND version=?
+                    """,
+                    (now, item_id, expected_version),
+                )
+                self._append_inbox_event(
+                    conn,
+                    conversation_id,
+                    item_id,
+                    "removed",
+                    {"version": expected_version + 1},
+                )
+                self._bump_inbox_version(conn, conversation_id)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def reorder_inbox_items(
+        self,
+        conversation_id: str,
+        ordered_ids: Sequence[str],
+        expected_queue_version: int,
+    ) -> None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                meta = conn.execute(
+                    "SELECT queue_version FROM inbox_meta WHERE conversation_id=?",
+                    (conversation_id,),
+                ).fetchone()
+                if meta is None or int(meta["queue_version"]) != expected_queue_version:
+                    raise ValueError("version_conflict")
+                active = conn.execute(
+                    """
+                    SELECT id FROM inbox_items
+                    WHERE conversation_id=? AND state IN ('queued','steer_pending','blocked')
+                    """,
+                    (conversation_id,),
+                ).fetchall()
+                active_ids = {str(row["id"]) for row in active}
+                if set(ordered_ids) != active_ids:
+                    raise ValueError("invalid_reorder")
+                for position, item_id in enumerate(ordered_ids, start=1):
+                    conn.execute(
+                        """
+                        UPDATE inbox_items SET position=?, updated_at=?
+                        WHERE id=? AND conversation_id=?
+                        """,
+                        (position, _utcnow(), item_id, conversation_id),
+                    )
+                self._append_inbox_event(
+                    conn,
+                    conversation_id,
+                    None,
+                    "reordered",
+                    {"ordered_ids": list(ordered_ids)},
+                )
+                self._bump_inbox_version(conn, conversation_id)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def request_steer(
+        self, conversation_id: str, item_id: str, expected_version: int
+    ) -> Dict[str, Any]:
+        now = _utcnow()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM inbox_items WHERE id=? AND conversation_id=?",
+                    (item_id, conversation_id),
+                ).fetchone()
+                if row is None or row["state"] == "removed":
+                    raise KeyError("item_not_found")
+                if row["state"] not in ("queued", "blocked"):
+                    raise ValueError("item_not_steerable")
+                if int(row["version"]) != expected_version:
+                    raise ValueError("version_conflict")
+                active = conn.execute(
+                    """
+                    SELECT id FROM turns WHERE conversation_id=?
+                    AND state IN ('starting','running') ORDER BY ordinal DESC LIMIT 1
+                    """,
+                    (conversation_id,),
+                ).fetchone()
+                if active is None:
+                    raise ValueError("turn_not_steerable")
+                conn.execute(
+                    """
+                    UPDATE inbox_items SET state='steer_pending',
+                        requested_mode='steer', bound_turn_id=?,
+                        version=version+1, updated_at=?
+                    WHERE id=? AND version=?
+                    """,
+                    (str(active["id"]), now, item_id, expected_version),
+                )
+                self._append_inbox_event(
+                    conn,
+                    conversation_id,
+                    item_id,
+                    "steer_requested",
+                    {"turn_id": str(active["id"])},
+                )
+                self._bump_inbox_version(conn, conversation_id)
+                item = conn.execute(
+                    "SELECT * FROM inbox_items WHERE id=?", (item_id,)
+                ).fetchone()
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return self._row_to_inbox_item(item)
+
+    def retry_inbox_item(
+        self, conversation_id: str, item_id: str, expected_version: int
+    ) -> Dict[str, Any]:
+        now = _utcnow()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM inbox_items WHERE id=? AND conversation_id=?",
+                    (item_id, conversation_id),
+                ).fetchone()
+                if row is None or row["state"] == "removed":
+                    raise KeyError("item_not_found")
+                if row["state"] != "blocked":
+                    raise ValueError("item_not_blocked")
+                if int(row["version"]) != expected_version:
+                    raise ValueError("version_conflict")
+                conn.execute(
+                    """
+                    UPDATE inbox_items SET state='queued', last_error_code=NULL,
+                        requested_mode='queue', version=version+1, updated_at=?
+                    WHERE id=? AND version=?
+                    """,
+                    (now, item_id, expected_version),
+                )
+                self._append_inbox_event(conn, conversation_id, item_id, "retried", {})
+                self._bump_inbox_version(conn, conversation_id)
+                item = conn.execute(
+                    "SELECT * FROM inbox_items WHERE id=?", (item_id,)
+                ).fetchone()
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return self._row_to_inbox_item(item)
+
+    def list_queued_items(self, conversation_id: str) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = (
+                self._connect()
+                .execute(
+                    """
+                    SELECT * FROM inbox_items
+                    WHERE conversation_id=? AND state='queued'
+                    ORDER BY position, id
+                    """,
+                    (conversation_id,),
+                )
+                .fetchall()
+            )
+        return [self._row_to_inbox_item(row) for row in rows]
+
+    def mark_item_claimed(
+        self, conversation_id: str, item_id: str, turn_id: str
+    ) -> None:
+        now = _utcnow()
+        with self._lock:
+            conn = self._connect()
+            conn.execute(
+                """
+                UPDATE inbox_items SET state='claimed', claimed_turn_id=?,
+                    claimed_at=?, updated_at=?, version=version+1
+                WHERE id=? AND conversation_id=? AND state='queued'
+                """,
+                (turn_id, now, now, item_id, conversation_id),
+            )
+            try:
+                self._append_inbox_event(
+                    conn,
+                    conversation_id,
+                    item_id,
+                    "claimed",
+                    {"turn_id": turn_id},
+                )
+                self._bump_inbox_version(conn, conversation_id)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def mark_item_delivered(
+        self, conversation_id: str, item_id: str, *, source: str = "queue"
+    ) -> None:
+        now = _utcnow()
+        with self._lock:
+            conn = self._connect()
+            conn.execute(
+                """
+                UPDATE inbox_items SET state='delivered', delivered_at=?,
+                    updated_at=?, version=version+1
+                WHERE id=? AND conversation_id=? AND state IN ('claimed','steer_pending')
+                """,
+                (now, now, item_id, conversation_id),
+            )
+            self._append_inbox_event(
+                conn,
+                conversation_id,
+                item_id,
+                "delivered",
+                {"source": source},
+            )
+            self._bump_inbox_version(conn, conversation_id)
+            conn.commit()
+
+    def demote_steer_pending_for_turn(
+        self, conversation_id: str, turn_id: str
+    ) -> List[str]:
+        now = _utcnow()
+        with self._lock:
+            conn = self._connect()
+            rows = conn.execute(
+                """
+                SELECT id, position FROM inbox_items
+                WHERE conversation_id=? AND state='steer_pending' AND bound_turn_id=?
+                ORDER BY position, id
+                """,
+                (conversation_id, turn_id),
+            ).fetchall()
+            demoted: List[str] = []
+            for row in rows:
+                conn.execute(
+                    """
+                    UPDATE inbox_items SET state='queued', requested_mode='queue',
+                        bound_turn_id=NULL, version=version+1, updated_at=?
+                    WHERE id=?
+                    """,
+                    (now, str(row["id"])),
+                )
+                self._append_inbox_event(
+                    conn,
+                    conversation_id,
+                    str(row["id"]),
+                    "demoted",
+                    {"to": "queued"},
+                )
+                demoted.append(str(row["id"]))
+            if demoted:
+                self._bump_inbox_version(conn, conversation_id)
+            conn.commit()
+        return demoted
+
+    def demote_all_steer_pending(self, conversation_id: str) -> List[str]:
+        with self._lock:
+            conn = self._connect()
+            rows = conn.execute(
+                """
+                SELECT id FROM inbox_items
+                WHERE conversation_id=? AND state='steer_pending'
+                ORDER BY position, id
+                """,
+                (conversation_id,),
+            ).fetchall()
+            demoted: List[str] = []
+            for row in rows:
+                conn.execute(
+                    """
+                    UPDATE inbox_items SET state='queued', requested_mode='queue',
+                        bound_turn_id=NULL, version=version+1, updated_at=?
+                    WHERE id=?
+                    """,
+                    (_utcnow(), str(row["id"])),
+                )
+                self._append_inbox_event(
+                    conn,
+                    conversation_id,
+                    str(row["id"]),
+                    "demoted",
+                    {"to": "queued"},
+                )
+                demoted.append(str(row["id"]))
+            if demoted:
+                self._bump_inbox_version(conn, conversation_id)
+            conn.commit()
+        return demoted
+
+    def get_steer_pending_for_turn(
+        self, conversation_id: str, turn_id: str
+    ) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = (
+                self._connect()
+                .execute(
+                    """
+                    SELECT * FROM inbox_items
+                    WHERE conversation_id=? AND state='steer_pending'
+                      AND bound_turn_id=?
+                    ORDER BY position, id LIMIT 1
+                    """,
+                    (conversation_id, turn_id),
+                )
+                .fetchone()
+            )
+        return self._row_to_inbox_item(row) if row else None
+
+    def mark_steer_claimed_for_delivery(
+        self, conversation_id: str, turn_id: str, item_id: str
+    ) -> bool:
+        """Transition steer_pending -> claimed just before AgentLoop append."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                cursor = conn.execute(
+                    """
+                    UPDATE inbox_items SET state='claimed', version=version+1, updated_at=?
+                    WHERE id=? AND conversation_id=? AND bound_turn_id=?
+                      AND state='steer_pending'
+                    """,
+                    (_utcnow(), item_id, conversation_id, turn_id),
+                )
+                if cursor.rowcount != 1:
+                    conn.commit()
+                    return False
+                self._append_inbox_event(
+                    conn,
+                    conversation_id,
+                    item_id,
+                    "steer_claimed",
+                    {"turn_id": turn_id},
+                )
+                self._bump_inbox_version(conn, conversation_id)
+                conn.commit()
+                return True
+            except Exception:
+                conn.rollback()
+                raise
+
+    def recover_claimed_steers(self) -> List[str]:
+        """Return interrupted in-flight steers to the durable FIFO queue."""
+        now = _utcnow()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    """
+                    SELECT id, conversation_id FROM inbox_items
+                    WHERE state='claimed' AND claimed_turn_id IS NULL
+                      AND bound_turn_id IS NOT NULL
+                    ORDER BY conversation_id, position, id
+                    """
+                ).fetchall()
+                item_ids = [str(row["id"]) for row in rows]
+                touched: set[str] = set()
+                for row in rows:
+                    item_id = str(row["id"])
+                    conversation_id = str(row["conversation_id"])
+                    conn.execute(
+                        """
+                        UPDATE inbox_items SET state='queued', requested_mode='queue',
+                            bound_turn_id=NULL, version=version+1, updated_at=?
+                        WHERE id=?
+                        """,
+                        (now, item_id),
+                    )
+                    self._append_inbox_event(
+                        conn,
+                        conversation_id,
+                        item_id,
+                        "demoted",
+                        {"to": "queued", "reason": "process_restarted"},
+                    )
+                    touched.add(conversation_id)
+                for conversation_id in touched:
+                    self._bump_inbox_version(conn, conversation_id)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return item_ids
+
+    def block_inbox_item(
+        self, conversation_id: str, item_id: str, error_code: str
+    ) -> None:
+        with self._lock:
+            conn = self._connect()
+            cursor = conn.execute(
+                """
+                UPDATE inbox_items SET state='blocked', last_error_code=?,
+                    bound_turn_id=NULL, requested_mode='queue',
+                    version=version+1, updated_at=?
+                WHERE id=? AND conversation_id=?
+                  AND state IN ('queued','claimed','steer_pending','delivered')
+                """,
+                (error_code, _utcnow(), item_id, conversation_id),
+            )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                return
+            self._append_inbox_event(
+                conn,
+                conversation_id,
+                item_id,
+                "blocked",
+                {"error_code": error_code},
+            )
+            self._bump_inbox_version(conn, conversation_id)
+            conn.commit()
+
+    def _ensure_inbox_meta(self, conversation_id: str) -> None:
+        with self._lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT OR IGNORE INTO inbox_meta(conversation_id) VALUES (?)",
+                (conversation_id,),
+            )
+            conn.commit()
+
+    @staticmethod
+    def _bump_inbox_version(conn: sqlite3.Connection, conversation_id: str) -> None:
+        conn.execute(
+            """
+            INSERT INTO inbox_meta(conversation_id, queue_version)
+            VALUES (?, 2)
+            ON CONFLICT(conversation_id) DO UPDATE SET
+                queue_version=queue_version+1
+            """,
+            (conversation_id,),
+        )
+
+    @staticmethod
+    def _append_inbox_event(
+        conn: sqlite3.Connection,
+        conversation_id: str,
+        item_id: Optional[str],
+        kind: str,
+        payload: Dict[str, Any],
+    ) -> None:
+        seq = int(
+            conn.execute(
+                """
+                SELECT COALESCE(MAX(event_seq), 0) + 1 AS value
+                FROM inbox_events WHERE conversation_id=?
+                """,
+                (conversation_id,),
+            ).fetchone()["value"]
+        )
+        conn.execute(
+            """
+            INSERT INTO inbox_events(
+                id, conversation_id, item_id, event_seq, kind,
+                payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                uuid.uuid4().hex,
+                conversation_id,
+                item_id,
+                seq,
+                kind,
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                _utcnow(),
+            ),
+        )
+
+    @staticmethod
+    def _row_to_inbox_item(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "conversation_id": str(row["conversation_id"]),
+            "content": str(row["content"]),
+            "requested_mode": str(row["requested_mode"]),
+            "state": str(row["state"]),
+            "position": int(row["position"]),
+            "bound_turn_id": row["bound_turn_id"],
+            "claimed_turn_id": row["claimed_turn_id"],
+            "idempotency_key": row["idempotency_key"],
+            "reasoning_effort": row["reasoning_effort"],
+            "version": int(row["version"]),
+            "last_error_code": row["last_error_code"],
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+            "claimed_at": row["claimed_at"],
+            "delivered_at": row["delivered_at"],
+        }
 
     # ------------------------------------------------------------ change sets
 

@@ -237,6 +237,55 @@ test.describe("Conversation product flow with the Fake Model", () => {
     });
   });
 
+  test("busy composer queues three messages and survives reload/cancel", async ({ page }) => {
+    await page.goto("/");
+    await createConversation(page, process.env.E2E_WORKSPACE_FRESH as string, /慢速假模型/);
+    await send(page, "第一个正在运行的任务");
+    await expect(page.getByRole("button", { name: "取消运行" })).toBeVisible({ timeout: 15_000 });
+
+    const textarea = page.getByTestId("conversation-task-input");
+    for (const message of ["队列一", "队列二", "队列三"]) {
+      await textarea.fill(message);
+      await textarea.press("Enter");
+      await expect(textarea).toHaveValue("", { timeout: 15_000 });
+    }
+    await expect(page.getByTestId("queue-dock")).toBeVisible();
+    await expect(page.locator("[data-testid^='queue-item-']")).toHaveCount(3);
+    await textarea.fill("插入当前轮的补充说明");
+    await page.getByTestId("conversation-steer").click();
+    await expect(page.getByTestId("steer-caption")).toBeVisible({ timeout: 15_000 });
+    await textarea.fill("继续输入时的排队草稿");
+    await expect(page.getByTestId("conversation-queue")).toBeVisible();
+    await expect(page.getByTestId("conversation-steer")).toBeVisible();
+    await expect(page.getByRole("button", { name: "取消运行" })).toBeVisible();
+    await page.screenshot({
+      path: "feedback/task_006_evidence/busy-queue-1280x720-zh.png",
+      // Keep the evidence focused on queue/steer controls. The app header can
+      // contain a temporary absolute workspace path, which must not be stored
+      // in a committed acceptance artifact.
+      clip: { x: 192, y: 356, width: 1000, height: 364 },
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByTestId("queue-dock")).toBeVisible();
+    await page.screenshot({
+      path: "feedback/task_006_evidence/busy-queue-390x844-zh.png",
+      clip: { x: 0, y: 490, width: 390, height: 354 },
+    });
+    await page.reload();
+    await expect(page.getByTestId("queue-dock")).toBeVisible();
+    await expect(page.locator("[data-testid^='queue-item-']")).toHaveCount(3);
+    await page.getByRole("button", { name: "取消运行" }).click();
+    // After cancel the queue consumer should immediately claim the first
+    // queued item and start the next turn; the other two remain in the dock.
+    await expect(page.getByRole("button", { name: "取消运行" })).toBeVisible({ timeout: 45_000 });
+    await expect(page.getByTestId("queue-dock")).toBeVisible();
+    await expect
+      .poll(async () => page.locator("[data-testid^='queue-item-']").count(), {
+        timeout: 45_000,
+      })
+      .toBe(2);
+  });
+
   test("a hard server restart recovers the active turn as interrupted without replay", async ({ page }) => {
     test.setTimeout(90_000);
     await page.goto("/");

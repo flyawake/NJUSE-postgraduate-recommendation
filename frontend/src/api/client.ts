@@ -25,6 +25,12 @@ export type ConversationCreateRequest = components["schemas"]["ConversationCreat
 export type ConversationRenameRequest = components["schemas"]["ConversationRenameRequest"];
 export type ConversationVersionRequest = components["schemas"]["ConversationVersionRequest"];
 export type TurnCreateRequest = components["schemas"]["TurnCreateRequest"];
+export type InboxItem = components["schemas"]["InboxItemDTO"];
+export type InboxSnapshot = components["schemas"]["InboxSnapshotDTO"];
+export type InboxEnqueueRequest = components["schemas"]["InboxEnqueueRequest"];
+export type InboxEditRequest = components["schemas"]["InboxEditRequest"];
+export type InboxOrderRequest = components["schemas"]["InboxOrderRequest"];
+export type InboxVersionRequest = components["schemas"]["InboxVersionRequest"];
 
 export class ApiError extends Error {
   readonly code: string;
@@ -200,6 +206,51 @@ export const api = {
   getStreamSnapshot: (id: string, turnId: string) =>
     apiFetch<StreamSnapshot>(
       `/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/stream`
+    ),
+
+  getInbox: (id: string) =>
+    apiFetch<InboxSnapshot>(`/api/conversations/${encodeURIComponent(id)}/inbox`),
+
+  enqueueInbox: (id: string, input: InboxEnqueueRequest) =>
+    apiFetch<InboxSnapshot>(`/api/conversations/${encodeURIComponent(id)}/inbox`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  editInbox: (id: string, itemId: string, input: InboxEditRequest) =>
+    apiFetch<InboxSnapshot>(
+      `/api/conversations/${encodeURIComponent(id)}/inbox/${encodeURIComponent(itemId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      }
+    ),
+
+  removeInbox: (id: string, itemId: string, input: InboxVersionRequest) =>
+    apiFetch<InboxSnapshot>(
+      `/api/conversations/${encodeURIComponent(id)}/inbox/${encodeURIComponent(itemId)}`,
+      {
+        method: "DELETE",
+        body: JSON.stringify(input),
+      }
+    ),
+
+  reorderInbox: (id: string, input: InboxOrderRequest) =>
+    apiFetch<InboxSnapshot>(
+      `/api/conversations/${encodeURIComponent(id)}/inbox/order`,
+      { method: "PUT", body: JSON.stringify(input) }
+    ),
+
+  steerInbox: (id: string, itemId: string, input: InboxVersionRequest) =>
+    apiFetch<InboxSnapshot>(
+      `/api/conversations/${encodeURIComponent(id)}/inbox/${encodeURIComponent(itemId)}/steer`,
+      { method: "POST", body: JSON.stringify(input) }
+    ),
+
+  retryInbox: (id: string, itemId: string, input: InboxVersionRequest) =>
+    apiFetch<InboxSnapshot>(
+      `/api/conversations/${encodeURIComponent(id)}/inbox/${encodeURIComponent(itemId)}/retry`,
+      { method: "POST", body: JSON.stringify(input) }
     ),
 
   getTurnChanges: (id: string, turnId: string) =>

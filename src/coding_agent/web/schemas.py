@@ -50,6 +50,7 @@ class ConversationVersionRequest(StrictModel):
 class TurnCreateRequest(StrictModel):
     content: str = Field(min_length=1, max_length=MAX_TASK_CHARS)
     idempotency_key: Optional[str] = Field(default=None, max_length=128)
+    reasoning_effort: Optional[str] = None
 
 
 class WorkspaceValidateRequest(StrictModel):
@@ -203,6 +204,53 @@ class TurnDTO(BaseModel):
     active: bool = False
 
 
+class InboxEnqueueRequest(StrictModel):
+    content: str = Field(min_length=1, max_length=MAX_TASK_CHARS)
+    mode: str = "queue"
+    idempotency_key: Optional[str] = Field(default=None, max_length=128)
+    reasoning_effort: Optional[str] = None
+
+
+class InboxEditRequest(StrictModel):
+    content: Optional[str] = Field(default=None, max_length=MAX_TASK_CHARS)
+    mode: Optional[str] = None
+    expected_version: int = Field(ge=1)
+
+
+class InboxVersionRequest(StrictModel):
+    expected_version: int = Field(ge=1)
+
+
+class InboxOrderRequest(StrictModel):
+    ordered_ids: List[str]
+    expected_queue_version: int = Field(ge=1)
+
+
+class InboxItemDTO(BaseModel):
+    id: str
+    conversation_id: str
+    content: str
+    requested_mode: str
+    state: str
+    position: int
+    bound_turn_id: Optional[str] = None
+    claimed_turn_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    reasoning_effort: Optional[str] = None
+    version: int
+    last_error_code: Optional[str] = None
+    created_at: str
+    updated_at: str
+    claimed_at: Optional[str] = None
+    delivered_at: Optional[str] = None
+
+
+class InboxSnapshotDTO(BaseModel):
+    queue_version: int
+    items: List[InboxItemDTO] = Field(default_factory=list)
+    recent_events: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 class StreamCheckpointDTO(BaseModel):
     run_id: str
     attempt: int
@@ -322,6 +370,7 @@ EVENT_PAYLOAD_KEYS: Dict[str, frozenset] = {
     "tool_started": frozenset({"call_id", "name", "arguments", "target"}),
     "tool_finished": frozenset({"call_id", "name", "ok", "error_code", "summary"}),
     "completion_deferred": frozenset({"verification_status"}),
+    "steer_delivered": frozenset({"item_id", "chars"}),
     "run_finished": frozenset(
         {
             "status",

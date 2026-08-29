@@ -22,6 +22,7 @@ EVENT_ASSISTANT_RECEIVED = "assistant_received"
 EVENT_TOOL_STARTED = "tool_started"
 EVENT_TOOL_FINISHED = "tool_finished"
 EVENT_COMPLETION_DEFERRED = "completion_deferred"
+EVENT_STEER_DELIVERED = "steer_delivered"
 EVENT_RUN_FINISHED = "run_finished"
 
 REQUIRED_EVENT_TYPES: tuple[str, ...] = (
@@ -37,6 +38,7 @@ REQUIRED_EVENT_TYPES: tuple[str, ...] = (
     EVENT_TOOL_STARTED,
     EVENT_TOOL_FINISHED,
     EVENT_COMPLETION_DEFERRED,
+    EVENT_STEER_DELIVERED,
     EVENT_RUN_FINISHED,
 )
 
