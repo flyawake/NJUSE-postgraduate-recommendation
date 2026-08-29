@@ -84,6 +84,7 @@ export function ActivityFeed({
     resetVersion,
     visibleCount: INITIAL_VISIBLE_ITEMS,
   }));
+  const [workflowOpen, setWorkflowOpen] = useState(state !== "terminal");
 
   const projector = projectorRef.current;
   if (appliedResetVersion.current !== resetVersion) {
@@ -101,6 +102,8 @@ export function ActivityFeed({
   const itemCount = projector.itemCount;
   const start = Math.max(0, itemCount - visibleCount);
   const visibleItems = projector.visibleItems(visibleCount);
+  const userItems = visibleItems.filter((item) => item.kind === "user_message");
+  const workflowItems = visibleItems.filter((item) => item.kind !== "user_message");
   const lastIncomingId = eventBatch.at(-1)?.id ?? retainedEvents.at(-1)?.id ?? 0;
 
   const phase: FeedPhase =
@@ -127,7 +130,12 @@ export function ActivityFeed({
         ? current
         : { resetVersion, visibleCount: INITIAL_VISIBLE_ITEMS }
     );
+    setWorkflowOpen(true);
   }, [resetVersion]);
+
+  useEffect(() => {
+    if (state === "terminal") setWorkflowOpen(false);
+  }, [state]);
 
   const handleScroll = () => {
     const element = scrollRef.current;
@@ -137,12 +145,12 @@ export function ActivityFeed({
 
   if (!hasActivity && state !== "running") {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-        <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-accent-muted">
-          <ListRestart aria-hidden size={22} className="text-accent" />
+      <div className="flex h-full flex-col items-center justify-center gap-3 px-6 pb-[6vh] text-center">
+        <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-accent text-accent-fg shadow-sm">
+          <ListRestart aria-hidden size={21} />
         </div>
-        <h2 className="text-base font-medium">{t("feed.empty.title")}</h2>
-        <p className="max-w-md text-sm text-muted">{t("feed.empty.hint")}</p>
+        <h2 className="mt-1 text-xl font-medium tracking-[-0.025em]">{t("feed.empty.title")}</h2>
+        <p className="max-w-md text-sm leading-7 text-muted">{t("feed.empty.hint")}</p>
         <ul className="mt-2 space-y-1 text-left text-sm text-muted">
           <li>• {t("composer.example1")}</li>
           <li>• {t("composer.example2")}</li>
@@ -163,7 +171,7 @@ export function ActivityFeed({
         )}
         data-testid="activity-scroll"
       >
-        <div className="mx-auto max-w-[54rem] space-y-2">
+        <div className="mx-auto max-w-[58rem] space-y-1 px-1 sm:px-2">
           {phase === "disconnected" ? (
             <div className="flex items-center gap-2 border-l-2 border-warning bg-warning-muted px-3 py-2 text-sm text-warning" role="status">
               <TriangleAlert aria-hidden size={14} />
@@ -176,49 +184,70 @@ export function ActivityFeed({
             </p>
           ) : null}
 
-          {start > 0 ? (
-            <div className="flex justify-center pb-2">
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() =>
-                  setWindowState((current) => {
-                    const count = current.resetVersion === resetVersion
-                      ? current.visibleCount
-                      : INITIAL_VISIBLE_ITEMS;
-                    return {
-                      resetVersion,
-                      visibleCount: Math.min(itemCount, count + LOAD_OLDER_ITEMS),
-                    };
-                  })
-                }
-                data-testid="load-older-activity"
-              >
-                {t("feed.loadOlder")}
-              </button>
-            </div>
+          {userItems.map((item) => <TranscriptRow key={item.id} item={item} />)}
+
+          {workflowItems.length > 0 || start > 0 ? (
+            <Collapsible.Root open={workflowOpen} onOpenChange={setWorkflowOpen} className="pt-2" data-testid="workflow-group">
+              <Collapsible.Trigger asChild>
+                <button
+                  type="button"
+                  className="group flex h-8 w-full items-center gap-2 rounded-md px-1.5 text-left text-[12px] font-medium text-muted transition-colors hover:bg-surface-2/70 hover:text-text"
+                  aria-expanded={workflowOpen}
+                  data-testid="workflow-toggle"
+                >
+                  <Wrench aria-hidden size={13} className="text-faint group-hover:text-muted" />
+                  <span className="flex-1">
+                    {t(state === "running" ? "feed.toolGroup.running" : "feed.toolGroup.completed", { count: workflowItems.length })}
+                  </span>
+                  <ChevronDown aria-hidden size={13} className={cx("text-faint transition-transform", workflowOpen && "rotate-180")} />
+                </button>
+              </Collapsible.Trigger>
+              <Collapsible.Content className="space-y-1 pt-1">
+                {start > 0 ? (
+                  <div className="flex justify-center pb-2">
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() =>
+                        setWindowState((current) => {
+                          const count = current.resetVersion === resetVersion
+                            ? current.visibleCount
+                            : INITIAL_VISIBLE_ITEMS;
+                          return {
+                            resetVersion,
+                            visibleCount: Math.min(itemCount, count + LOAD_OLDER_ITEMS),
+                          };
+                        })
+                      }
+                      data-testid="load-older-activity"
+                    >
+                      {t("feed.loadOlder")}
+                    </button>
+                  </div>
+                ) : null}
+                {workflowItems.map((item) =>
+                  item.kind === "stream_attempt" ? (
+                    <StreamingTranscript
+                      key={item.id}
+                      events={retainedEvents}
+                      snapshot={streamSnapshot}
+                      terminalText={terminalText}
+                      defaultThinkOpen={defaultThinkOpen}
+                      showAssistantText={state !== "terminal" || !terminalText}
+                      attempt={item.attempt}
+                    />
+                  ) : (
+                    <TranscriptRow key={item.id} item={item} />
+                  )
+                )}
+              </Collapsible.Content>
+            </Collapsible.Root>
           ) : null}
 
-          {visibleItems.map((item) =>
-            item.kind === "stream_attempt" ? (
-              <StreamingTranscript
-                key={item.id}
-                events={retainedEvents}
-                snapshot={streamSnapshot}
-                terminalText={terminalText}
-                defaultThinkOpen={defaultThinkOpen}
-                showAssistantText={state !== "terminal" || !terminalText}
-                attempt={item.attempt}
-              />
-            ) : (
-              <TranscriptRow key={item.id} item={item} />
-            )
-          )}
-
           {state === "terminal" && terminalText ? (
-            <section className="border-t border-border pt-5" data-testid="final-answer">
-              <h3 className="mb-1.5 text-sm font-semibold">{t("feed.finalAnswer")}</h3>
-              <div className="text-sm">
+            <section className="mt-3 border-t border-border pt-5" data-testid="final-answer">
+              <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-faint">{t("feed.finalAnswer")}</h3>
+              <div className="text-[15px] leading-7 sm:text-base">
                 <MarkdownText text={terminalText} />
               </div>
               {verificationStatus ? (
@@ -257,10 +286,12 @@ const TranscriptRow = memo(function TranscriptRow({ item }: { item: TranscriptIt
   switch (item.kind) {
     case "user_message":
       return (
-        <article className="border-l-2 border-accent bg-accent-muted/60 px-3 py-2.5" data-testid="user-message">
-          <p className="mb-1 text-xs font-medium text-accent">{t("feed.taskCard")}</p>
-          <p className="whitespace-pre-wrap break-words text-sm">{item.text}</p>
-        </article>
+        <div className="flex justify-end py-2" data-testid="user-message">
+          <article className="max-w-[min(44rem,88%)] rounded-[20px] rounded-br-md bg-surface-2 px-4 py-2.5 shadow-sm">
+            <p className="sr-only">{t("feed.taskCard")}</p>
+            <p className="whitespace-pre-wrap break-words text-[15px] leading-7 text-text">{item.text}</p>
+          </article>
+        </div>
       );
     case "action_row":
       return <ToolActionRow action={item.action} />;
@@ -322,36 +353,39 @@ const ToolActionRow = memo(function ToolActionRow({ action }: { action: ToolItem
       <Collapsible.Trigger asChild>
         <button
           type="button"
-          className="flex w-full items-center gap-2 rounded-md bg-surface-2/70 px-3 py-2 text-left text-sm transition-colors hover:bg-surface-2"
+          className="group flex min-h-8 w-full items-center gap-2 rounded-md bg-transparent px-1.5 py-1 text-left text-[12px] text-muted transition-colors hover:bg-surface-2/70 hover:text-text"
           aria-label={t("feed.action.disclosure", { action: `${verb}${target ? ` ${target}` : ""}` })}
+          aria-expanded={open}
         >
-          <ToolIcon aria-hidden size={14} className="shrink-0 text-muted" />
+          <ToolIcon aria-hidden size={13} className="shrink-0 text-faint group-hover:text-muted" />
           <span className="min-w-0 flex-1 truncate">
             {verb}
-            {target ? <span className="mono text-muted"> {target}</span> : null}
+            {target ? <span className="mono text-text/75"> {target}</span> : null}
           </span>
-          <span className={cx("flex shrink-0 items-center gap-1 text-xs font-medium", STATUS_COLOR[action.status])}>
-            <StatusIcon aria-hidden size={13} className={action.status === "running" ? "animate-spin" : ""} />
+          <span className={cx("flex shrink-0 items-center gap-1 text-[11px] font-medium", STATUS_COLOR[action.status])}>
+            <StatusIcon aria-hidden size={12} className={action.status === "running" ? "animate-spin" : ""} />
             {statusLabel}
           </span>
-          <ChevronDown aria-hidden size={14} className={cx("shrink-0 text-faint transition-transform", open && "rotate-180")} />
+          <ChevronDown aria-hidden size={12} className={cx("shrink-0 text-faint transition-transform", open && "rotate-180")} />
         </button>
       </Collapsible.Trigger>
-      <Collapsible.Content className="border-x border-b border-border bg-surface px-3 py-2 text-xs">
-        <p className="text-faint">{t("feed.tool.arguments")}</p>
-        <pre className="mono mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-sm bg-bg px-2 py-1.5 text-muted">
-          {action.argsSummary || "{}"}
-        </pre>
-        {action.summary ? (
-          <>
-            <p className="mt-2 text-faint">{t("feed.tool.result")}</p>
-            <pre className="mono mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-sm bg-bg px-2 py-1.5 text-muted">
-              {action.summary}
-            </pre>
-          </>
-        ) : null}
-        {action.status === "error" ? <p className="mt-2 text-danger">{t("feed.action.failureRecovery")}</p> : null}
-        {action.status === "aborted" ? <p className="mt-2 text-warning">{t("feed.action.abortedRecovery")}</p> : null}
+      <Collapsible.Content className="ml-2 pt-1">
+        <div className="bounded-detail px-3 py-2.5 text-[11px]" tabIndex={0} data-testid="tool-detail-frame">
+          <p className="text-faint">{t("feed.tool.arguments")}</p>
+          <pre className="mono mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded-[7px] bg-bg px-2 py-1.5 text-muted">
+            {action.argsSummary || "{}"}
+          </pre>
+          {action.summary ? (
+            <>
+              <p className="mt-2 text-faint">{t("feed.tool.result")}</p>
+              <pre className="mono mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded-[7px] bg-bg px-2 py-1.5 text-muted">
+                {action.summary}
+              </pre>
+            </>
+          ) : null}
+          {action.status === "error" ? <p className="mt-2 text-danger">{t("feed.action.failureRecovery")}</p> : null}
+          {action.status === "aborted" ? <p className="mt-2 text-warning">{t("feed.action.abortedRecovery")}</p> : null}
+        </div>
       </Collapsible.Content>
     </Collapsible.Root>
   );

@@ -14,12 +14,12 @@ const INLINE_PATTERN_SOURCE =
   "(`[^`]+`|\\*\\*[^*]+\\*\\*|__[^_]+__|\\*[^*]+\\*|_[^_]+_|~~[^~]+~~|!\\[[^\\]]*\\]\\([^)]+\\)|\\[[^\\]]+\\]\\([^)]+\\))";
 
 const HEADING_CLASS: Record<number, string> = {
-  1: "mt-3 mb-1 text-lg font-semibold",
-  2: "mt-3 mb-1 text-base font-semibold",
-  3: "mt-2 mb-1 text-sm font-semibold",
-  4: "mt-2 mb-0.5 text-sm font-medium",
-  5: "mt-1 mb-0.5 text-sm font-medium",
-  6: "mt-1 mb-0.5 text-sm font-medium text-muted",
+  1: "mt-5 mb-2 text-2xl font-semibold tracking-[-0.03em]",
+  2: "mt-5 mb-2 text-xl font-semibold tracking-[-0.02em]",
+  3: "mt-4 mb-1.5 text-lg font-semibold",
+  4: "mt-3 mb-1 text-base font-semibold",
+  5: "mt-3 mb-1 text-[15px] font-semibold",
+  6: "mt-2 mb-1 text-sm font-semibold text-muted",
 };
 
 function safeUrl(raw: string): string {
@@ -161,7 +161,7 @@ function renderBlock(block: Block, index: number): ReactNode {
   switch (block.kind) {
     case "code":
       return (
-        <pre key={index} className="my-2 overflow-x-auto rounded-md bg-surface-2/70 p-2.5 font-mono text-xs leading-relaxed">
+        <pre key={index} className="my-3 overflow-x-auto rounded-md bg-surface-2/70 p-3 font-mono text-[13px] leading-6">
           <code>{block.text}</code>
         </pre>
       );
@@ -181,13 +181,13 @@ function renderBlock(block: Block, index: number): ReactNode {
     }
     case "paragraph":
       return (
-        <p key={index} className="whitespace-pre-wrap break-words leading-relaxed">
+        <p key={index} className="my-1.5 whitespace-pre-wrap break-words leading-[1.78]">
           {parseInline(block.text)}
         </p>
       );
     case "ul":
       return (
-        <ul key={index} className="my-1.5 list-disc space-y-0.5 pl-5 leading-relaxed">
+        <ul key={index} className="my-2 list-disc space-y-1 pl-5 leading-[1.75]">
           {block.items.map((item, itemIndex) => (
             <li key={itemIndex} className="whitespace-pre-wrap break-words">{parseInline(item)}</li>
           ))}
@@ -195,7 +195,7 @@ function renderBlock(block: Block, index: number): ReactNode {
       );
     case "ol":
       return (
-        <ol key={index} className="my-1.5 list-decimal space-y-0.5 pl-5 leading-relaxed">
+        <ol key={index} className="my-2 list-decimal space-y-1 pl-5 leading-[1.75]">
           {block.items.map((item, itemIndex) => (
             <li key={itemIndex} className="whitespace-pre-wrap break-words">{parseInline(item)}</li>
           ))}

@@ -20,40 +20,45 @@ const NAV_ITEMS: Array<{ view: ViewName; labelKey: string; icon: typeof Settings
 
 export function Sidebar({ view, collapsed, onNavigate, children, drawer = false }: SidebarProps) {
   const { t } = useI18n();
+  const navigation = NAV_ITEMS.map(({ view: itemView, labelKey, icon: Icon }) => {
+    const active = view === itemView;
+    return (
+      <button
+        key={itemView}
+        type="button"
+        onClick={() => onNavigate(itemView)}
+        className={cx(
+          "flex h-8 min-w-0 items-center justify-center gap-1.5 rounded-[9px] px-2 text-[11px] transition-colors duration-fast",
+          active ? "bg-surface/72 font-medium text-text shadow-sm" : "text-muted hover:bg-surface/55 hover:text-text",
+          collapsed && "w-10 px-0"
+        )}
+        aria-current={active ? "page" : undefined}
+        title={collapsed ? t(labelKey) : undefined}
+        data-testid={`nav-${itemView}`}
+      >
+        <Icon aria-hidden size={14} className="shrink-0" />
+        {!collapsed ? <span className="truncate">{t(labelKey)}</span> : null}
+      </button>
+    );
+  });
   return (
     <nav
       className={cx(
-        "flex h-full shrink-0 flex-col gap-1 border-r border-border bg-surface p-2 transition-[width] duration-fast",
-        collapsed ? "w-12" : drawer ? "w-full" : "w-48"
+        "glass-chrome flex h-full shrink-0 flex-col gap-0.5 border-r border-border/60 p-2 transition-[width] duration-fast",
+        collapsed ? "w-14" : drawer ? "w-full" : "w-[17rem]"
       )}
       aria-label={t("shell.collapseSidebar")}
       data-testid="sidebar"
     >
-      {NAV_ITEMS.map(({ view: itemView, labelKey, icon: Icon }) => {
-        const active = view === itemView;
-        return (
-          <button
-            key={itemView}
-            type="button"
-            onClick={() => onNavigate(itemView)}
-            className={cx(
-              "flex h-9 items-center gap-2 rounded-md px-2 text-sm transition-colors duration-fast",
-              active ? "bg-accent-muted font-medium text-accent" : "text-muted hover:bg-surface-2 hover:text-text",
-              collapsed && "justify-center px-0"
-            )}
-            aria-current={active ? "page" : undefined}
-            title={collapsed ? t(labelKey) : undefined}
-            data-testid={`nav-${itemView}`}
-          >
-            <Icon aria-hidden size={16} className="shrink-0" />
-            {!collapsed ? <span>{t(labelKey)}</span> : null}
-          </button>
-        );
-      })}
       {!collapsed && children ? (
-        <div className="mt-1 min-h-0 flex-1 overflow-hidden border-t border-border/60">{children}</div>
+        <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
       ) : null}
-      {!collapsed ? <p className="mt-2 px-2 text-xs text-faint">{t("nav.settingsHint")}</p> : null}
+      <div className={cx(
+        "mt-auto border-t border-border/45 pt-2",
+        collapsed ? "flex flex-col items-center gap-1" : "grid grid-cols-3 gap-1"
+      )}>
+        {navigation}
+      </div>
     </nav>
   );
 }

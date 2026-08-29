@@ -121,9 +121,9 @@ export const MainPage = memo(function MainPage({
       <div className="min-h-0 flex-1">
         <ActivityFeedSection />
       </div>
-      <div className="shrink-0 border-t border-border bg-surface/95 px-4 pb-16 pt-3 sm:pb-3">
-        <div className="mx-auto max-w-[54rem] space-y-2.5">
-          <div className="grid grid-cols-1 gap-2 rounded-md bg-surface-2/60 p-2 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,0.75fr)]">
+      <div className="shrink-0 bg-gradient-to-t from-surface via-surface/95 to-transparent px-4 pb-16 pt-5 sm:pb-5">
+        <div className="mx-auto max-w-[52rem] space-y-2.5">
+          <div className="glass-panel grid grid-cols-1 gap-2 rounded-[13px] border border-border/65 p-2 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,0.75fr)]">
             <WorkspaceField
               value={workspace}
               onChange={handleWorkspaceChange}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { MessageSquarePlus } from "lucide-react";
+import { ArrowUpRight, SquareTerminal } from "lucide-react";
 import { api } from "@/api/client";
 import type { Conversation, FileChange, Profile, Turn } from "@/api/client";
 import { AppShell } from "@/components/AppShell";
@@ -159,11 +159,17 @@ export function App() {
             onOpenMemorySource={openMemorySource}
           />
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-            <MessageSquarePlus aria-hidden size={30} className="text-accent" />
-            <h1 className="text-lg font-semibold">{t("conversation.emptyTitle")}</h1>
-            <p className="max-w-md text-sm text-muted">{t("conversation.emptyDescription")}</p>
-            <button type="button" className="btn-primary" onClick={() => setCreateOpen(true)}>{t("nav.newConversation")}</button>
+          <div className="flex h-full flex-col items-center justify-center px-6 pb-[8vh] text-center">
+            <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-accent text-accent-fg shadow-md">
+              <SquareTerminal aria-hidden size={26} strokeWidth={1.7} />
+            </div>
+            <p className="mt-5 text-[11px] font-semibold uppercase tracking-[0.22em] text-faint">{t("app.name")}</p>
+            <h1 className="mt-2 text-[clamp(1.75rem,3vw,2.75rem)] font-medium tracking-[-0.045em] text-text">{t("conversation.emptyTitle")}</h1>
+            <p className="mt-3 max-w-lg text-sm leading-7 text-muted">{t("conversation.emptyDescription")}</p>
+            <button type="button" className="btn-primary mt-7 h-11 px-5" onClick={() => setCreateOpen(true)}>
+              {t("nav.newConversation")}
+              <ArrowUpRight aria-hidden size={16} />
+            </button>
           </div>
         )}
       </AppShell>

@@ -208,6 +208,8 @@ class _ChatCompletionsMixin:
         for index, message in enumerate(messages):
             item = dict(message)
             item.pop("_provider_continuations", None)
+            if item.get("role") == "user" and isinstance(item.get("content"), list):
+                item["content"] = _chat_user_content(item["content"])
             # Only DeepSeek-style visible reasoning requires round-tripping
             # the provider-visible reasoning_content in a tool sub-request.
             # Other modes/providers must not receive this non-standard field.
@@ -854,6 +856,34 @@ class OpenAIResponsesClient:
             text = "".join(str(getattr(part, "text", "") or "") for part in summary)
             return [ReasoningSummaryDelta(output_index, 0, text)] if text else []
         return []
+
+
+def _chat_user_content(content: Sequence[Any]) -> List[dict]:
+    """Map neutral Responses-style user parts to Chat Completions parts."""
+
+    out: List[dict] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        part_type = part.get("type")
+        if part_type == "input_text":
+            out.append({"type": "text", "text": str(part.get("text") or "")})
+        elif part_type == "input_image":
+            image_url: Dict[str, Any] = {"url": str(part.get("image_url") or "")}
+            if part.get("detail"):
+                image_url["detail"] = part["detail"]
+            out.append({"type": "image_url", "image_url": image_url})
+        elif part_type == "input_file":
+            out.append(
+                {
+                    "type": "file",
+                    "file": {
+                        "filename": str(part.get("filename") or "attachment"),
+                        "file_data": str(part.get("file_data") or ""),
+                    },
+                }
+            )
+    return out
 
 
 def _responses_input(messages: Sequence[dict]) -> List[dict]:

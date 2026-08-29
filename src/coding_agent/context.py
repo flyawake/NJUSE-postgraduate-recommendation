@@ -9,6 +9,7 @@ steps, error results and each file's latest successful read_file window.
 
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -16,14 +17,18 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from .errors import ContextOverflowError
 from .models import (
     AssistantMessage,
+    AttachmentRef,
     CanonicalMessage,
     SystemMessage,
     ToolMessage,
     UserMessage,
 )
 
-DEFAULT_CHAR_BUDGET = 120_000
+DEFAULT_CHAR_BUDGET = 258_000
 RECENT_STEPS_TO_KEEP = 2
+MAX_REASONING_CHARS = 800
+MAX_ASSISTANT_TEXT_CHARS = 4_000
+MAX_INLINE_ATTACHMENT_CHARS = 50_000
 
 _SOURCE_PREFIXES = {
     "completion_policy": "[completion-policy] ",
@@ -74,16 +79,79 @@ class RequestView:
     messages: Tuple[Dict[str, Any], ...]
     char_count: int
     compacted_results: int = 0
+    compacted_assistants: int = 0
     omitted_chars: int = 0
     memory_projection: Optional[MemoryProjection] = None
 
 
-def to_provider_message(message: CanonicalMessage) -> Dict[str, Any]:
+def to_provider_message(
+    message: CanonicalMessage,
+    *,
+    include_attachments: bool = False,
+    attachment_loader: Optional[Callable[[AttachmentRef], bytes]] = None,
+) -> Dict[str, Any]:
     if isinstance(message, SystemMessage):
         return {"role": "system", "content": message.content}
     if isinstance(message, UserMessage):
         prefix = _SOURCE_PREFIXES.get(message.source, "")
-        return {"role": "user", "content": prefix + message.content}
+        text = prefix + message.content
+        if not message.attachments:
+            return {"role": "user", "content": text}
+        names = "、".join(item.filename for item in message.attachments)
+        if not include_attachments:
+            marker = f"[附件已在较早消息中提供：{names}]"
+            return {
+                "role": "user",
+                "content": f"{text}\n{marker}".strip(),
+            }
+        if attachment_loader is None:
+            raise RuntimeError("attachment loader is required")
+        content: List[Dict[str, Any]] = []
+        annotation = f"附件：{names}"
+        content.append(
+            {
+                "type": "input_text",
+                "text": f"{text}\n{annotation}".strip(),
+            }
+        )
+        for item in message.attachments:
+            raw = attachment_loader(item)
+            if item.media_type.startswith("text/") or item.media_type in {
+                "application/json",
+                "application/xml",
+            }:
+                decoded = raw.decode("utf-8", errors="replace")
+                truncated = len(decoded) > MAX_INLINE_ATTACHMENT_CHARS
+                suffix = "\n…[附件文本已截断]" if truncated else ""
+                content.append(
+                    {
+                        "type": "input_text",
+                        "text": (
+                            f"\n--- 附件 {item.filename} ---\n"
+                            f"{decoded[:MAX_INLINE_ATTACHMENT_CHARS]}{suffix}"
+                        ),
+                    }
+                )
+                continue
+            encoded = base64.b64encode(raw).decode("ascii")
+            data_url = f"data:{item.media_type};base64,{encoded}"
+            if item.kind == "image":
+                content.append(
+                    {
+                        "type": "input_image",
+                        "image_url": data_url,
+                        "detail": "auto",
+                    }
+                )
+            else:
+                content.append(
+                    {
+                        "type": "input_file",
+                        "filename": item.filename,
+                        "file_data": data_url,
+                    }
+                )
+        return {"role": "user", "content": content}
     if isinstance(message, AssistantMessage):
         base: Dict[str, Any] = {"role": "assistant", "content": message.text or None}
         if message.reasoning is not None:
@@ -125,7 +193,13 @@ def _message_chars(value: Any) -> int:
     if isinstance(value, str):
         return len(value)
     if isinstance(value, dict):
-        return sum(_message_chars(item) for item in value.values())
+        total = 0
+        for key, item in value.items():
+            if key in {"file_data", "image_url"} and isinstance(item, str):
+                if item.startswith("data:"):
+                    continue
+            total += _message_chars(item)
+        return total
     if isinstance(value, (list, tuple)):
         return sum(_message_chars(item) for item in value)
     if value is None:
@@ -161,11 +235,13 @@ class ContextManager:
         char_budget: int = DEFAULT_CHAR_BUDGET,
         *,
         memory_provider: Optional[Callable[[], Optional[MemoryProjection]]] = None,
+        attachment_loader: Optional[Callable[[AttachmentRef], bytes]] = None,
     ) -> None:
         if char_budget < 1:
             raise ValueError("char_budget must be positive")
         self.char_budget = char_budget
         self._memory_provider = memory_provider
+        self._attachment_loader = attachment_loader
         self._memory_projection_loaded = False
         self._memory_projection: Optional[MemoryProjection] = None
         self._memory_projection_committed = False
@@ -205,11 +281,14 @@ class ContextManager:
                     continue
                 replaceable.append(index)
 
-        overrides: Dict[int, str] = {}
+        overrides: Dict[int, Any] = {}
         rendered = self._render(messages, overrides, prefix=prefix)
         count = _message_chars(rendered)
-        compacted = 0
-        for index in replaceable:  # oldest first
+        compacted_results = 0
+        compacted_assistants = 0
+
+        # Phase 1: replaceable old successful tool bodies (oldest first).
+        for index in replaceable:
             if count <= self.char_budget:
                 break
             message = messages[index]
@@ -217,21 +296,59 @@ class ContextManager:
             overrides[index] = _compaction_marker(message)
             rendered = self._render(messages, overrides, prefix=prefix)
             count = _message_chars(rendered)
-            compacted += 1
+            compacted_results += 1
+
+        # Phase 2: memory is lower priority than every protected canonical
+        # item.  If the escaped projection does not fit, omit it as a whole
+        # rather than squeezing out root policy, the current user request,
+        # protocol skeletons, errors, or latest file observations.
+        if count > self.char_budget and prefix:
+            rendered_without_memory = self._render(messages, overrides)
+            count_without_memory = _message_chars(rendered_without_memory)
+            if count_without_memory <= self.char_budget:
+                rendered = rendered_without_memory
+                count = count_without_memory
+                memory_projection = None
+
+        # Phase 3: automatically compact old assistant reasoning/text so a
+        # long conversation can continue instead of failing at the request
+        # boundary.  Recent steps are kept intact; the canonical history is
+        # still never mutated.
         if count > self.char_budget:
-            # Memory is lower priority than every protected canonical item. If
-            # the escaped projection does not fit, omit it as a whole rather
-            # than squeezing out root policy, the current user request,
-            # protocol skeletons, errors, or latest file observations.
-            if prefix:
-                rendered_without_memory = self._render(messages, overrides)
-                count_without_memory = _message_chars(rendered_without_memory)
-                if count_without_memory <= self.char_budget:
-                    rendered = rendered_without_memory
-                    count = count_without_memory
-                    memory_projection = None
-            if count > self.char_budget:
-                raise ContextOverflowError(count, self.char_budget)
+            candidates: List[Tuple[int, AssistantMessage]] = []
+            for index, message in enumerate(messages):
+                if (
+                    isinstance(message, AssistantMessage)
+                    and index not in recent_indices
+                ):
+                    candidates.append((index, message))
+
+            def saving(index: int, message: AssistantMessage) -> int:
+                compact = self._compact_assistant(message)
+                if compact is None:
+                    return 0
+                original = _message_chars(to_provider_message(message))
+                replaced = _message_chars(compact)
+                return max(0, original - replaced)
+
+            candidates.sort(key=lambda pair: (-saving(pair[0], pair[1]), pair[0]))
+            for index, message in candidates:
+                if count <= self.char_budget:
+                    break
+                compact = self._compact_assistant(message)
+                if compact is None:
+                    continue
+                if _message_chars(to_provider_message(message)) <= _message_chars(
+                    compact
+                ):
+                    continue
+                overrides[index] = compact
+                rendered = self._render(messages, overrides, prefix=prefix)
+                count = _message_chars(rendered)
+                compacted_assistants += 1
+
+        if count > self.char_budget:
+            raise ContextOverflowError(count, self.char_budget)
 
         if (
             memory_projection is not None
@@ -242,14 +359,20 @@ class ContextManager:
             memory_projection.commit_usage()
             self._memory_projection_committed = True
 
-        omitted = sum(
-            max(0, len(messages[index].content) - len(overrides[index]))
-            for index in overrides
-        )
+        omitted = 0
+        for index, override in overrides.items():
+            message = messages[index]
+            if isinstance(message, ToolMessage):
+                omitted += max(0, len(message.content) - len(str(override)))
+            elif isinstance(message, AssistantMessage):
+                original = _message_chars(to_provider_message(message))
+                replaced = _message_chars(override)
+                omitted += max(0, original - replaced)
         return RequestView(
             messages=tuple(rendered),
             char_count=count,
-            compacted_results=compacted,
+            compacted_results=compacted_results,
+            compacted_assistants=compacted_assistants,
             omitted_chars=omitted,
             memory_projection=memory_projection,
         )
@@ -272,9 +395,34 @@ class ContextManager:
         return steps
 
     @staticmethod
+    def _compact_assistant(
+        message: AssistantMessage,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a bounded provider message for an old assistant turn.
+
+        The canonical message is not mutated: this only builds a detached,
+        truncated request-view equivalent.  Tool calls and provider
+        continuations are preserved verbatim because they are protocol data.
+        """
+        base = to_provider_message(message)
+        changed = False
+        if message.reasoning and len(message.reasoning) > MAX_REASONING_CHARS:
+            base["reasoning_content"] = (
+                message.reasoning[:MAX_REASONING_CHARS]
+                + "\n…[reasoning truncated by context manager]"
+            )
+            changed = True
+        if len(message.text or "") > MAX_ASSISTANT_TEXT_CHARS:
+            base["content"] = (message.text or "")[
+                :MAX_ASSISTANT_TEXT_CHARS
+            ] + "\n…[text truncated by context manager]"
+            changed = True
+        return base if changed else None
+
     def _render(
+        self,
         messages: List[CanonicalMessage],
-        overrides: Dict[int, str],
+        overrides: Dict[int, Any],
         *,
         prefix: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
@@ -283,15 +431,34 @@ class ContextManager:
             # Memory is an untrusted, non-instruction reference block at the
             # lowest-priority position before the canonical system prompt.
             rendered.append({"role": "system", "content": prefix})
+        latest_attachment_index = max(
+            (
+                index
+                for index, message in enumerate(messages)
+                if isinstance(message, UserMessage) and message.attachments
+            ),
+            default=-1,
+        )
         for index, message in enumerate(messages):
-            if index in overrides and isinstance(message, ToolMessage):
-                rendered.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": message.tool_call_id,
-                        "content": overrides[index],
-                    }
+            if index in overrides:
+                value = overrides[index]
+                if isinstance(message, ToolMessage):
+                    rendered.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": message.tool_call_id,
+                            "content": str(value),
+                        }
+                    )
+                    continue
+                if isinstance(message, AssistantMessage) and isinstance(value, dict):
+                    rendered.append(value)
+                    continue
+            rendered.append(
+                to_provider_message(
+                    message,
+                    include_attachments=index == latest_attachment_index,
+                    attachment_loader=self._attachment_loader,
                 )
-            else:
-                rendered.append(to_provider_message(message))
+            )
         return rendered

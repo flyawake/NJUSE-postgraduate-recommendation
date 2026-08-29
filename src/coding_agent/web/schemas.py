@@ -48,7 +48,8 @@ class ConversationVersionRequest(StrictModel):
 
 
 class TurnCreateRequest(StrictModel):
-    content: str = Field(min_length=1, max_length=MAX_TASK_CHARS)
+    content: str = Field(default="", max_length=MAX_TASK_CHARS)
+    attachment_ids: List[str] = Field(default_factory=list, max_length=4)
     idempotency_key: Optional[str] = Field(default=None, max_length=128)
     profile_id: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -203,6 +204,15 @@ class TurnDTO(BaseModel):
     result: Optional[Dict[str, Any]] = None
     error_code: Optional[str] = None
     active: bool = False
+    attachments: List["AttachmentDTO"] = Field(default_factory=list)
+
+
+class AttachmentDTO(BaseModel):
+    id: str
+    filename: str
+    media_type: str
+    kind: str
+    size_bytes: int
 
 
 class InboxEnqueueRequest(StrictModel):

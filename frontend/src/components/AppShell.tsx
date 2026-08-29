@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { PanelLeft, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { TopBar } from "./AppShellTopBar";
 import { Sidebar } from "./AppShellSidebar";
@@ -53,7 +53,7 @@ export function AppShell({
   }, [inspector]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="app-backdrop flex h-full min-h-0 flex-col">
       <TopBar
         workspace={workspace}
         profileLabel={profileLabel}
@@ -70,12 +70,12 @@ export function AppShell({
             {conversationSidebar}
           </Sidebar>
         </div>
-        <main className="relative flex min-w-0 flex-1 flex-col">
+        <main className="workspace-surface relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto sm:rounded-tl-[18px] sm:border-l sm:border-t sm:border-border/70">
           {children}
         </main>
         {inspector ? (
           <>
-            <aside className="hidden w-[min(40rem,42vw)] shrink-0 overflow-hidden border-l border-border bg-bg lg:block">
+            <aside className="glass-panel hidden w-[min(40rem,42vw)] shrink-0 overflow-hidden border-l border-t border-border/70 lg:block">
               {inspector}
             </aside>
 
@@ -87,7 +87,7 @@ export function AppShell({
                   data-state={drawerOpen ? "open" : "closed"}
                 />
                 <Dialog.Content
-                  className="fixed inset-y-0 right-0 z-50 w-[min(36rem,94vw)] overflow-y-auto border-l border-border bg-surface shadow-md outline-none lg:hidden"
+                  className="glass-panel fixed inset-y-0 right-0 z-50 w-[min(36rem,94vw)] overflow-y-auto border-l border-border shadow-md outline-none lg:hidden"
                   aria-label={t("inspector.title")}
                 >
                   <div className="sr-only">
@@ -109,7 +109,7 @@ export function AppShell({
       <Dialog.Root open={sidebarDrawerOpen} onOpenChange={setSidebarDrawerOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-40 bg-overlay sm:hidden" />
-          <Dialog.Content className="fixed inset-y-0 left-0 z-50 w-[min(19rem,90vw)] bg-surface shadow-md outline-none sm:hidden">
+          <Dialog.Content className="glass-chrome fixed inset-y-0 left-0 z-50 w-[min(19rem,90vw)] border-r border-border shadow-md outline-none sm:hidden">
             <Dialog.Title className="sr-only">{t("nav.conversations")}</Dialog.Title>
             <Sidebar
               view={view}
@@ -126,22 +126,10 @@ export function AppShell({
         </Dialog.Portal>
       </Dialog.Root>
 
-      {/* Floating controls: sidebar toggle (narrow) + inspector (narrow).
-          The container ignores pointer events, but its buttons stay
-          focusable, so it must NOT be aria-hidden. */}
-      <div className="pointer-events-none fixed bottom-4 right-4 z-30 flex gap-2 lg:hidden">
-        <button
-          type="button"
-          className="btn-secondary pointer-events-auto shadow-md"
-          onClick={() => {
-            if (window.innerWidth < 640) setSidebarDrawerOpen(true);
-            else setSidebarCollapsed((value) => !value);
-          }}
-          aria-label={sidebarCollapsed ? t("shell.expandSidebar") : t("shell.collapseSidebar")}
-        >
-          <PanelLeft aria-hidden size={16} />
-        </button>
-        {inspector ? (
+      {/* The top bar already owns the sidebar toggle. Only the contextual
+          inspector needs a floating narrow-screen control. */}
+      {inspector ? (
+        <div className="pointer-events-none fixed bottom-4 right-4 z-30 flex gap-2 lg:hidden">
           <button
             type="button"
             className="btn-secondary pointer-events-auto shadow-md"
@@ -150,8 +138,8 @@ export function AppShell({
           >
             <PanelRightOpen aria-hidden size={16} />
           </button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </div>
   );
 }

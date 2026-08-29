@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
-import { BookOpen, CircleStop, ListPlus, Send, Zap } from "lucide-react";
+import { ArrowUp, BookOpen, CircleStop, FileText, ListPlus, Paperclip, X, Zap } from "lucide-react";
 import { api } from "@/api/client";
-import type { ChangeSet, FileChange, ToolEvent, Turn } from "@/api/client";
+import type { Attachment, ChangeSet, FileChange, ToolEvent, Turn } from "@/api/client";
 import { useI18n } from "@/lib/i18n";
 import { useGestureSwap } from "@/lib/gesturePreference";
 import { ActivityFeed } from "./ActivityFeed";
@@ -11,6 +11,7 @@ import { MemoryUsageSummary } from "./MemoryUsageSummary";
 import { InlineError } from "./InlineError";
 import { QueueDock } from "./QueueDock";
 import { TurnChangeSummary } from "./TurnChangeSummary";
+import { TurnNavigator } from "./TurnNavigator";
 import { subscribeToConversationEvents, subscribeToInbox } from "@/lib/sse";
 
 export interface ConversationViewProps {
@@ -25,6 +26,15 @@ function draftKey(conversationId: string): string {
 
 function profileKey(conversationId: string): string {
   return `coding-agent-conversation-profile:${conversationId}`;
+}
+
+function reasoningEffortKey(conversationId: string): string {
+  return `coding-agent-conversation-reasoning-effort:${conversationId}`;
+}
+
+function storedReasoningEffort(conversationId: string): string | null {
+  try { return localStorage.getItem(reasoningEffortKey(conversationId)); }
+  catch { return null; }
 }
 
 function scrollKey(conversationId: string): string {
@@ -56,11 +66,19 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
   const [gestureSwap] = useGestureSwap();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const followingRef = useRef(true);
+  const initialScrollConversationRef = useRef<string | null>(null);
+  const scrollFrameRef = useRef<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [currentTurnId, setCurrentTurnId] = useState<string | null>(null);
   const [task, setTask] = useState(() => {
     try { return sessionStorage.getItem(draftKey(conversationId)) ?? ""; } catch { return ""; }
   });
-  const [reasoningEffort, setReasoningEffort] = useState("");
-  const [effortTouched, setEffortTouched] = useState(false);
+  const [reasoningEffort, setReasoningEffort] = useState(
+    () => storedReasoningEffort(conversationId) ?? ""
+  );
+  const [effortTouched, setEffortTouched] = useState(
+    () => storedReasoningEffort(conversationId) !== null
+  );
   const [profileId, setProfileId] = useState<string | null>(() => {
     try { return localStorage.getItem(profileKey(conversationId)); } catch { return null; }
   });
@@ -70,17 +88,27 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
   const [rememberTitle, setRememberTitle] = useState("");
   const [rememberKind, setRememberKind] = useState("fact");
   const [composerError, setComposerError] = useState<string | null>(null);
+  const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
+  const [uploadingCount, setUploadingCount] = useState(0);
+  const previousConversationRef = useRef(conversationId);
+
+  useEffect(() => {
+    const previous = previousConversationRef.current;
+    if (previous !== conversationId) {
+      for (const item of pendingAttachments) void api.deleteAttachment(previous, item.id).catch(() => undefined);
+      setPendingAttachments([]);
+      previousConversationRef.current = conversationId;
+    }
+  }, [conversationId, pendingAttachments]);
 
   useEffect(() => {
     try { sessionStorage.setItem(draftKey(conversationId), task); } catch { /* best effort */ }
   }, [conversationId, task]);
   useEffect(() => {
-    const element = scrollRef.current;
-    if (!element) return;
-    try {
-      followingRef.current = sessionStorage.getItem(followKey(conversationId)) !== "0";
-      element.scrollTop = Number(sessionStorage.getItem(scrollKey(conversationId)) ?? 0);
-    } catch { /* best effort */ }
+    followingRef.current = true;
+    initialScrollConversationRef.current = null;
+    setCurrentTurnId(null);
+    try { sessionStorage.setItem(followKey(conversationId), "1"); } catch { /* best effort */ }
   }, [conversationId]);
   useEffect(() => {
     const element = scrollRef.current;
@@ -108,9 +136,10 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
   ) ?? null;
   const availableProfiles = profilesQuery.data?.filter((profile) => profile.credential?.configured) ?? [];
   useEffect(() => {
+    const stored = storedReasoningEffort(conversationId);
     setProfileTouched(false);
-    setEffortTouched(false);
-    setReasoningEffort("");
+    setEffortTouched(stored !== null);
+    setReasoningEffort(stored ?? "");
   }, [conversationId]);
   useEffect(() => {
     if (profileTouched) return;
@@ -128,6 +157,7 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
     refetchInterval: (query) => query.state.data?.items.some((turn) => turn.active) ? 500 : false,
   });
   const turns = useMemo(() => turnsQuery.data?.items ?? [], [turnsQuery.data]);
+  const orderedTurns = useMemo(() => [...turns].reverse(), [turns]);
   const terminalKey = turns.filter((turn) => !turn.active).map((turn) => `${turn.id}:${turn.state}`).join("|");
   const changeSets = useQuery({
     queryKey: ["turn-change-sets", conversationId, terminalKey],
@@ -142,6 +172,38 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
     enabled: turns.length > 0,
   });
   const activeTurn = turns.find((turn) => turn.active) ?? null;
+
+  useEffect(() => {
+    if (turnsQuery.isLoading || turns.length === 0 || initialScrollConversationRef.current === conversationId) return;
+    let sourceTurn: string | null = null;
+    try { sourceTurn = new URL(window.location.href).searchParams.get("turn"); } catch { /* use latest */ }
+    initialScrollConversationRef.current = conversationId;
+    if (sourceTurn && turns.some((turn) => turn.id === sourceTurn)) {
+      setCurrentTurnId(sourceTurn);
+      return;
+    }
+    setCurrentTurnId(turns[0].id);
+    followingRef.current = true;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const element = scrollRef.current;
+      if (element) element.scrollTop = element.scrollHeight;
+    }));
+  }, [conversationId, turns, turnsQuery.isLoading]);
+
+  useEffect(() => () => {
+    if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
+  }, []);
+
+  const selectTurn = useCallback((turnId: string) => {
+    const target = document.getElementById(`turn-${turnId}`);
+    if (!target) return;
+    const newest = turns[0]?.id === turnId;
+    followingRef.current = newest;
+    setCurrentTurnId(turnId);
+    try { sessionStorage.setItem(followKey(conversationId), newest ? "1" : "0"); } catch { /* best effort */ }
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    target.focus({ preventScroll: true });
+  }, [conversationId, turns]);
 
   useEffect(() => {
     let sourceTurn: string | null = null;
@@ -219,9 +281,10 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
   });
 
   const startMutation = useMutation({
-    mutationFn: ({ content, key }: { content: string; key: string }) => api.startTurn(conversationId, { content, idempotency_key: key, profile_id: profileId ?? null, reasoning_effort: reasoningEffort || null }),
+    mutationFn: ({ content, key, attachmentIds }: { content: string; key: string; attachmentIds: string[] }) => api.startTurn(conversationId, { content, attachment_ids: attachmentIds, idempotency_key: key, profile_id: profileId ?? null, reasoning_effort: reasoningEffort || null }),
     onSuccess: async () => {
       setTask("");
+      setPendingAttachments([]);
       followingRef.current = true;
       try { sessionStorage.setItem(followKey(conversationId), "1"); } catch { /* best effort */ }
       await Promise.all([
@@ -263,9 +326,45 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["turns", conversationId] }),
   });
 
+  const addFiles = async (files: File[]) => {
+    if (activeTurn || conversationQuery.data?.state !== "active" || files.length === 0) return;
+    setComposerError(null);
+    let count = pendingAttachments.length;
+    let total = pendingAttachments.reduce((sum, item) => sum + item.size_bytes, 0);
+    for (const file of files) {
+      if (count >= 4) {
+        setComposerError(t("attachment.tooMany"));
+        break;
+      }
+      if (file.size > 10 * 1024 * 1024 || total + file.size > 20 * 1024 * 1024) {
+        setComposerError(t("attachment.tooLarge"));
+        break;
+      }
+      setUploadingCount((value) => value + 1);
+      try {
+        const uploaded = await api.uploadAttachment(conversationId, file);
+        setPendingAttachments((current) => [...current, uploaded]);
+        count += 1;
+        total += uploaded.size_bytes;
+      } catch (error) {
+        setComposerError(error instanceof Error && error.message ? error.message : t("attachment.uploadFailed"));
+        break;
+      } finally {
+        setUploadingCount((value) => Math.max(0, value - 1));
+      }
+    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removeAttachment = async (attachment: Attachment) => {
+    setPendingAttachments((current) => current.filter((item) => item.id !== attachment.id));
+    try { await api.deleteAttachment(conversationId, attachment.id); }
+    catch (error) { setComposerError(error instanceof Error ? error.message : t("attachment.removeFailed")); }
+  };
+
   const submitTask = (mode: "start" | "queue" | "steer") => {
     const content = task.trim();
-    if (!content || conversationQuery.data?.state !== "active") return;
+    if ((!content && pendingAttachments.length === 0) || conversationQuery.data?.state !== "active") return;
     const rememberMatch = /^\/remember(?:\s+(.+))?$/i.exec(content);
     if (rememberMatch) {
       setRememberContent((rememberMatch[1] ?? "").trim());
@@ -275,6 +374,7 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
       return;
     }
     if (activeTurn) {
+      if (!content) return;
       if (mode === "start" || mode === "queue") {
         if (enqueueMutation.isPending) return;
         enqueueMutation.mutate({ content, mode: "queue", key: newIdempotencyKey() });
@@ -287,7 +387,11 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
     if (mode !== "start" || startMutation.isPending) return;
     followingRef.current = true;
     try { sessionStorage.setItem(followKey(conversationId), "1"); } catch { /* best effort */ }
-    startMutation.mutate({ content, key: newIdempotencyKey() });
+    startMutation.mutate({
+      content,
+      key: newIdempotencyKey(),
+      attachmentIds: pendingAttachments.map((item) => item.id),
+    });
   };
 
   const handleMessageProfileChange = (value: string) => {
@@ -300,7 +404,15 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
     try {
       if (next) localStorage.setItem(profileKey(conversationId), next);
       else localStorage.removeItem(profileKey(conversationId));
+      localStorage.removeItem(reasoningEffortKey(conversationId));
     } catch { /* best effort */ }
+  };
+
+  const handleReasoningEffortChange = (value: string) => {
+    setReasoningEffort(value);
+    setEffortTouched(true);
+    try { localStorage.setItem(reasoningEffortKey(conversationId), value); }
+    catch { /* best effort */ }
   };
 
   const conversation = conversationQuery.data;
@@ -313,11 +425,14 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
     ? ["", "low", "medium", "high", "max"]
     : ["", "low", "medium", "high"];
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="border-b border-border px-4 py-3">
-        <h1 className="truncate text-base font-semibold">{conversation?.title ?? ""}</h1>
-        <p className="truncate text-xs text-muted">{conversation?.workspace_path ?? ""}</p>
+    <div className="relative flex h-full min-h-0 flex-col bg-transparent">
+      <header className="glass-panel shrink-0 border-b border-border/65 px-4 py-3">
+        <div className="mx-auto max-w-[56rem]">
+          <h1 className="truncate text-[14px] font-semibold tracking-[-0.018em]">{conversation?.title ?? ""}</h1>
+          <p className="mono mt-0.5 truncate text-[11px] text-faint">{conversation?.workspace_path ?? ""}</p>
+        </div>
       </header>
+      <TurnNavigator turns={orderedTurns} currentTurnId={currentTurnId} onSelect={selectTurn} />
       <div
         ref={scrollRef}
         className="min-h-0 flex-1 overflow-y-auto"
@@ -328,13 +443,30 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
             sessionStorage.setItem(scrollKey(conversationId), String(element.scrollTop));
             sessionStorage.setItem(followKey(conversationId), followingRef.current ? "1" : "0");
           } catch { /* best effort */ }
+          if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
+          scrollFrameRef.current = requestAnimationFrame(() => {
+            const viewportTop = element.getBoundingClientRect().top;
+            const anchor = viewportTop + Math.min(220, element.clientHeight * 0.35);
+            let closestId: string | null = null;
+            let closestDistance = Number.POSITIVE_INFINITY;
+            for (const turnElement of element.querySelectorAll<HTMLElement>("[data-turn-id]")) {
+              const distance = Math.abs(turnElement.getBoundingClientRect().top - anchor);
+              if (distance < closestDistance) {
+                closestDistance = distance;
+                closestId = turnElement.dataset.turnId ?? null;
+              }
+            }
+            if (closestId) setCurrentTurnId(closestId);
+          });
         }}
       >
         {turns.length === 0 ? (
-          <div><p className="py-10 text-center text-sm text-faint">{t("conversation.noTurns")}</p></div>
+          <div className="flex h-full min-h-[16rem] items-center justify-center px-6">
+            <p className="max-w-md text-center text-sm leading-7 text-faint">{t("conversation.noTurns")}</p>
+          </div>
         ) : (
-          <div className="mx-auto max-w-[54rem] px-4">
-            {[...turns].reverse().map((turn) => (
+          <div className="mx-auto max-w-[56rem] px-4 sm:px-6">
+            {orderedTurns.map((turn) => (
               <ConversationTurn
                 key={turn.id}
                 conversationId={conversationId}
@@ -348,14 +480,38 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
           </div>
         )}
       </div>
-      <div className="shrink-0 border-t border-border bg-surface/95 p-3">
-        <div className="mx-auto max-w-[54rem]">
+      <div className="shrink-0 bg-gradient-to-t from-surface via-surface/95 to-transparent px-3 pb-3 pt-5 sm:px-5 sm:pb-5">
+        <div className="mx-auto max-w-[52rem]">
           {composerError ? <InlineError kind="validation" message={composerError} /> : null}
           {startMutation.isError ? <InlineError kind="run_failure" message={startMutation.error instanceof Error ? startMutation.error.message : t("error.runFailure")} /> : null}
           {(inboxQuery.data?.items?.length ?? 0) > 0 ? (
             <QueueDock conversationId={conversationId} snapshot={inboxQuery.data} />
           ) : null}
-          <div className="rounded-lg border border-border bg-surface p-2 shadow-sm">
+          <div
+            className="composer-shell p-2.5"
+            onDragOver={(event) => {
+              if (!activeTurn && event.dataTransfer.types.includes("Files")) event.preventDefault();
+            }}
+            onDrop={(event) => {
+              if (activeTurn) return;
+              event.preventDefault();
+              void addFiles(Array.from(event.dataTransfer.files));
+            }}
+          >
+            {pendingAttachments.length > 0 || uploadingCount > 0 ? (
+              <div className="flex flex-wrap gap-2 px-2 pb-2" data-testid="pending-attachments">
+                {pendingAttachments.map((attachment) => (
+                  <AttachmentChip
+                    key={attachment.id}
+                    attachment={attachment}
+                    conversationId={conversationId}
+                    onRemove={() => void removeAttachment(attachment)}
+                    disabled={startMutation.isPending}
+                  />
+                ))}
+                {uploadingCount > 0 ? <span className="rounded-md border border-border px-2 py-1 text-xs text-muted">{t("attachment.uploading")}</span> : null}
+              </div>
+            ) : null}
             <textarea
               value={task}
               onChange={(event) => setTask(event.target.value)}
@@ -371,17 +527,49 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
                   submitTask(activeTurn ? (gestureSwap ? "steer" : "queue") : "start");
                 }
               }}
-              className="min-h-[4rem] w-full resize-y bg-transparent p-2 text-sm outline-none"
+              onPaste={(event) => {
+                if (activeTurn) return;
+                const files = Array.from(event.clipboardData.items)
+                  .filter((item) => item.kind === "file")
+                  .map((item) => item.getAsFile())
+                  .filter((item): item is File => item !== null);
+                if (files.length > 0) {
+                  event.preventDefault();
+                  void addFiles(files);
+                }
+              }}
+              className="min-h-[5rem] w-full resize-y bg-transparent px-2 py-1.5 text-[15px] leading-6 outline-none placeholder:text-faint"
               placeholder={activeTurn ? t("conversation.runningDraftHint") : t("composer.placeholder")}
               aria-label={t("composer.label")}
               data-testid="conversation-task-input"
             />
-            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border pt-2">
-              <label htmlFor="conversation-model" className="mr-auto flex items-center gap-1.5 text-xs text-muted">
-                <span>{t("composer.model")}</span>
+            <div className="flex flex-wrap items-center justify-end gap-1 px-1 pt-1.5">
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="sr-only"
+                multiple
+                accept="image/png,image/jpeg,image/gif,image/webp,.pdf,.txt,.md,.csv,.tsv,.json,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.rtf"
+                onChange={(event) => void addFiles(Array.from(event.target.files ?? []))}
+                data-testid="conversation-file-input"
+              />
+              <button
+                type="button"
+                className="composer-action"
+                disabled={Boolean(activeTurn) || uploadingCount > 0 || pendingAttachments.length >= 4 || conversation?.state !== "active"}
+                onClick={() => fileInputRef.current?.click()}
+                aria-label={t("attachment.add")}
+                title={activeTurn ? t("attachment.busyHint") : t("attachment.add")}
+                data-testid="conversation-attach"
+              >
+                <Paperclip aria-hidden size={15} />
+                <span className="hidden sm:inline">{t("attachment.add")}</span>
+              </button>
+              <label htmlFor="conversation-model" className="mr-auto flex min-w-0 items-center text-xs text-muted">
+                <span className="sr-only">{t("composer.model")}</span>
                 <select
                   id="conversation-model"
-                  className="input h-8 w-auto max-w-[15rem] py-1 text-xs"
+                  className="composer-control w-auto"
                   value={profileId ?? ""}
                   onChange={(event) => handleMessageProfileChange(event.target.value)}
                   disabled={availableProfiles.length === 0}
@@ -396,16 +584,13 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
                 </select>
               </label>
               {supportsReasoningEffort ? (
-                <label htmlFor="conversation-reasoning-effort" className="flex items-center gap-1.5 text-xs text-muted">
-                  <span>{t("composer.reasoningEffort")}</span>
+                <label htmlFor="conversation-reasoning-effort" className="flex items-center text-xs text-muted">
+                  <span className="sr-only">{t("composer.reasoningEffort")}</span>
                   <select
                     id="conversation-reasoning-effort"
-                    className="input h-8 w-auto py-1 text-xs"
+                    className="composer-control w-auto"
                     value={reasoningEffort}
-                    onChange={(event) => {
-                      setReasoningEffort(event.target.value);
-                      setEffortTouched(true);
-                    }}
+                    onChange={(event) => handleReasoningEffortChange(event.target.value)}
                     data-testid="conversation-reasoning-effort"
                   >
                     {effortOptions.map((value) => (
@@ -418,7 +603,7 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
               ) : null}
               <button
                 type="button"
-                className="btn-secondary"
+                className="composer-action"
                 disabled={!task.trim()}
                 onClick={() => {
                   setRememberContent(task.trim());
@@ -430,7 +615,7 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
                 aria-label={t("remember.open")}
               >
                 <BookOpen aria-hidden size={15} />
-                {t("remember.open")}
+                <span className="hidden sm:inline">{t("remember.open")}</span>
               </button>
               {activeTurn ? (
                 <>
@@ -438,7 +623,7 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
                     <>
                       <button
                         type="button"
-                        className="btn-primary"
+                        className="composer-action bg-accent text-accent-fg hover:!bg-accent-hover hover:!text-accent-fg"
                         disabled={enqueueMutation.isPending}
                         onClick={() => submitTask("queue")}
                         data-testid="conversation-queue"
@@ -448,7 +633,7 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
                       </button>
                       <button
                         type="button"
-                        className="btn-secondary"
+                        className="composer-action"
                         disabled={enqueueMutation.isPending || cancelMutation.isPending}
                         onClick={() => submitTask("steer")}
                         data-testid="conversation-steer"
@@ -460,20 +645,21 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
                   ) : null}
                   <button
                     type="button"
-                    className="btn-danger"
+                    className="composer-submit composer-stop"
                     disabled={cancelMutation.isPending}
                     onClick={() => cancelMutation.mutate(activeTurn.id)}
                     data-testid="conversation-stop"
                     aria-label={t("composer.cancel")}
+                    title={cancelMutation.isPending ? t("composer.cancelling") : t("composer.stopCompact")}
                   >
-                    <CircleStop aria-hidden size={15} />
-                    {cancelMutation.isPending ? t("composer.cancelling") : t("composer.stopCompact")}
+                    <CircleStop aria-hidden size={17} />
+                    <span className="sr-only">{cancelMutation.isPending ? t("composer.cancelling") : t("composer.stopCompact")}</span>
                   </button>
                 </>
               ) : (
-                <button type="button" className="btn-primary" disabled={!task.trim() || startMutation.isPending || conversation?.state !== "active"} onClick={() => submitTask("start")} data-testid="conversation-start">
-                  <Send aria-hidden size={15} />
-                  {startMutation.isPending ? t("composer.starting") : t("composer.start")}
+                <button type="button" className="composer-submit" disabled={(!task.trim() && pendingAttachments.length === 0) || uploadingCount > 0 || startMutation.isPending || conversation?.state !== "active"} onClick={() => submitTask("start")} data-testid="conversation-start" title={startMutation.isPending ? t("composer.starting") : t("composer.start")}>
+                  <ArrowUp aria-hidden size={18} className={startMutation.isPending ? "animate-pulse" : ""} />
+                  <span className="sr-only">{startMutation.isPending ? t("composer.starting") : t("composer.start")}</span>
                 </button>
               )}
             </div>
@@ -521,6 +707,66 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
+    </div>
+  );
+}
+
+function formatAttachmentSize(bytes: number): string {
+  return bytes < 1024 * 1024
+    ? `${Math.max(1, Math.round(bytes / 1024))} KiB`
+    : `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+function AttachmentChip({
+  attachment,
+  conversationId,
+  onRemove,
+  disabled,
+}: {
+  attachment: Attachment;
+  conversationId: string;
+  onRemove: () => void;
+  disabled: boolean;
+}) {
+  const { t } = useI18n();
+  const image = attachment.kind === "image";
+  return (
+    <span className="flex max-w-[18rem] items-center gap-2 rounded-lg border border-border bg-surface-elevated px-2 py-1.5 text-xs">
+      {image ? (
+        <img className="h-8 w-8 rounded object-cover" src={api.attachmentUrl(conversationId, attachment.id)} alt="" />
+      ) : <FileText aria-hidden size={16} className="shrink-0 text-muted" />}
+      <span className="min-w-0">
+        <span className="block truncate font-medium">{attachment.filename}</span>
+        <span className="block text-[10px] text-faint">{formatAttachmentSize(attachment.size_bytes)}</span>
+      </span>
+      <button type="button" className="rounded p-1 text-muted hover:bg-surface-hover hover:text-fg" onClick={onRemove} disabled={disabled} aria-label={`${t("attachment.remove")} ${attachment.filename}`}>
+        <X aria-hidden size={14} />
+      </button>
+    </span>
+  );
+}
+
+function TurnAttachments({ conversationId, attachments }: { conversationId: string; attachments: Attachment[] }) {
+  if (attachments.length === 0) return null;
+  return (
+    <div className="mb-3 flex flex-wrap gap-2 px-1" data-testid="turn-attachments">
+      {attachments.map((attachment) => (
+        <a
+          key={attachment.id}
+          href={api.attachmentUrl(conversationId, attachment.id)}
+          target="_blank"
+          rel="noreferrer"
+          className="group flex max-w-[20rem] items-center gap-2 rounded-lg border border-border bg-surface-elevated p-2 text-xs hover:border-accent/50"
+        >
+          {attachment.kind === "image" ? (
+            <img className="h-12 w-12 rounded object-cover" src={api.attachmentUrl(conversationId, attachment.id)} alt={attachment.filename} />
+          ) : <FileText aria-hidden size={18} className="text-muted" />}
+          <span className="min-w-0">
+            <span className="block truncate font-medium group-hover:text-accent">{attachment.filename}</span>
+            <span className="text-[10px] text-faint">{formatAttachmentSize(attachment.size_bytes)}</span>
+          </span>
+        </a>
+      ))}
     </div>
   );
 }
@@ -619,7 +865,8 @@ function ConversationTurn({
     };
   }, [conversationId, turn.id, turn.active, queryClient]);
   return (
-    <article className="border-b border-border py-3" data-testid={`turn-${turn.id}`} tabIndex={-1}>
+    <article id={`turn-${turn.id}`} className="scroll-mt-4 border-b border-border py-5" data-testid={`turn-${turn.id}`} data-turn-id={turn.id} tabIndex={-1}>
+      <TurnAttachments conversationId={conversationId} attachments={turn.attachments ?? []} />
       <ActivityFeed
         retainedEvents={items}
         eventBatch={items}

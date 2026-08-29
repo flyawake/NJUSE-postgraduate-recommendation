@@ -30,8 +30,8 @@ export function Onboarding({ onDone }: OnboardingProps) {
   const stepLabels = [t("onboarding.step1"), t("onboarding.step2")];
 
   return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center bg-bg p-4">
-      <div className="w-full max-w-2xl rounded-lg border border-border bg-surface p-6 shadow-md">
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-bg/95 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-2xl rounded-lg border border-border bg-surface p-6 shadow-md sm:p-8">
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Sparkles aria-hidden size={18} className="text-accent" />

@@ -1,4 +1,4 @@
-import { CircleStop, Play } from "lucide-react";
+import { ArrowUp, CircleStop } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { InlineError } from "./InlineError";
 import type { InlineErrorKind } from "./InlineError";
@@ -39,20 +39,20 @@ export function TaskComposer({
   return (
     <section className="space-y-2">
       {error ? <InlineError kind={error.kind} message={error.message} field={error.field} /> : null}
-      <div className="rounded-lg border border-border bg-surface p-2 shadow-sm">
+      <div className="composer-shell p-2.5">
         <label htmlFor="task-input" className="sr-only">
           {t("composer.label")}
         </label>
         <textarea
           id="task-input"
-          className="min-h-[92px] w-full resize-y bg-transparent px-2 py-1.5 text-sm text-text placeholder:text-faint"
+          className="min-h-[104px] w-full resize-y bg-transparent px-2 py-1.5 text-[15px] leading-6 text-text placeholder:text-faint"
           placeholder={t("composer.placeholder")}
           value={task}
           onChange={(event) => onTaskChange(event.target.value)}
           onKeyDown={handleKeyDown}
           aria-describedby="task-hint"
         />
-        <div className="flex items-center justify-between gap-3 border-t border-border px-1 pt-2">
+        <div className="flex items-center justify-between gap-3 px-1 pt-1.5">
           <p id="task-hint" className="min-w-0 text-xs text-faint" aria-live="polite">
             {running ? t("composer.runningHint") : t("composer.shortcut")}
             {!running && startDisabledReason ? ` · ${startDisabledReason}` : ""}
@@ -60,24 +60,26 @@ export function TaskComposer({
           {running ? (
             <button
               type="button"
-              className="btn-danger shrink-0"
+              className="composer-submit composer-stop"
               onClick={onCancel}
               disabled={state === "cancelling"}
               aria-label={t("composer.cancel")}
+              title={state === "cancelling" ? t("composer.cancelling") : t("composer.cancel")}
             >
-              <CircleStop aria-hidden size={16} />
-              {state === "cancelling" ? t("composer.cancelling") : t("composer.cancel")}
+              <CircleStop aria-hidden size={17} />
+              <span className="sr-only">{state === "cancelling" ? t("composer.cancelling") : t("composer.cancel")}</span>
             </button>
           ) : (
             <button
               type="button"
-              className="btn-primary shrink-0"
+              className="composer-submit"
               onClick={onStart}
               disabled={!canStart}
               aria-label={state === "starting" ? t("composer.starting") : t("composer.start")}
+              title={state === "starting" ? t("composer.starting") : t("composer.start")}
             >
-              <Play aria-hidden size={16} className={state === "starting" ? "animate-pulse" : ""} />
-              {state === "starting" ? t("composer.starting") : t("composer.start")}
+              <ArrowUp aria-hidden size={18} className={state === "starting" ? "animate-pulse" : ""} />
+              <span className="sr-only">{state === "starting" ? t("composer.starting") : t("composer.start")}</span>
             </button>
           )}
         </div>

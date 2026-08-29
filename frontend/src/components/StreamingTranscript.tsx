@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { Brain, ChevronDown, CircleStop } from "lucide-react";
 import type { StreamCheckpoint, ToolEvent } from "@/api/client";
@@ -177,8 +177,11 @@ const StreamBlockView = memo(function StreamBlockView({
   showAssistantText: boolean;
 }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(defaultThinkOpen);
+  const [open, setOpen] = useState(block.status === "streaming" && defaultThinkOpen);
   const hasText = Boolean(block.text.trim());
+  useEffect(() => {
+    if (block.status !== "streaming") setOpen(false);
+  }, [block.status]);
   return (
     <section className="space-y-1" data-attempt={block.attempt}>
       {block.hasThinking ? (
@@ -186,11 +189,11 @@ const StreamBlockView = memo(function StreamBlockView({
           <Collapsible.Trigger asChild>
             <button
               type="button"
-              className="flex w-full items-center gap-2 rounded-md bg-surface-2/70 px-3 py-1.5 text-left text-xs text-muted transition-colors hover:bg-surface-2"
+              className="group flex min-h-8 w-full items-center gap-2 rounded-md bg-transparent px-1.5 py-1 text-left text-[12px] text-muted transition-colors hover:bg-surface-2/70 hover:text-text"
               aria-expanded={open}
               aria-label={t("thinking.toggle")}
             >
-              <Brain aria-hidden size={13} className="shrink-0 text-accent" />
+              <Brain aria-hidden size={13} className="shrink-0 text-faint group-hover:text-muted" />
               <span className="flex-1 truncate">
                 {block.status === "abandoned"
                   ? t("thinking.abandoned")
@@ -209,20 +212,24 @@ const StreamBlockView = memo(function StreamBlockView({
               ) : null}
               <ChevronDown
                 aria-hidden
-                size={13}
+                size={12}
                 className={cx("shrink-0 text-faint transition-transform", open && "rotate-180")}
               />
             </button>
           </Collapsible.Trigger>
-          <Collapsible.Content className="border-l-2 border-accent/40 pl-3">
-            <div className="whitespace-pre-wrap break-words py-1 text-xs leading-relaxed text-muted">
+          <Collapsible.Content className="ml-2 pt-1">
+            <div
+              className="bounded-detail whitespace-pre-wrap break-words px-3 py-2.5 text-[12px] leading-6 text-muted"
+              tabIndex={0}
+              data-testid="thinking-scroll-frame"
+            >
               {block.thinking}
             </div>
           </Collapsible.Content>
         </Collapsible.Root>
       ) : null}
       {showAssistantText && (hasText || terminalText) ? (
-        <div className="text-sm" data-testid="streaming-assistant-text">
+        <div className="pt-1 text-[15px] leading-7 sm:text-base" data-testid="streaming-assistant-text">
           <MarkdownText text={block.text || terminalText || ""} />
         </div>
       ) : null}

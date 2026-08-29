@@ -100,9 +100,22 @@ class SystemMessage:
 
 
 @dataclass(frozen=True)
+class AttachmentRef:
+    """Provider-neutral reference to an immutable locally stored attachment."""
+
+    id: str
+    filename: str
+    media_type: str
+    kind: str  # "image" | "file"
+    size_bytes: int
+    sha256: str
+
+
+@dataclass(frozen=True)
 class UserMessage:
     content: str
     source: str = "user"  # "user" | "completion_policy" | "loop_guard"
+    attachments: Tuple[AttachmentRef, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

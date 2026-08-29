@@ -1,5 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
 const secret = "E2E-SENTINEL-9f3c1";
 
@@ -56,6 +58,36 @@ async function waitForHttp(url: string, timeoutMs = 30_000): Promise<void> {
 }
 
 test.describe("Conversation product flow with the Fake Model", () => {
+  test("image and text attachments reach the model and survive refresh", async ({ page }) => {
+    await page.goto("/");
+    await createConversation(page, process.env.E2E_WORKSPACE as string);
+    const input = page.getByTestId("conversation-file-input");
+    await input.setInputFiles([
+      {
+        name: "task_009-upload.png",
+        mimeType: "image/png",
+        buffer: readFileSync(path.resolve("feedback/task_004_evidence/conversation-success-1280x720-zh-light.png")),
+      },
+      {
+        name: "task_009-upload.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("attachment text reaches the fake model", "utf8"),
+      },
+    ]);
+    await expect(page.getByTestId("pending-attachments")).toContainText("task_009-upload.txt");
+    await page.getByTestId("conversation-task-input").fill("附件端到端验收");
+    await expect(page.getByTestId("conversation-start")).toBeEnabled();
+    await page.getByTestId("conversation-start").click();
+    await expect(page.getByTestId("final-answer")).toContainText(
+      "真实多模态 payload 验证通过",
+      { timeout: 30_000 }
+    );
+    await expect(page.getByTestId("turn-attachments")).toContainText("task_009-upload.txt");
+    await page.reload();
+    await expect(page.getByTestId("turn-attachments")).toContainText("task_009-upload.txt");
+    await expect(page.getByTestId("turn-attachments").locator("img")).toBeVisible();
+  });
+
   test("turn output ends with immutable changes and opens the conditional right preview", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByTestId("conversation-sidebar")).toBeVisible();
@@ -185,7 +217,9 @@ test.describe("Conversation product flow with the Fake Model", () => {
     await page.getByRole("button", { name: "取消运行" }).click();
     await expect(page.getByRole("button", { name: "开始运行" })).toBeVisible({ timeout: 45_000 });
     // The interrupted attempt keeps its diagnostic Think/stream block but the
-    // run returns to a clean startable state.
+    // run returns to a clean startable state. Completed workflow is collapsed
+    // by default in the refreshed product layout, so inspect it explicitly.
+    await page.getByTestId("workflow-toggle").click();
     await expect(page.getByTestId("think-block")).toHaveCount(1);
     await page.screenshot({
       path: "feedback/task_005_evidence/cancel-interrupted-1280x720-zh-light.png",
@@ -213,6 +247,7 @@ test.describe("Conversation product flow with the Fake Model", () => {
     await expect(page.getByTestId("final-answer")).toContainText("Retry final answer.", {
       timeout: 45_000,
     });
+    await page.getByTestId("workflow-toggle").click();
     await expect(page.getByText("该次流式尝试已放弃").first()).toBeVisible();
     await expect(page.getByTestId("think-block")).toHaveCount(2);
     await page.screenshot({
@@ -227,6 +262,7 @@ test.describe("Conversation product flow with the Fake Model", () => {
     await expect(page.getByTestId("final-answer")).toContainText("Responses 闭环完成。", {
       timeout: 45_000,
     });
+    await page.getByTestId("workflow-toggle").click();
     const thinkBlocks = page.getByTestId("think-block");
     await expect(thinkBlocks).toHaveCount(2);
     await thinkBlocks.last().getByRole("button").click();

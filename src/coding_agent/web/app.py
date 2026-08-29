@@ -22,6 +22,7 @@ from fastapi.responses import (
     FileResponse,
     JSONResponse,
     PlainTextResponse,
+    Response,
     StreamingResponse,
 )
 
@@ -44,6 +45,7 @@ from .legacy_adapter import ConversationRunAdapter
 from .picker import PickerUnavailableError, PickFolder, pick_folder
 from .redaction import redact_public_payload
 from .schemas import (
+    AttachmentDTO,
     BootstrapDTO,
     CapabilitiesDTO,
     ChangeSetDTO,
@@ -207,6 +209,7 @@ def create_app(
                 "turn_not_found",
                 "artifact_not_found",
                 "memory_not_found",
+                "attachment_not_found",
             )
             else 409
             if exc.code
@@ -520,6 +523,53 @@ def create_app(
             )
 
         @app.post(
+            "/api/conversations/{conversation_id}/attachments",
+            response_model=AttachmentDTO,
+            status_code=201,
+        )
+        async def upload_attachment(
+            conversation_id: str,
+            request: Request,
+            filename: str,
+        ) -> AttachmentDTO:
+            chunks = bytearray()
+            async for chunk in request.stream():
+                chunks.extend(chunk)
+                if len(chunks) > 10 * 1024 * 1024:
+                    raise ConversationServiceError(
+                        "attachment_too_large", "单个附件不能超过 10 MiB", field="file"
+                    )
+            return AttachmentDTO(
+                **conversation_service.create_attachment(
+                    conversation_id,
+                    filename=filename,
+                    media_type=request.headers.get("content-type"),
+                    data=bytes(chunks),
+                )
+            )
+
+        @app.get(
+            "/api/conversations/{conversation_id}/attachments/{attachment_id}",
+            response_class=Response,
+        )
+        async def get_attachment(conversation_id: str, attachment_id: str) -> Response:
+            metadata, data = conversation_service.read_attachment(
+                conversation_id, attachment_id
+            )
+            return Response(
+                content=data,
+                media_type=metadata["media_type"],
+                headers={"Content-Disposition": "inline"},
+            )
+
+        @app.delete(
+            "/api/conversations/{conversation_id}/attachments/{attachment_id}",
+            status_code=204,
+        )
+        async def delete_attachment(conversation_id: str, attachment_id: str) -> None:
+            conversation_service.delete_attachment(conversation_id, attachment_id)
+
+        @app.post(
             "/api/conversations/{conversation_id}/turns",
             response_model=TurnDTO,
             status_code=202,
@@ -532,6 +582,7 @@ def create_app(
                     idempotency_key=body.idempotency_key,
                     profile_id=body.profile_id,
                     reasoning_effort=body.reasoning_effort,
+                    attachment_ids=body.attachment_ids,
                 )
             )
 

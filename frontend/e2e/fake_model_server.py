@@ -138,6 +138,26 @@ def _stress_response(messages: list[dict]) -> dict:
 
 
 def next_response(messages: list[dict]) -> dict:
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            has_image = any(
+                isinstance(part, dict) and part.get("type") == "image_url"
+                for part in content
+            )
+            has_text_attachment = any(
+                isinstance(part, dict)
+                and part.get("type") == "text"
+                and "--- 附件 task_009-upload.txt ---" in str(part.get("text") or "")
+                for part in content
+            )
+            if has_image and has_text_attachment:
+                return _assistant_text(
+                    "已收到图片和文本附件，真实多模态 payload 验证通过。"
+                )
+        break
     if _is_sse_stress_run(messages):
         return _stress_response(messages)
     memory_response = _memory_query_response(messages)

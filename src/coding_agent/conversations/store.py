@@ -24,7 +24,7 @@ from ..memory.analyzer import (
     terms_for_query,
     tokenize,
 )
-from ..models import CanonicalMessage, UserMessage
+from ..models import AttachmentRef, CanonicalMessage, UserMessage
 from .domain import (
     CanonicalGroupRecord,
     CanonicalGroupState,
@@ -35,7 +35,7 @@ from .domain import (
     payload_to_canonical_message,
 )
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 DEFAULT_BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA_SQL = """
@@ -94,6 +94,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_one_active
 CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_idempotency
     ON turns(conversation_id, idempotency_key)
     WHERE idempotency_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS attachments (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    turn_id TEXT REFERENCES turns(id) ON DELETE CASCADE,
+    blob_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('image', 'file')),
+    size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+    created_at TEXT NOT NULL,
+    claimed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_conversation_turn
+    ON attachments(conversation_id, turn_id, created_at, id);
 
 CREATE TABLE IF NOT EXISTS canonical_groups (
     id TEXT PRIMARY KEY,
@@ -751,6 +767,35 @@ class SQLiteConversationRepository:
                             )
                     if current_version <= 12:
                         _create_memory_tables(conn)
+                    if current_version <= 13:
+                        conn.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS attachments (
+                                id TEXT PRIMARY KEY,
+                                conversation_id TEXT NOT NULL
+                                    REFERENCES conversations(id) ON DELETE CASCADE,
+                                turn_id TEXT REFERENCES turns(id) ON DELETE CASCADE,
+                                blob_id TEXT NOT NULL,
+                                filename TEXT NOT NULL,
+                                media_type TEXT NOT NULL,
+                                kind TEXT NOT NULL
+                                    CHECK (kind IN ('image', 'file')),
+                                size_bytes INTEGER NOT NULL
+                                    CHECK (size_bytes >= 0),
+                                created_at TEXT NOT NULL,
+                                claimed_at TEXT
+                            )
+                            """
+                        )
+                        conn.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS
+                                idx_attachments_conversation_turn
+                            ON attachments(
+                                conversation_id, turn_id, created_at, id
+                            )
+                            """
+                        )
                     conn.execute("DELETE FROM schema_meta")
                     conn.execute(
                         "INSERT INTO schema_meta(version, applied_at) VALUES (?, ?)",
@@ -1091,6 +1136,164 @@ class SQLiteConversationRepository:
             conn.commit()
             return orphaned
 
+    # ------------------------------------------------------- attachments
+
+    def create_attachment(
+        self,
+        conversation_id: str,
+        *,
+        blob_id: str,
+        filename: str,
+        media_type: str,
+        kind: str,
+        size_bytes: int,
+    ) -> AttachmentRef:
+        attachment_id = uuid.uuid4().hex
+        with self._lock:
+            conn = self._connect()
+            conversation = conn.execute(
+                "SELECT 1 FROM conversations WHERE id=? AND state!='deleted'",
+                (conversation_id,),
+            ).fetchone()
+            if conversation is None:
+                raise KeyError("conversation_not_found")
+            conn.execute(
+                """
+                INSERT INTO attachments(
+                    id, conversation_id, turn_id, blob_id, filename,
+                    media_type, kind, size_bytes, created_at, claimed_at
+                ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL)
+                """,
+                (
+                    attachment_id,
+                    conversation_id,
+                    blob_id,
+                    filename,
+                    media_type,
+                    kind,
+                    size_bytes,
+                    _utcnow(),
+                ),
+            )
+            conn.commit()
+        return AttachmentRef(
+            id=attachment_id,
+            filename=filename,
+            media_type=media_type,
+            kind=kind,
+            size_bytes=size_bytes,
+            sha256=blob_id,
+        )
+
+    def get_attachment(
+        self, conversation_id: str, attachment_id: str
+    ) -> Optional[AttachmentRef]:
+        with self._lock:
+            row = (
+                self._connect()
+                .execute(
+                    "SELECT * FROM attachments WHERE id=? AND conversation_id=?",
+                    (attachment_id, conversation_id),
+                )
+                .fetchone()
+            )
+        return self._row_to_attachment(row) if row else None
+
+    def get_pending_attachments(
+        self, conversation_id: str, attachment_ids: Sequence[str]
+    ) -> Tuple[AttachmentRef, ...]:
+        if not attachment_ids:
+            return ()
+        placeholders = ",".join("?" for _ in attachment_ids)
+        with self._lock:
+            rows = (
+                self._connect()
+                .execute(
+                    f"""
+                SELECT * FROM attachments
+                WHERE conversation_id=? AND turn_id IS NULL
+                    AND id IN ({placeholders})
+                """,
+                    (conversation_id, *attachment_ids),
+                )
+                .fetchall()
+            )
+        by_id = {str(row["id"]): self._row_to_attachment(row) for row in rows}
+        return tuple(by_id[item_id] for item_id in attachment_ids if item_id in by_id)
+
+    def list_turn_attachments(
+        self, conversation_id: str, turn_id: str
+    ) -> Tuple[AttachmentRef, ...]:
+        with self._lock:
+            rows = (
+                self._connect()
+                .execute(
+                    """
+                SELECT * FROM attachments
+                WHERE conversation_id=? AND turn_id=?
+                ORDER BY created_at, id
+                """,
+                    (conversation_id, turn_id),
+                )
+                .fetchall()
+            )
+        return tuple(self._row_to_attachment(row) for row in rows)
+
+    def delete_pending_attachment(
+        self, conversation_id: str, attachment_id: str
+    ) -> Optional[str]:
+        with self._lock:
+            conn = self._connect()
+            row = conn.execute(
+                """
+                SELECT blob_id FROM attachments
+                WHERE id=? AND conversation_id=? AND turn_id IS NULL
+                """,
+                (attachment_id, conversation_id),
+            ).fetchone()
+            if row is None:
+                return None
+            blob_id = str(row["blob_id"])
+            conn.execute("DELETE FROM attachments WHERE id=?", (attachment_id,))
+            refs = conn.execute(
+                "SELECT COUNT(*) AS value FROM attachments WHERE blob_id=?",
+                (blob_id,),
+            ).fetchone()
+            conn.commit()
+        return blob_id if int(refs["value"]) == 0 else ""
+
+    def attachment_blob_is_referenced(self, blob_id: str) -> bool:
+        with self._lock:
+            row = (
+                self._connect()
+                .execute(
+                    "SELECT 1 FROM attachments WHERE blob_id=? LIMIT 1", (blob_id,)
+                )
+                .fetchone()
+            )
+        return row is not None
+
+    def list_attachment_blob_ids(self) -> set[str]:
+        with self._lock:
+            rows = (
+                self._connect()
+                .execute("SELECT DISTINCT blob_id FROM attachments")
+                .fetchall()
+            )
+        return {str(row["blob_id"]) for row in rows}
+
+    def list_conversation_attachment_blob_ids(self, conversation_id: str) -> set[str]:
+        with self._lock:
+            rows = (
+                self._connect()
+                .execute(
+                    "SELECT DISTINCT blob_id FROM attachments WHERE conversation_id=?",
+                    (conversation_id,),
+                )
+                .fetchall()
+            )
+        return {str(row["blob_id"]) for row in rows}
+
     # ------------------------------------------------------------ turns
 
     def create_turn(
@@ -1155,6 +1358,7 @@ class SQLiteConversationRepository:
         idempotency_key: Optional[str],
         messages: Sequence[CanonicalMessage],
         inbox_item_id: Optional[str] = None,
+        attachment_ids: Sequence[str] = (),
     ) -> Tuple[TurnRecord, bool]:
         """Atomically create a turn and its committed initial canonical group.
 
@@ -1205,6 +1409,20 @@ class SQLiteConversationRepository:
                     if existing is not None:
                         conn.commit()
                         return self._row_to_turn(existing), False
+                if attachment_ids:
+                    if len(set(attachment_ids)) != len(attachment_ids):
+                        raise ValueError("attachment_duplicate")
+                    placeholders = ",".join("?" for _ in attachment_ids)
+                    rows = conn.execute(
+                        f"""
+                        SELECT id FROM attachments
+                        WHERE conversation_id=? AND turn_id IS NULL
+                            AND id IN ({placeholders})
+                        """,
+                        (conversation_id, *attachment_ids),
+                    ).fetchall()
+                    if {str(row["id"]) for row in rows} != set(attachment_ids):
+                        raise ValueError("attachment_unavailable")
                 active = conn.execute(
                     """
                     SELECT 1 FROM turns WHERE conversation_id=?
@@ -1244,6 +1462,18 @@ class SQLiteConversationRepository:
                         idempotency_key,
                     ),
                 )
+                if attachment_ids:
+                    placeholders = ",".join("?" for _ in attachment_ids)
+                    claimed = conn.execute(
+                        f"""
+                        UPDATE attachments SET turn_id=?, claimed_at=?
+                        WHERE conversation_id=? AND turn_id IS NULL
+                            AND id IN ({placeholders})
+                        """,
+                        (turn_id, now, conversation_id, *attachment_ids),
+                    )
+                    if claimed.rowcount != len(attachment_ids):
+                        raise ValueError("attachment_unavailable")
                 group_seq = (
                     int(
                         conn.execute(
@@ -3945,6 +4175,17 @@ class SQLiteConversationRepository:
             finished_at=row["finished_at"],
             result_json=row["result_json"],
             error_code=row["error_code"],
+        )
+
+    @staticmethod
+    def _row_to_attachment(row: sqlite3.Row) -> AttachmentRef:
+        return AttachmentRef(
+            id=str(row["id"]),
+            filename=str(row["filename"]),
+            media_type=str(row["media_type"]),
+            kind=str(row["kind"]),
+            size_bytes=int(row["size_bytes"]),
+            sha256=str(row["blob_id"]),
         )
 
     @staticmethod

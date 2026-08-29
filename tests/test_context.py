@@ -231,6 +231,49 @@ def test_protected_overflow_raises():
     assert excinfo.value.char_count > 10
 
 
+def test_auto_compacts_old_assistant_reasoning():
+    history = CanonicalHistory()
+    history.append(SystemMessage("system"))
+    history.append(UserMessage("task", source="user"))
+    history.append(AssistantMessage("short answer", (), reasoning="r" * 50_000))
+    manager = ContextManager(1_000)
+    view = manager.build_request(history)
+    assert view.compacted_assistants >= 1
+    assert view.char_count <= 1_000
+    assistant = view.messages[-1]
+    assert assistant["role"] == "assistant"
+    assert "reasoning truncated by context manager" in assistant["reasoning_content"]
+    assert len(assistant["reasoning_content"]) < 1_000
+
+
+def test_recent_steps_keep_full_reasoning_and_text():
+    history = CanonicalHistory()
+    history.append(SystemMessage("system"))
+    history.append(UserMessage("task", source="user"))
+    call = make_tool_call("glob", {"pattern": "*.py"}, "g1")
+    history.append(AssistantMessage("short", (call,), reasoning="r" * 20_000))
+    history.append(
+        ToolMessage(
+            tool_call_id="g1",
+            content='{"ok":true,"data":{"matches":[]}}',
+            tool_name="glob",
+            ok=True,
+            resource_key=".::*.py",
+        )
+    )
+    manager = ContextManager(100_000)
+    view = manager.build_request(history)
+    assert view.compacted_assistants == 0
+    assistant = view.messages[-2]
+    assert assistant["reasoning_content"] == "r" * 20_000
+
+
+def test_default_char_budget_is_258k():
+    from coding_agent.context import DEFAULT_CHAR_BUDGET
+
+    assert DEFAULT_CHAR_BUDGET == 258_000
+
+
 def test_provider_message_shapes():
     call = make_tool_call("glob", {"pattern": "*.py"}, "c1")
     assert to_provider_message(AssistantMessage("", (call,))) == {

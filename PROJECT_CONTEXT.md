@@ -18,7 +18,7 @@
 
 项目确定使用 Python 3.10+、`uv`、`src/` package layout、`pytest` 和 `ruff`。生产模型接入使用普通 `openai` Python 客户端，并在自研 adapter 边界支持 OpenAI-compatible Chat Completions 与 OpenAI Responses 两种 wire API；SDK 类型不得越过 adapter，本地代码自行维护消息历史、调用关联、上下文预算、工具执行、停止策略和错误恢复。AgentLoop 必须是显式有限状态机，区分逻辑 step 与 provider attempt，保持 append-only canonical history 和 tool-call/result 一一配对，并输出带单调事件序号的结构化 RunResult/事件。工具调用先经过 AgentLoop 的调用 ID、重复和取消守卫，再进入独立 ToolExecutor 的“解析/校验 - 策略判定 - 执行 - 结果归一化 - 模型呈现”管线；AgentLoop 不直接调用具体工具。ContextManager 保持事实历史与模型请求投影分离，压缩时优先保留错误、最近轮次和每个文件的最新观察。文件发生实际变更后，CompletionPolicy 在允许最终完成前执行一次有界验证检查，并把验证状态写入 RunResult。
 
-运行时第三方依赖原则上仅保留普通 `openai` 客户端，其他核心能力优先使用标准库。MVP 工具确定为 `glob`、`grep`、`read_file`、`write_file`、`edit_file` 和 `run_command`，并实现编辑前读取、SHA-256 版本新鲜度、原子替换、领域化输出上限及重复调用保护。
+运行时第三方依赖原则上仅保留普通 `openai` 客户端，其他核心能力优先使用标准库。workspace 工具为 `glob`、`grep`、`read_file`、`write_file`、`edit_file` 和 `run_command`，并实现编辑前读取、SHA-256 版本新鲜度、原子替换、领域化输出上限及重复调用保护；task_009 另加入 READ effect 的 `web_search`/`web_fetch`，使用固定公网 IP 连接、逐跳 URL/DNS 校验、SSRF 拒绝和严格响应上限。
 
 task_002 已新增本地图形层：前端使用 TypeScript、React、Vite、Tailwind CSS 与可访问 UI primitives，Python 侧使用 FastAPI/ASGI、类型化 JSON API、SSE 和 ConversationService 适配既有 AgentLoop；旧 `/api/runs` 仅作为兼容投影。Node.js 只用于前端开发、测试和 production build；最终静态资源随 Python 包分发，评审者运行 GUI 不应额外安装 Node。前端以 Vitest/React Testing Library 和 Playwright Fake Model 闭环验证，UI 默认简体中文并提供完整英文切换。
 
@@ -70,6 +70,8 @@ task_006 运行中输入已于 2026-08-29 通过 Master 源码验收并归档：
 
 task_007 可控记忆已于 2026-08-29 通过 Master 源码验收并归档：同一 `state.db` 增量升级到 schema v13，MemoryService 以 global/workspace/conversation canonical scope、confirmed-only active index、FTS5/terms 自愈回退、原子生命周期/审计、版本链、幂等键和 scope reset CAS 作为唯一事实边界；candidate 提取在主 turn 终局后独立异步、超时 fail-closed，未批准内容绝不注入。ContextManager 每 turn 只构建并采用一次有预算的低优先级 snapshot，保护正文溢出时整块丢弃且不写 usage；硬删除覆盖完整 supersede 链并仅保留无正文审计元数据。Memory Center 已具备搜索/筛选/分页、作用域 override、来源跳转、审批/编辑/拒绝/删除/reset 与响应式中英文界面。最终证据为 Python 375 passed/4 skipped、Vitest 61、Playwright 12、Ruff/typecheck/lint/API schema/build/wheel 通过，2000 条 warm/cold p95 阈值与人工生产浏览器验收通过。
 
+task_009 联网检索与聊天附件已于 2026-08-30 完成源码验收并归档：默认 ToolRegistry 注册 `web_search`/`web_fetch`，公开网页经无代理、固定 DNS 结果的标准库 HTTP 客户端访问，拒绝非 HTTP(S)、URL 凭据、非标准端口、非公网地址与重定向 rebinding，且限制超时、redirect、响应字节、结果数和正文字符。SQLite schema v14 保存 attachment ownership/metadata，原始二进制进入 agent home 专用 CAS；turn 创建事务原子 claim，canonical history 仅保存 provider-neutral ref，ContextManager detached view 再按 Chat/Responses 映射图片、文本与文件。GUI 已支持选择、拖放、剪贴板图片、缩略图/chip/移除、附件-only 发送与刷新后 transcript 展示；busy Queue/Steer 不携带附件。最终证据为 Python 396 passed/4 skipped、Vitest 68、Playwright 13，以及 Ruff/typecheck/lint/OpenAPI/build/wheel 和人工响应式生产浏览器验收通过。Task 8 仍未开始。
+
 ## 演进路线
 
 1. **P0 可靠内核（task_001，已归档）**：显式 AgentLoop、规范消息配对、ToolExecutor/ToolPolicy、六个本地工具、资源感知上下文投影、变更后验证门槛、结构化事件和离线端到端测试；R1-R3 整改复验已通过。
@@ -79,8 +81,9 @@ task_007 可控记忆已于 2026-08-29 通过 Master 源码验收并归档：同
 5. **P0 流式模型与可展示 reasoning（task_005，已归档）**：已实现统一 provider stream event、严格聚合器、DeepSeek/custom Chat `reasoning_content` 与 OpenAI Responses reasoning summary/opaque continuation 适配、增量 checkpoint/SSE 恢复及折叠 Think；只展示 provider 明确返回的可见内容，不暴露或伪造隐藏 chain-of-thought。
 6. **P1 运行中输入（task_006，已归档）**：已实现 Host 权威、持久、严格 FIFO 的 Queue，以及只在两个 AgentLoop 安全边界进入、失败回 Queue 的 Steer；busy Composer、Host snapshot 和有界 QueueDock 已通过验收。
 7. **P1 可控记忆（task_007，已归档）**：已以 MemoryService、SQLite FTS5/terms 回退、canonical 作用域、来源、候选审批、CAS/幂等、版本链和硬删除实现跨会话知识共享；默认不自动永久保存全部聊天。
-8. **P0 发布与评测（task_008，未开始）**：全量集成、固定任务集、性能/安全/恢复/a11y、真实模型 GUI smoke、clean install 和最终 README.txt/视频门禁。
-9. **后续仓库理解与隔离执行**：在 task_008 基线数据上评估 repository map、符号上下文、补丁编辑、read-only/approval/沙箱运行时；只有固定评测证明收益时才进入新任务。
+8. **P0 联网检索与聊天附件（task_009，已归档）**：已增加受控公网 search/fetch、附件专用本地存储、原子 turn 归属、Chat/Responses 多模态投影及响应式 Composer/Transcript 闭环。
+9. **P0 发布与评测（task_008，未开始）**：依赖 task_009；全量集成、固定任务集、性能/安全/恢复/a11y、真实模型 GUI smoke、clean install 和最终 README.txt/视频门禁。
+10. **后续仓库理解与隔离执行**：在 task_008 基线数据上评估 repository map、符号上下文、补丁编辑、read-only/approval/沙箱运行时；只有固定评测证明收益时才进入新任务。
 
 ## 已知约束
 

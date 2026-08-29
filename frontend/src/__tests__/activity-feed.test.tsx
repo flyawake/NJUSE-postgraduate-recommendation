@@ -17,7 +17,12 @@ function event(id: number, kind: string, payload: Record<string, unknown>): Tool
   };
 }
 
-function feedElement(events: ToolEvent[], resetVersion = 0, task = "检查项目") {
+function feedElement(
+  events: ToolEvent[],
+  resetVersion = 0,
+  task = "检查项目",
+  state: "idle" | "running" | "terminal" = "running",
+) {
   return (
     <I18nProvider>
       <div className="h-[640px]">
@@ -27,7 +32,7 @@ function feedElement(events: ToolEvent[], resetVersion = 0, task = "检查项目
           resetVersion={resetVersion}
           eventVersion={0}
           task={task}
-          state="running"
+          state={state}
           sseStatus="connected"
         />
       </div>
@@ -81,6 +86,7 @@ describe("ActivityFeed", () => {
     (row as HTMLButtonElement).focus();
     await user.keyboard("{Enter}");
     expect(screen.getByText("参数摘要")).toBeInTheDocument();
+    expect(screen.getByTestId("tool-detail-frame")).toHaveClass("bounded-detail");
     expect(screen.getByText("操作未成功；请查看详情并根据结果调整任务后重试。")).toBeInTheDocument();
   });
 
@@ -113,5 +119,20 @@ describe("ActivityFeed", () => {
     }));
     rerender(feedElement(nextEvents, 1, "新的任务"));
     expect(container.querySelectorAll("[data-tool]")).toHaveLength(300);
+  });
+
+  it("collapses the complete workflow when the run becomes terminal", () => {
+    const events = [
+      event(1, "run_started", {}),
+      event(2, "tool_started", { call_id: "one", name: "read_file", arguments: "{}", target: "src/app.ts" }),
+      event(3, "tool_finished", { call_id: "one", ok: true, summary: "ok" }),
+    ];
+    const { rerender } = render(feedElement(events));
+
+    expect(screen.getByTestId("workflow-toggle")).toHaveAttribute("aria-expanded", "true");
+    rerender(feedElement(events, 0, "检查项目", "terminal"));
+
+    expect(screen.getByTestId("workflow-toggle")).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("读取了")).not.toBeInTheDocument();
   });
 });

@@ -18,8 +18,7 @@ export interface ArtifactPreviewPaneProps {
 type PreviewMode = "diff" | "before" | "after" | "current";
 
 function defaultMode(file: FileChange | null | undefined): PreviewMode {
-  if (file?.change_type === "created") return "after";
-  if (file?.change_type === "deleted") return "before";
+  if (!file) return "diff";
   return "diff";
 }
 
@@ -51,13 +50,20 @@ export function ArtifactPreviewPane({
   const fileId = file?.id;
   const fileChangeType = file?.change_type;
   useEffect(() => {
-    setMode(fileChangeType === "created" ? "after" : fileChangeType === "deleted" ? "before" : "diff");
+    setMode("diff");
   }, [fileId, fileChangeType]);
   const previewQuery = useQuery({
     queryKey: ["preview", conversationId, turnId, file?.id, mode],
     queryFn: () =>
       api.getFilePreview(conversationId, turnId, file?.id ?? "", mode),
     enabled: Boolean(file?.id),
+    staleTime: 30_000,
+  });
+  const fullTextMode = file?.change_type === "deleted" ? "before" : "after";
+  const fullTextQuery = useQuery({
+    queryKey: ["preview", conversationId, turnId, file?.id, fullTextMode, "diff-context"],
+    queryFn: () => api.getFilePreview(conversationId, turnId, file?.id ?? "", fullTextMode),
+    enabled: Boolean(file?.id) && mode === "diff" && file?.change_type !== "created",
     staleTime: 30_000,
   });
 
@@ -146,7 +152,12 @@ export function ArtifactPreviewPane({
           ) : (
             <>
               {previewQuery.data.truncated ? <p className="mb-2 text-xs text-warning">{t("preview.truncated")}</p> : null}
-              <DiffViewer lines={previewQuery.data.lines ?? []} mode={mode === "diff" ? "diff" : "text"} />
+              <DiffViewer
+                lines={previewQuery.data.lines ?? []}
+                mode={mode === "diff" ? "diff" : "text"}
+                filePath={file.relative_path}
+                fullLines={mode === "diff" ? fullTextQuery.data?.lines : undefined}
+              />
             </>
           )}
           </div>

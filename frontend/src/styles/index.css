@@ -11,10 +11,34 @@
     height: 100%;
   }
   body {
-    @apply bg-bg text-text;
+    @apply text-text;
+    background:
+      radial-gradient(circle at 12% -8%, color-mix(in srgb, #f5dfe4 42%, transparent) 0, transparent 34rem),
+      radial-gradient(circle at 92% 2%, color-mix(in srgb, #e9e5f3 34%, transparent) 0, transparent 32rem),
+      var(--color-bg);
     font-family: var(--font-sans);
     font-size: 14px;
-    line-height: 1.55;
+    line-height: 1.6;
+    font-variant-ligatures: contextual common-ligatures;
+    letter-spacing: -0.009em;
+    overflow: hidden;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.46;
+  }
+  textarea:focus,
+  input:focus,
+  select:focus {
+    outline: none;
   }
   *:focus-visible {
     outline: 2px solid var(--color-focus);
@@ -24,39 +48,195 @@
   ::selection {
     background: var(--color-accent-muted);
   }
+  * {
+    scrollbar-color: var(--color-border-strong) transparent;
+    scrollbar-width: thin;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background: var(--color-border-strong);
+    background-clip: padding-box;
+  }
 }
 
 @layer components {
+  .app-backdrop {
+    background: transparent;
+  }
+  .glass-chrome {
+    background: color-mix(in srgb, var(--color-bg) 72%, transparent);
+    border-color: color-mix(in srgb, var(--color-border) 68%, transparent);
+    -webkit-backdrop-filter: blur(26px) saturate(1.16);
+    backdrop-filter: blur(26px) saturate(1.16);
+  }
+  .glass-panel {
+    background: color-mix(in srgb, var(--color-surface) 76%, transparent);
+    border-color: color-mix(in srgb, var(--color-border) 72%, transparent);
+    -webkit-backdrop-filter: blur(22px) saturate(1.1);
+    backdrop-filter: blur(22px) saturate(1.1);
+  }
+  .workspace-surface {
+    background: color-mix(in srgb, var(--color-surface) 94%, transparent);
+    box-shadow: -1px -1px 0 rgba(255, 255, 255, 0.5) inset;
+  }
+  .composer-shell {
+    background: color-mix(in srgb, var(--color-surface) 94%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+    border-radius: 20px;
+    box-shadow: 0 14px 42px rgba(45, 35, 38, 0.07), 0 2px 8px rgba(45, 35, 38, 0.035);
+    -webkit-backdrop-filter: blur(18px) saturate(1.08);
+    backdrop-filter: blur(18px) saturate(1.08);
+  }
+  .composer-control {
+    height: 34px;
+    max-width: 15rem;
+    min-width: 0;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    padding: 0 8px;
+    color: var(--color-text-muted);
+    font-size: 12px;
+    box-shadow: none;
+    transition: background-color var(--duration-fast), color var(--duration-fast);
+  }
+  .composer-control:hover,
+  .composer-control:focus-visible {
+    background: var(--color-surface-2);
+    color: var(--color-text);
+    box-shadow: none;
+    outline: none;
+  }
+  .composer-action {
+    display: inline-flex;
+    height: 34px;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    padding: 0 9px;
+    color: var(--color-text-muted);
+    font-size: 12px;
+    transition: background-color var(--duration-fast), color var(--duration-fast);
+  }
+  .composer-action:hover:not(:disabled) {
+    background: var(--color-surface-2);
+    color: var(--color-text);
+  }
+  .composer-submit {
+    display: inline-flex;
+    width: 36px;
+    height: 36px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 999px;
+    background: var(--color-accent);
+    color: var(--color-accent-fg);
+    box-shadow: var(--shadow-sm);
+    transition: transform var(--duration-fast), background-color var(--duration-fast), opacity var(--duration-fast);
+  }
+  .composer-submit:hover:not(:disabled) {
+    transform: translateY(-1px);
+    background: var(--color-accent-hover);
+  }
+  .composer-submit:disabled {
+    background: color-mix(in srgb, var(--color-text) 28%, var(--color-surface-2));
+    color: var(--color-surface);
+    opacity: 0.62;
+  }
+  .composer-stop {
+    background: var(--color-danger);
+    color: white;
+  }
+  .turn-rail-line {
+    display: block;
+    height: 2px;
+    transform-origin: left center;
+    border-radius: 999px;
+    background: var(--color-text);
+    transition:
+      width 220ms cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 180ms ease-out;
+    will-change: width, opacity;
+  }
+  .bounded-detail {
+    max-height: min(18rem, 42vh);
+    overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--color-surface-2) 54%, transparent);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.4) inset;
+  }
+  .bounded-detail:focus-visible {
+    border-color: var(--color-focus);
+    outline: none;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-focus) 12%, transparent);
+  }
   .btn-primary {
-    @apply inline-flex h-10 items-center justify-center gap-2 rounded-md bg-accent px-4 text-sm font-medium text-accent-fg transition-colors duration-fast;
+    @apply inline-flex h-10 items-center justify-center gap-2 rounded-[10px] bg-accent px-4 text-[13px] font-medium text-accent-fg shadow-sm transition-all duration-fast;
   }
   .btn-primary:hover:not(:disabled) {
-    @apply bg-accent-hover;
+    @apply -translate-y-px bg-accent-hover;
   }
   .btn-secondary {
-    @apply inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border bg-surface px-3 text-sm font-medium text-text transition-colors duration-fast hover:bg-surface-2;
+    @apply inline-flex h-9 items-center justify-center gap-2 rounded-[10px] border border-border bg-surface px-3 text-[13px] font-medium text-text shadow-sm transition-all duration-fast hover:-translate-y-px hover:border-border-strong hover:bg-surface-2;
   }
   .btn-danger {
-    @apply inline-flex h-9 items-center justify-center gap-2 rounded-md border border-danger bg-surface px-3 text-sm font-medium text-danger transition-colors duration-fast hover:bg-danger-muted;
+    @apply inline-flex h-9 items-center justify-center gap-2 rounded-[10px] border border-danger bg-surface px-3 text-[13px] font-medium text-danger transition-colors duration-fast hover:bg-danger-muted;
   }
   .btn-icon {
-    @apply inline-flex h-9 w-9 items-center justify-center rounded-md text-muted transition-colors duration-fast hover:bg-surface-2 hover:text-text;
+    @apply inline-flex h-9 w-9 items-center justify-center rounded-[10px] text-muted transition-colors duration-fast hover:bg-surface-2 hover:text-text;
+  }
+  .btn-ghost {
+    @apply inline-flex h-8 items-center justify-center gap-2 rounded-md px-2 text-sm text-muted transition-colors duration-fast hover:bg-surface-2 hover:text-text;
   }
   .input {
-    @apply h-9 w-full rounded-md border border-border bg-surface px-3 text-sm text-text placeholder:text-faint;
+    @apply h-9 w-full rounded-md border border-border bg-surface px-3 text-sm text-text shadow-sm transition-[border-color,box-shadow] duration-fast placeholder:text-faint;
   }
   .input:focus-visible {
-    outline: 2px solid var(--color-focus);
-    outline-offset: 1px;
+    border-color: var(--color-focus);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-focus) 14%, transparent);
+    outline: none;
   }
   .card {
-    @apply rounded-lg border border-border bg-surface p-4 shadow-sm;
+    @apply rounded-[18px] border border-border bg-surface p-4 shadow-sm;
   }
   .mono {
     font-family: var(--font-mono);
   }
   .text-caption {
     font-size: 11px;
+  }
+  .syntax-keyword {
+    color: var(--color-syntax-keyword);
+    font-weight: 600;
+  }
+  .syntax-string {
+    color: var(--color-syntax-string);
+  }
+  .syntax-comment {
+    color: var(--color-syntax-comment);
+    font-style: italic;
+  }
+  .syntax-number {
+    color: var(--color-syntax-number);
+  }
+  .syntax-tag {
+    color: var(--color-syntax-tag);
+  }
+  .syntax-attribute {
+    color: var(--color-syntax-attribute);
   }
   .sr-only {
     position: absolute;
@@ -69,4 +249,19 @@
     white-space: nowrap;
     border-width: 0;
   }
+}
+
+[data-theme="dark"] body {
+  background:
+    radial-gradient(circle at 10% -8%, rgba(99, 52, 65, 0.22) 0, transparent 34rem),
+    radial-gradient(circle at 94% 0, rgba(53, 50, 82, 0.2) 0, transparent 32rem),
+    var(--color-bg);
+}
+
+[data-theme="dark"] .composer-shell {
+  box-shadow: 0 16px 46px rgba(0, 0, 0, 0.28), 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+
+[data-theme="dark"] .bounded-detail {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035) inset;
 }

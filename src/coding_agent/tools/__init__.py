@@ -1,4 +1,4 @@
-"""Default MVP tool set assembly."""
+"""Default coding-agent tool set assembly."""
 
 from __future__ import annotations
 
@@ -13,15 +13,18 @@ from .paths import Workspace
 from .read_file_tool import build_read_spec
 from .registry import ToolRegistry
 from .run_command_tool import build_run_spec
+from .web_tools import build_web_fetch_spec, build_web_search_spec
 from .write_file_tool import build_write_spec
 
-MVP_TOOL_NAMES = (
+DEFAULT_TOOL_NAMES = (
     "glob",
     "grep",
     "read_file",
     "write_file",
     "edit_file",
     "run_command",
+    "web_search",
+    "web_fetch",
 )
 
 
@@ -38,9 +41,11 @@ def build_default_tools(
         build_write_spec(workspace.root, tracker),
         build_edit_spec(workspace.root, tracker),
         build_run_spec(workspace.root, is_cancelled),
+        build_web_search_spec(is_cancelled=is_cancelled),
+        build_web_fetch_spec(is_cancelled=is_cancelled),
     )
     for spec in specs:
         registry.register(spec)
-    if registry.names() != MVP_TOOL_NAMES:
-        raise RuntimeError(f"unexpected MVP tool set: {registry.names()}")
+    if registry.names() != DEFAULT_TOOL_NAMES:
+        raise RuntimeError(f"unexpected default tool set: {registry.names()}")
     return registry

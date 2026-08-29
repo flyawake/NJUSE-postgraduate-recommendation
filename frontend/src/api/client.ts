@@ -15,6 +15,7 @@ export type ProfileInput = components["schemas"]["ProfileInput"];
 export type Conversation = components["schemas"]["ConversationDTO"];
 export type ConversationPage = components["schemas"]["ConversationPageDTO"];
 export type Turn = components["schemas"]["TurnDTO"];
+export type Attachment = components["schemas"]["AttachmentDTO"];
 export type TurnPage = components["schemas"]["TurnPageDTO"];
 export type StreamCheckpoint = components["schemas"]["StreamCheckpointDTO"];
 export type StreamSnapshot = components["schemas"]["StreamSnapshotDTO"];
@@ -94,6 +95,33 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   } catch {
     body = null;
   }
+  if (!response.ok) {
+    const error = (body as { error?: ErrorDetail } | null)?.error;
+    throw new ApiError(
+      error?.code ?? "http_error",
+      error?.message ?? `HTTP ${response.status}`,
+      response.status,
+      error?.field
+    );
+  }
+  return body as T;
+}
+
+async function uploadBinary<T>(path: string, file: File): Promise<T> {
+  const headers = new Headers({
+    Accept: "application/json",
+    "Content-Type": file.type || "application/octet-stream",
+  });
+  if (sessionToken) headers.set("X-Coding-Agent-Token", sessionToken);
+  let response: Response;
+  try {
+    response = await fetch(path, { method: "POST", headers, body: file });
+  } catch {
+    throw new ApiError("transport_error", "", 0);
+  }
+  const text = await response.text();
+  let body: unknown = null;
+  try { body = text ? JSON.parse(text) : null; } catch { body = null; }
   if (!response.ok) {
     const error = (body as { error?: ErrorDetail } | null)?.error;
     throw new ApiError(
@@ -192,6 +220,23 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+
+  uploadAttachment: (id: string, file: File) => {
+    const filename = encodeURIComponent(file.name);
+    return uploadBinary<Attachment>(
+      `/api/conversations/${encodeURIComponent(id)}/attachments?filename=${filename}`,
+      file
+    );
+  },
+
+  deleteAttachment: (id: string, attachmentId: string) =>
+    apiFetch<void>(
+      `/api/conversations/${encodeURIComponent(id)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { method: "DELETE" }
+    ),
+
+  attachmentUrl: (id: string, attachmentId: string) =>
+    `/api/conversations/${encodeURIComponent(id)}/attachments/${encodeURIComponent(attachmentId)}`,
 
   getTurn: (id: string, turnId: string) =>
     apiFetch<Turn>(`/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}`),

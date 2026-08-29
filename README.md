@@ -82,7 +82,7 @@ CLI
        -> ToolExecutor
             -> argument decoder + tool validator
             -> ToolPolicy
-            -> ToolRegistry -> 六个本地工具
+            -> ToolRegistry -> 六个 workspace 工具 + web_search/web_fetch
             -> ToolOutcome normalizer + model renderer
        -> CompletionPolicy
        -> EventSink
@@ -141,6 +141,8 @@ assistant ToolCall
 | `write_file(path, content)` | WRITE | 创建或整体覆盖；父目录自动创建；单次 ≤1 MiB；覆盖必须先观察当前版本 |
 | `edit_file(path, old_string, new_string, replace_all=false)` | WRITE | 字面量替换；默认唯一匹配；`replace_all=true` 至少匹配一次；先读后改 + 版本新鲜度 |
 | `run_command(argv, cwd=".", timeout_seconds=30, purpose="inspect\|verify\|other")` | EXECUTE | `shell=False`；cwd 必须在工作区内；超时 1-120 秒；stdout/stderr 各保留 head 4000 + tail 6000 字符并报告省略量；非零退出码仍是成功观察 |
+| `web_search(query, max_results=5)` | READ | 搜索公开互联网；结果数≤10，只返回有界 title/url/snippet；网页结果始终视为不可信观察 |
+| `web_fetch(url, max_chars=12000)` | READ | 仅抓取公开 HTTP(S) 文本页；拒绝凭据、非标准端口、本机/私网/保留地址及重定向 rebinding；不执行脚本，响应≤1 MB、正文≤20,000 字符 |
 
 所有结果统一为 `{"ok": true, "data": ...}` 或 `{"ok": false, "error": {"code", "message", "retryable", "recovery_hint"?}}`，错误 code 稳定且属于本项目。
 
@@ -172,12 +174,13 @@ FastAPI local app server (loopback only)
 - 凭据：`credentials.json` 与 config 分离，只有 `ref -> secret`，读取接口只返回 `configured/source/writable`；写入用同目录临时文件 + flush/fsync + `os.replace`（POSIX 目录 0700 / 文件 0600，尽力而为）；损坏文件拒绝写入并保留原文件。
 - 安全：仅监听 loopback；Host 必须为语法合法的 loopback 主机（IPv4/IPv6 字面量或 localhost，端口必须为数字，畸形 Host 直接 403）；Origin 必须与当前请求的 scheme/host/effective port **精确一致**，另一个 loopback 端口、userinfo 或 path 均被拒绝；状态变更必须携带随机会话令牌（`X-Coding-Agent-Token`，由 `/api/bootstrap` 下发，前端仅在内存中保存）；不配置宽泛 CORS；CSP `default-src 'self'` 禁止外部脚本与 CDN，默认 Swagger/ReDoc UI 已禁用（OpenAPI JSON 仍保留）；profile 的 base URL 与 legacy `OPENAI_BASE_URL` 走同一个 validator（仅绝对 HTTP(S)、HTTP 仅限 loopback、无 userinfo/query/fragment、端口必须合法）；workspace 在启动 run 前解析为已存在目录并交给既有路径守卫。
 - 前端：TypeScript + React + Vite + Tailwind（全部视觉值来自 design tokens）+ Radix Primitives（Dialog/Select/Tabs/Collapsible/AlertDialog）+ Lucide；TanStack Query 负责持久 snapshot 与按 cursor 拉取事件，投影器只增量处理新 event；legacy `/api/runs` 继续保留 SSE 兼容；i18n 资源完整 zh-CN/en-US，侧栏和文件审查在窄屏分别进入可访问 drawer。
+- 聊天附件：Composer 支持选择、拖放与粘贴 PNG/JPEG/GIF/WebP，以及 PDF、UTF-8 文本/代码和常见 Office 文件。单文件≤10 MiB、每轮≤4 个且合计≤20 MiB；二进制保存在 `CODING_AGENT_HOME/attachments/`，SQLite/canonical history 只保存引用与元数据。turn 创建事务原子认领附件；ContextManager 在 detached request view 中将图片/文件映射到 Chat Completions 或 Responses 的对应输入格式，文本附件最多内联 50,000 字符。
 
-本机数据边界：`state.db` 保存对话、模型消息和运行事件，`artifacts/sha256/` 保存历史文件审查所需的有界快照；二者均为本地明文，不由应用主动同步。模型上下文仍会发送给用户选择的 provider。归档只是可恢复隐藏；永久删除会清理该对话及不再被其他 turn 引用的快照，绝不删除 workspace 项目文件。
+本机数据边界：`state.db` 保存对话、模型消息和运行事件，`artifacts/sha256/` 保存历史文件审查所需的有界快照，`attachments/sha256/` 保存聊天附件；它们均为本地明文，不由应用主动同步。模型上下文与用户选择的附件仍会发送给用户选择的 provider。归档只是可恢复隐藏；永久删除会清理该对话及不再被其他 turn 引用的快照/附件，绝不删除 workspace 项目文件。
 
 ### 上下文投影
 
-`canonical history` 只追加、永不改写；每步由 ContextManager 生成独立的临时 request view。默认字符预算 120,000（近似值，不声称精确 token 计数）。投影确定性保留：system prompt、原始 user task、所有 tool-call/result 协议骨架、最近两个逻辑 step、最近的错误结果、每个文件最近一次成功的 `read_file` 窗口；较早的成功工具正文按确定性规则替换为 `{ok, omitted, tool, resource, original_chars, omitted_chars}` 标记。若保护项本身仍超预算，以 `CONTEXT_OVERFLOW` 终止。
+`canonical history` 只追加、永不改写；每步由 ContextManager 生成独立的临时 request view。默认字符预算 258,000（近似值，不声称精确 token 计数）。投影确定性保留：system prompt、原始 user task、所有 tool-call/result 协议骨架、最近两个逻辑 step、最近的错误结果、每个文件最近一次成功的 `read_file` 窗口；较早的成功工具正文按确定性规则替换为 `{ok, omitted, tool, resource, original_chars, omitted_chars}` 标记。若仍超预算，ContextManager 会进一步自动裁剪旧 assistant 消息的可见 reasoning 与长文本（不修改 canonical history，且保留最近两个逻辑 step 完整）。若保护项本身仍超预算，以 `CONTEXT_OVERFLOW` 终止。
 
 ### 完成验证与终止
 

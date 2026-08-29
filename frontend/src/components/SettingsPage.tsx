@@ -65,13 +65,13 @@ export function SettingsPage() {
   };
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6 px-4 py-6 lg:px-8">
+    <div className="mx-auto w-full max-w-4xl space-y-7 px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
       <header>
-        <h1 className="text-lg font-semibold">{t("settings.title")}</h1>
-        <p className="mt-1 text-sm text-muted">{t("settings.subtitle")}</p>
+        <h1 className="text-2xl font-semibold tracking-[-0.035em]">{t("settings.title")}</h1>
+        <p className="mt-1.5 max-w-2xl text-sm leading-6 text-muted">{t("settings.subtitle")}</p>
       </header>
 
-      <label className="flex items-center gap-2 rounded-md border border-border bg-surface p-3 text-sm">
+      <label className="flex items-center gap-3 rounded-lg border border-border bg-bg/70 p-3.5 text-sm shadow-sm">
         <input
           type="checkbox"
           checked={gestureSwap}
@@ -82,16 +82,16 @@ export function SettingsPage() {
       </label>
 
       <Tabs.Root value={tab} onValueChange={(next) => setTab(next as "list" | "form")} data-testid="settings-tabs">
-        <Tabs.List className="flex gap-1 border-b border-border">
+        <Tabs.List className="flex w-fit gap-1 rounded-md bg-surface-2 p-1">
           <Tabs.Trigger
             value="list"
-            className="px-3 py-2 text-sm font-medium text-muted transition-colors duration-fast data-[state=active]:border-b-2 data-[state=active]:border-accent data-[state=active]:text-text"
+            className="rounded-sm px-3 py-1.5 text-sm font-medium text-muted transition-colors duration-fast data-[state=active]:bg-surface data-[state=active]:text-text data-[state=active]:shadow-sm"
           >
             {t("settings.profiles")}
           </Tabs.Trigger>
           <Tabs.Trigger
             value="form"
-            className="px-3 py-2 text-sm font-medium text-muted transition-colors duration-fast data-[state=active]:border-b-2 data-[state=active]:border-accent data-[state=active]:text-text"
+            className="rounded-sm px-3 py-1.5 text-sm font-medium text-muted transition-colors duration-fast data-[state=active]:bg-surface data-[state=active]:text-text data-[state=active]:shadow-sm"
             onClick={openCreate}
           >
             {t("settings.create")}

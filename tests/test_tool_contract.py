@@ -43,10 +43,12 @@ EXPECTED_EFFECTS = {
     "write_file": ToolEffect.WRITE,
     "edit_file": ToolEffect.WRITE,
     "run_command": ToolEffect.EXECUTE,
+    "web_search": ToolEffect.READ,
+    "web_fetch": ToolEffect.READ,
 }
 
 
-def test_all_six_tools_registered_with_contract(registry):
+def test_all_default_tools_registered_with_contract(registry):
     assert list(registry.names()) == [
         "glob",
         "grep",
@@ -54,6 +56,8 @@ def test_all_six_tools_registered_with_contract(registry):
         "write_file",
         "edit_file",
         "run_command",
+        "web_search",
+        "web_fetch",
     ]
     for name in registry.names():
         spec = registry.get(name)
@@ -88,6 +92,8 @@ def test_all_six_tools_registered_with_contract(registry):
                 "timeout_seconds": 5,
             },
         ),
+        ("web_search", {"query": "Python release"}),
+        ("web_fetch", {"url": "https://example.com/"}),
     ],
 )
 def test_validator_accepts_minimal_args_and_rejects_wrong_types(

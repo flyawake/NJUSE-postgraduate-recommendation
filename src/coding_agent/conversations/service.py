@@ -21,6 +21,13 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ..agent import AgentLoop
 from ..artifacts.store import ArtifactStore
+from ..attachments import (
+    MAX_ATTACHMENTS_PER_TURN,
+    MAX_ATTACHMENTS_TOTAL_BYTES,
+    AttachmentStore,
+    AttachmentValidationError,
+    validate_attachment,
+)
 from ..changes.collector import ToolChangeCollector
 from ..changes.diff import MAX_DIFF_LINES, MAX_FILE_BYTES, build_diff
 from ..completion import CompletionPolicy
@@ -36,7 +43,14 @@ from ..errors import ConfigError
 from ..memory.extractor import MemoryCandidateExtractor
 from ..memory.service import MemoryService, MemoryServiceError
 from ..model_client import ModelClient, ModelClientFactory
-from ..models import AgentEvent, RunResult, RunStatus, SystemMessage, UserMessage
+from ..models import (
+    AgentEvent,
+    AttachmentRef,
+    RunResult,
+    RunStatus,
+    SystemMessage,
+    UserMessage,
+)
 from ..prompt import SYSTEM_PROMPT
 from ..provider_config import ProfileError, ProfileStore, ProviderProfile, default_home
 from ..streaming import ModelRequestOptions
@@ -291,12 +305,16 @@ class ConversationService:
         self._repository.recover_claimed_steers()
         self.runtime = RuntimeRegistry(max_workers=max_workers)
         self._artifact_store = ArtifactStore(resolved_home / "artifacts")
+        self._attachment_store = AttachmentStore(resolved_home / "attachments")
         # A crash can occur after an atomic CAS rename but before the DB ref
         # transaction, or after DB GC but before physical unlink. Startup
         # reconciliation is idempotent and never removes a referenced blob.
         referenced_blobs = self._repository.list_artifact_blob_ids()
         for blob_id in self._artifact_store.list_digests() - referenced_blobs:
             self._artifact_store.delete(blob_id)
+        referenced_attachments = self._repository.list_attachment_blob_ids()
+        for blob_id in self._attachment_store.list_digests() - referenced_attachments:
+            self._attachment_store.delete(blob_id)
         self._shutdown_lock = threading.RLock()
         self._queue_consumer_locks: Dict[str, threading.Lock] = {}
         self._queue_consumer_locks_lock = threading.RLock()
@@ -740,11 +758,17 @@ class ConversationService:
                 "conversation_busy", "会话正在运行，不能删除"
             )
         try:
+            attachment_blobs = self._repository.list_conversation_attachment_blob_ids(
+                conversation_id
+            )
             orphaned = self._repository.delete_conversation(
                 conversation_id, expected_version
             )
             for blob_id in orphaned:
                 self._artifact_store.delete(blob_id)
+            for blob_id in attachment_blobs:
+                if not self._repository.attachment_blob_is_referenced(blob_id):
+                    self._attachment_store.delete(blob_id)
         except KeyError as exc:
             raise ConversationServiceError(
                 "conversation_not_found", "会话不存在"
@@ -753,6 +777,68 @@ class ConversationService:
             raise ConversationServiceError(
                 "version_conflict", "会话已被其他端修改", field="version"
             ) from exc
+
+    # ------------------------------------------------------- attachments
+
+    def create_attachment(
+        self,
+        conversation_id: str,
+        *,
+        filename: str,
+        media_type: Optional[str],
+        data: bytes,
+    ) -> Dict[str, Any]:
+        conversation = self._require_conversation(conversation_id)
+        if conversation.state != ConversationState.ACTIVE.value:
+            raise ConversationServiceError(
+                "conversation_archived", "已归档会话不能上传附件"
+            )
+        try:
+            validated = validate_attachment(filename, media_type, data)
+        except AttachmentValidationError as exc:
+            raise ConversationServiceError(exc.code, exc.message, field="file") from exc
+        blob_id = self._attachment_store.put(data)
+        try:
+            ref = self._repository.create_attachment(
+                conversation_id,
+                blob_id=blob_id,
+                filename=validated.filename,
+                media_type=validated.media_type,
+                kind=validated.kind,
+                size_bytes=len(data),
+            )
+        except Exception:
+            if not self._repository.attachment_blob_is_referenced(blob_id):
+                self._attachment_store.delete(blob_id)
+            raise
+        return self._attachment_to_dict(ref)
+
+    def delete_attachment(self, conversation_id: str, attachment_id: str) -> None:
+        self._require_conversation(conversation_id)
+        blob_id = self._repository.delete_pending_attachment(
+            conversation_id, attachment_id
+        )
+        if blob_id is None:
+            raise ConversationServiceError(
+                "attachment_not_found", "附件不存在或已随 turn 发送"
+            )
+        if blob_id:
+            self._attachment_store.delete(blob_id)
+
+    def read_attachment(
+        self, conversation_id: str, attachment_id: str
+    ) -> Tuple[Dict[str, Any], bytes]:
+        self._require_conversation(conversation_id)
+        ref = self._repository.get_attachment(conversation_id, attachment_id)
+        if ref is None:
+            raise ConversationServiceError("attachment_not_found", "附件不存在")
+        try:
+            data = self._attachment_store.read(ref.sha256)
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise ConversationServiceError(
+                "attachment_unavailable", "附件内容不可用"
+            ) from exc
+        return self._attachment_to_dict(ref), data
 
     # ------------------------------------------------------------ turns
 
@@ -789,6 +875,7 @@ class ConversationService:
         profile_id: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
         inbox_item_id: Optional[str] = None,
+        attachment_ids: Sequence[str] = (),
     ) -> Dict[str, Any]:
         record = self._require_conversation(conversation_id)
         if record.state != ConversationState.ACTIVE.value:
@@ -805,7 +892,28 @@ class ConversationService:
             raise ConversationServiceError(
                 "conversation_busy", "该会话已有正在运行的 turn"
             )
-        if not user_text or not user_text.strip():
+        if len(attachment_ids) > MAX_ATTACHMENTS_PER_TURN:
+            raise ConversationServiceError(
+                "too_many_attachments", "每轮最多发送 4 个附件", field="attachment_ids"
+            )
+        attachments = self._repository.get_pending_attachments(
+            conversation_id, attachment_ids
+        )
+        if len(attachments) != len(attachment_ids) or len(set(attachment_ids)) != len(
+            attachment_ids
+        ):
+            raise ConversationServiceError(
+                "attachment_unavailable",
+                "附件不存在、属于其他会话或已被发送",
+                field="attachment_ids",
+            )
+        if sum(item.size_bytes for item in attachments) > MAX_ATTACHMENTS_TOTAL_BYTES:
+            raise ConversationServiceError(
+                "attachments_too_large",
+                "本轮附件总大小不能超过 20 MiB",
+                field="attachment_ids",
+            )
+        if (not user_text or not user_text.strip()) and not attachments:
             raise ConversationServiceError(
                 "invalid_task", "任务内容不能为空", field="task"
             )
@@ -821,7 +929,11 @@ class ConversationService:
         initial_messages = []
         if not existing_history:
             initial_messages.append(SystemMessage(SYSTEM_PROMPT))
-        initial_messages.append(UserMessage(user_text.strip(), source="user"))
+        initial_messages.append(
+            UserMessage(
+                user_text.strip(), source="user", attachments=tuple(attachments)
+            )
+        )
         try:
             turn, created = self._repository.create_turn_with_initial_messages(
                 conversation_id,
@@ -830,6 +942,7 @@ class ConversationService:
                 idempotency_key=idempotency_key,
                 messages=initial_messages,
                 inbox_item_id=inbox_item_id,
+                attachment_ids=tuple(attachment_ids),
             )
         except ValueError as exc:
             if str(exc) == "conversation_busy":
@@ -839,6 +952,10 @@ class ConversationService:
             if str(exc) == "inbox_item_not_queued":
                 raise ConversationServiceError(
                     "inbox_item_not_queued", "队列项已被其他操作更新"
+                ) from exc
+            if str(exc) in {"attachment_duplicate", "attachment_unavailable"}:
+                raise ConversationServiceError(
+                    "attachment_unavailable", "附件已被其他请求使用"
                 ) from exc
             raise
         if not created:
@@ -1613,6 +1730,7 @@ class ConversationService:
                 memory_provider=self._make_memory_provider(
                     conversation_id, turn_id, workspace, task
                 ),
+                attachment_loader=lambda ref: self._attachment_store.read(ref.sha256),
             ),
             completion_policy=CompletionPolicy(),
             run_id=run_id,
@@ -1660,8 +1778,7 @@ class ConversationService:
             "archived_at": record.archived_at,
         }
 
-    @staticmethod
-    def _turn_to_dict(record: TurnRecord) -> Dict[str, Any]:
+    def _turn_to_dict(self, record: TurnRecord) -> Dict[str, Any]:
         result = None
         if record.result_json:
             try:
@@ -1681,4 +1798,20 @@ class ConversationService:
             "result": result,
             "error_code": record.error_code,
             "active": record.is_active,
+            "attachments": [
+                self._attachment_to_dict(item)
+                for item in self._repository.list_turn_attachments(
+                    record.conversation_id, record.id
+                )
+            ],
+        }
+
+    @staticmethod
+    def _attachment_to_dict(ref: AttachmentRef) -> Dict[str, Any]:
+        return {
+            "id": ref.id,
+            "filename": ref.filename,
+            "media_type": ref.media_type,
+            "kind": ref.kind,
+            "size_bytes": ref.size_bytes,
         }

@@ -1,6 +1,39 @@
 {
   "components": {
     "schemas": {
+      "AttachmentDTO": {
+        "properties": {
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "filename",
+          "media_type",
+          "kind",
+          "size_bytes"
+        ],
+        "title": "AttachmentDTO",
+        "type": "object"
+      },
       "BootstrapDTO": {
         "properties": {
           "active_profile_id": {
@@ -2072,9 +2105,17 @@
       "TurnCreateRequest": {
         "additionalProperties": false,
         "properties": {
+          "attachment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 4,
+            "title": "Attachment Ids",
+            "type": "array"
+          },
           "content": {
+            "default": "",
             "maxLength": 100000,
-            "minLength": 1,
             "title": "Content",
             "type": "string"
           },
@@ -2113,9 +2154,6 @@
             "title": "Reasoning Effort"
           }
         },
-        "required": [
-          "content"
-        ],
         "title": "TurnCreateRequest",
         "type": "object"
       },
@@ -2125,6 +2163,13 @@
             "default": false,
             "title": "Active",
             "type": "boolean"
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/AttachmentDTO"
+            },
+            "title": "Attachments",
+            "type": "array"
           },
           "conversation_id": {
             "title": "Conversation Id",
@@ -2748,6 +2793,134 @@
           }
         },
         "summary": "Archive Conversation"
+      }
+    },
+    "/api/conversations/{conversation_id}/attachments": {
+      "post": {
+        "operationId": "upload_attachment_api_conversations__conversation_id__attachments_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "filename",
+            "required": true,
+            "schema": {
+              "title": "Filename",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Attachment"
+      }
+    },
+    "/api/conversations/{conversation_id}/attachments/{attachment_id}": {
+      "delete": {
+        "operationId": "delete_attachment_api_conversations__conversation_id__attachments__attachment_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "title": "Attachment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Attachment"
+      },
+      "get": {
+        "operationId": "get_attachment_api_conversations__conversation_id__attachments__attachment_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "title": "Attachment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Attachment"
       }
     },
     "/api/conversations/{conversation_id}/inbox": {

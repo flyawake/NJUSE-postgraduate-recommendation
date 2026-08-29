@@ -1,5 +1,5 @@
 import * as Select from "@radix-ui/react-select";
-import { Bot, Moon, PanelLeft, Settings, Sun, SunMoon } from "lucide-react";
+import { Moon, PanelLeft, Settings, SquareTerminal, Sun, SunMoon } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { LOCALES } from "@/lib/i18n";
 import { useTheme } from "@/lib/theme";
@@ -32,7 +32,7 @@ export function TopBar({
   const ThemeIcon = THEME_ICON[preference];
 
   return (
-    <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-surface px-3">
+    <header className="glass-chrome flex h-12 shrink-0 items-center gap-2.5 border-b px-2.5 sm:px-3">
       <button
         type="button"
         className="btn-icon"
@@ -42,11 +42,13 @@ export function TopBar({
         <PanelLeft aria-hidden size={16} />
       </button>
       <div className="flex items-center gap-2">
-        <Bot aria-hidden size={18} className="text-accent" />
-        <span className="font-semibold">{t("app.name")}</span>
+        <span className="flex h-7 w-7 items-center justify-center rounded-[9px] bg-accent text-accent-fg shadow-sm">
+          <SquareTerminal aria-hidden size={15} />
+        </span>
+        <span className="text-[14px] font-semibold tracking-[-0.025em]">{t("app.name")}</span>
       </div>
 
-      <div className="mx-auto hidden min-w-0 items-center gap-2 px-4 text-sm sm:flex">
+      <div className="glass-panel mx-auto hidden min-w-0 items-center gap-2 rounded-[11px] border px-3 py-1 text-[11px] shadow-sm sm:flex">
         <span className="mono max-w-[24rem] truncate text-muted" title={workspace}>
           {workspace || t("topbar.noWorkspace")}
         </span>

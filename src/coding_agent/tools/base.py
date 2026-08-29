@@ -33,6 +33,10 @@ TOOL_ABORTED = "TOOL_ABORTED"
 COMMAND_NOT_FOUND = "COMMAND_NOT_FOUND"
 COMMAND_FAILED = "COMMAND_FAILED"
 WRITE_FAILED = "WRITE_FAILED"
+NETWORK_DENIED = "NETWORK_DENIED"
+NETWORK_ERROR = "NETWORK_ERROR"
+HTTP_ERROR = "HTTP_ERROR"
+UNSUPPORTED_CONTENT = "UNSUPPORTED_CONTENT"
 INTERNAL_ERROR = "INTERNAL_ERROR"
 # Loop-level codes rendered as tool results to keep history diagnosable.
 REPEATED_TOOL_CALL = "REPEATED_TOOL_CALL"
@@ -153,6 +157,10 @@ class ToolOutcome:
             return str(data["path"])
         if "argv" in data:
             return " ".join(str(part) for part in data["argv"])[:120]
+        if "url" in data:
+            return str(data["url"])[:120]
+        if "query" in data:
+            return str(data["query"])[:120]
         return self.tool_name
 
     def summary(self, max_chars: int = 160) -> str:
@@ -165,7 +173,7 @@ class ToolOutcome:
 
     def _short_data(self, max_chars: int) -> str:
         data = self.data or {}
-        for key in ("path", "pattern", "argv", "returncode"):
+        for key in ("path", "pattern", "url", "query", "argv", "returncode"):
             if key in data:
                 value = str(data[key])
                 if len(value) > max_chars - 12:

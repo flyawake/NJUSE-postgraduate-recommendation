@@ -31,6 +31,7 @@ describe("StreamingTranscript", () => {
     expect(block).toBeVisible();
     fireEvent.click(block.querySelector("button") as HTMLElement);
     expect(block).toHaveTextContent("visible thought");
+    expect(screen.getByTestId("thinking-scroll-frame")).toHaveClass("bounded-detail");
     expect(screen.getByTestId("streaming-assistant-text")).toHaveTextContent("answer");
   });
 

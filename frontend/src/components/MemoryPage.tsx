@@ -180,9 +180,9 @@ export function MemoryPage({ defaultWorkspace = "", onOpenSource }: MemoryPagePr
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="memory-page">
-      <div className="shrink-0 border-b border-border px-4 py-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-lg font-semibold">{t("memory.title")}</h1>
+      <div className="shrink-0 border-b border-border bg-surface/95 px-4 py-4 sm:px-6">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-2">
+          <h1 className="text-xl font-semibold tracking-[-0.025em]">{t("memory.title")}</h1>
           <select className="input ml-auto h-8 w-auto text-xs" value={modeScopeType} onChange={(event) => { const next = event.target.value; setModeScopeType(next); setModeScopeKey(next === "global" ? "global" : next === "workspace" ? defaultWorkspace : ""); }} aria-label={t("memory.scope")} data-testid="memory-mode-scope">
             {SCOPES.map((scope) => <option key={scope} value={scope}>{t(`memory.scope.${scope}`)}</option>)}
           </select>
@@ -204,7 +204,7 @@ export function MemoryPage({ defaultWorkspace = "", onOpenSource }: MemoryPagePr
             <RefreshCw aria-hidden size={15} /> {t("memory.reset")}
           </button>
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
+        <div className="mx-auto mt-3 flex max-w-6xl flex-wrap items-center gap-2">
           <label className="relative min-w-[16rem] flex-1">
             <Search aria-hidden size={14} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-faint" />
             <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("memory.searchPlaceholder")} className="input h-8 pl-7 text-sm" aria-label={t("memory.searchPlaceholder")} data-testid="memory-search" />
@@ -222,15 +222,15 @@ export function MemoryPage({ defaultWorkspace = "", onOpenSource }: MemoryPagePr
 
       {error ? <div className="px-4 pt-3"><InlineError kind="validation" message={error} /></div> : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+      <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
         {list.isLoading ? (
           <p className="flex items-center gap-2 text-sm text-muted"><Loader2 aria-hidden size={14} className="animate-spin" /> {t("common.loading")}</p>
         ) : items.length === 0 ? (
           <p className="text-sm text-faint">{t("memory.empty")}</p>
         ) : (
-          <div className="space-y-2">
+          <div className="mx-auto max-w-6xl space-y-2.5">
             {items.map((memory) => (
-              <article key={memory.id} className="rounded-md border border-border bg-surface p-3" data-testid={`memory-${memory.id}`}>
+              <article key={memory.id} className="rounded-lg border border-border bg-surface p-4 shadow-sm" data-testid={`memory-${memory.id}`}>
                 <div className="flex items-start gap-2">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2 text-xs text-muted">

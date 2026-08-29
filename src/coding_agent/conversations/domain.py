@@ -161,6 +161,17 @@ def canonical_message_to_payload(message: CanonicalMessage) -> Dict[str, Any]:
             "type": "user",
             "content": message.content,
             "source": message.source,
+            "attachments": [
+                {
+                    "id": item.id,
+                    "filename": item.filename,
+                    "media_type": item.media_type,
+                    "kind": item.kind,
+                    "size_bytes": item.size_bytes,
+                    "sha256": item.sha256,
+                }
+                for item in message.attachments
+            ],
         }
     if isinstance(message, AssistantMessage):
         return {
@@ -204,6 +215,7 @@ def payload_to_canonical_message(payload: Dict[str, Any]) -> CanonicalMessage:
 
     from ..models import (
         AssistantMessage,
+        AttachmentRef,
         ProviderContinuation,
         SystemMessage,
         ToolCall,
@@ -222,7 +234,36 @@ def payload_to_canonical_message(payload: Dict[str, Any]) -> CanonicalMessage:
         source = payload.get("source", "user")
         if not isinstance(content, str) or not isinstance(source, str):
             raise ValueError("user payload missing content/source")
-        return UserMessage(content=content, source=source)
+        raw_attachments = payload.get("attachments", [])
+        if not isinstance(raw_attachments, list):
+            raise ValueError("user attachments invalid")
+        attachments = []
+        for item in raw_attachments:
+            if not isinstance(item, dict):
+                raise ValueError("user attachment item invalid")
+            try:
+                attachment = AttachmentRef(
+                    id=str(item["id"]),
+                    filename=str(item["filename"]),
+                    media_type=str(item["media_type"]),
+                    kind=str(item["kind"]),
+                    size_bytes=int(item["size_bytes"]),
+                    sha256=str(item["sha256"]),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("user attachment item invalid") from exc
+            if (
+                not attachment.id
+                or not attachment.filename
+                or attachment.kind not in {"image", "file"}
+                or attachment.size_bytes < 0
+                or len(attachment.sha256) != 64
+            ):
+                raise ValueError("user attachment item invalid")
+            attachments.append(attachment)
+        return UserMessage(
+            content=content, source=source, attachments=tuple(attachments)
+        )
     if message_type == "assistant":
         text = payload.get("text", "")
         raw_calls = payload.get("tool_calls", [])

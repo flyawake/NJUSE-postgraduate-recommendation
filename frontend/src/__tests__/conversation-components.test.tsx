@@ -4,6 +4,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { FileChange } from "@/api/client";
 import { ArtifactPreviewPane } from "@/components/ArtifactPreviewPane";
+import { DiffViewer } from "@/components/DiffViewer";
 import { TurnChangeSummary } from "@/components/TurnChangeSummary";
 import { I18nProvider } from "@/lib/i18n";
 
@@ -103,5 +104,32 @@ describe("turn change review", () => {
     await user.click(screen.getByRole("tab", { name: "当前文件" }));
     await waitFor(() => expect(mockedPreview).toHaveBeenCalledWith("conversation", "turn", "change-1", "current"));
     expect(await screen.findByText("current")).toBeInTheDocument();
+  });
+
+  it("colours changed lines and expands unchanged source ranges", async () => {
+    const user = userEvent.setup();
+    wrapper(
+      <DiffViewer
+        filePath="src/app.ts"
+        lines={[
+          "--- before/src/app.ts",
+          "+++ after/src/app.ts",
+          "@@ -3,3 +3,3 @@",
+          " context();",
+          "-const value = 1;",
+          "+const value = 2;",
+          " tail();",
+        ]}
+        fullLines={["first();", "second();", "context();", "const value = 2;", "tail();", "last();"]}
+      />
+    );
+
+    expect(document.querySelector('[data-line-kind="del"]')).toHaveClass("bg-danger-muted");
+    expect(document.querySelector('[data-line-kind="add"]')).toHaveClass("bg-success-muted");
+    expect(document.querySelector(".syntax-keyword")).toHaveTextContent("const");
+
+    await user.click(screen.getByRole("button", { name: "2 行未修改" }));
+    expect(screen.getByText("first();")).toBeInTheDocument();
+    expect(screen.getByText("second();")).toBeInTheDocument();
   });
 });
