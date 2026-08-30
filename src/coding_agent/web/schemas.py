@@ -42,6 +42,10 @@ class ConversationRenameRequest(StrictModel):
     expected_version: int = Field(ge=1)
 
 
+class ConversationPreferencesRequest(StrictModel):
+    reasoning_effort: Optional[str] = None
+
+
 class ConversationVersionRequest(StrictModel):
     expected_version: int = Field(ge=1)
     confirm: bool = False
@@ -178,6 +182,7 @@ class ConversationDTO(BaseModel):
     workspace_path: str
     workspace_key: str
     profile_id: Optional[str] = None
+    reasoning_effort: Optional[str] = None
     state: str
     version: int
     created_at: str

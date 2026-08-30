@@ -277,6 +277,17 @@
             ],
             "title": "Profile Id"
           },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort"
+          },
           "state": {
             "title": "State",
             "type": "string"
@@ -341,6 +352,24 @@
           "items"
         ],
         "title": "ConversationPageDTO",
+        "type": "object"
+      },
+      "ConversationPreferencesRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort"
+          }
+        },
+        "title": "ConversationPreferencesRequest",
         "type": "object"
       },
       "ConversationRenameRequest": {
@@ -3286,6 +3315,55 @@
           }
         },
         "summary": "Steer Inbox"
+      }
+    },
+    "/api/conversations/{conversation_id}/preferences": {
+      "put": {
+        "operationId": "update_conversation_preferences_api_conversations__conversation_id__preferences_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationPreferencesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Conversation Preferences"
       }
     },
     "/api/conversations/{conversation_id}/turns": {

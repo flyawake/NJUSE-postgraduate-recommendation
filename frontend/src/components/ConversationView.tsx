@@ -69,6 +69,7 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
   const initialScrollConversationRef = useRef<string | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const preferenceSaveRef = useRef<Promise<void>>(Promise.resolve());
   const [currentTurnId, setCurrentTurnId] = useState<string | null>(null);
   const [task, setTask] = useState(() => {
     try { return sessionStorage.getItem(draftKey(conversationId)) ?? ""; } catch { return ""; }
@@ -126,6 +127,21 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
     queryFn: () => api.getConversation(conversationId),
     refetchInterval: 1_000,
   });
+  const persistReasoningEffort = useCallback((value: string | null) => {
+    const request = preferenceSaveRef.current
+      .catch(() => undefined)
+      .then(() => api.updateConversationPreferences(conversationId, {
+        reasoning_effort: value,
+      }));
+    preferenceSaveRef.current = request.then(
+      (updated) => {
+        queryClient.setQueryData(["conversation", conversationId], updated);
+      },
+      (error) => {
+        setComposerError(error instanceof Error ? error.message : t("error.runFailure"));
+      },
+    );
+  }, [conversationId, queryClient, t]);
   const profilesQuery = useQuery({
     queryKey: ["profiles"],
     queryFn: api.listProfiles,
@@ -142,15 +158,44 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
     setReasoningEffort(stored ?? "");
   }, [conversationId]);
   useEffect(() => {
+    const conversation = conversationQuery.data;
+    if (!conversation) return;
+    const persisted = conversation.reasoning_effort;
+    if (persisted !== null && persisted !== undefined) {
+      setReasoningEffort(persisted);
+      setEffortTouched(true);
+      try { localStorage.setItem(reasoningEffortKey(conversationId), persisted); }
+      catch { /* best effort */ }
+      return;
+    }
+    const stored = storedReasoningEffort(conversationId);
+    if (stored !== null) {
+      setReasoningEffort(stored);
+      setEffortTouched(true);
+      persistReasoningEffort(stored);
+      return;
+    }
+    setEffortTouched(false);
+  }, [conversationId, conversationQuery.data, persistReasoningEffort]);
+  useEffect(() => {
     if (profileTouched) return;
     let stored: string | null = null;
     try { stored = localStorage.getItem(profileKey(conversationId)); } catch { /* best effort */ }
     setProfileId(stored || conversationQuery.data?.profile_id || null);
   }, [conversationId, conversationQuery.data?.profile_id, profileTouched]);
   useEffect(() => {
-    if (effortTouched) return;
+    if (
+      effortTouched ||
+      (conversationQuery.data?.reasoning_effort !== null &&
+        conversationQuery.data?.reasoning_effort !== undefined)
+    ) return;
     setReasoningEffort(selectedProfile?.reasoning_effort ?? "");
-  }, [selectedProfile?.id, selectedProfile?.reasoning_effort, effortTouched]);
+  }, [
+    selectedProfile?.id,
+    selectedProfile?.reasoning_effort,
+    conversationQuery.data?.reasoning_effort,
+    effortTouched,
+  ]);
   const turnsQuery = useQuery({
     queryKey: ["turns", conversationId],
     queryFn: () => api.listTurns(conversationId, { limit: 100 }),
@@ -406,6 +451,7 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
       else localStorage.removeItem(profileKey(conversationId));
       localStorage.removeItem(reasoningEffortKey(conversationId));
     } catch { /* best effort */ }
+    persistReasoningEffort(null);
   };
 
   const handleReasoningEffortChange = (value: string) => {
@@ -413,6 +459,7 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
     setEffortTouched(true);
     try { localStorage.setItem(reasoningEffortKey(conversationId), value); }
     catch { /* best effort */ }
+    persistReasoningEffort(value);
   };
 
   const conversation = conversationQuery.data;

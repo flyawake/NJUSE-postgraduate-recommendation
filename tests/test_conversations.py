@@ -21,7 +21,10 @@ from coding_agent.conversations.service import (
     ConversationService,
     ConversationServiceError,
 )
-from coding_agent.conversations.store import SQLiteConversationRepository
+from coding_agent.conversations.store import (
+    SCHEMA_VERSION,
+    SQLiteConversationRepository,
+)
 from coding_agent.models import (
     AssistantMessage,
     AssistantTurn,
@@ -132,6 +135,47 @@ def make_service(tmp_path, model, env=None):
 
 
 class TestRepositoryBasics:
+    def test_v14_migration_adds_conversation_reasoning_preference(self, tmp_path):
+        path = tmp_path / "v14.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            CREATE TABLE schema_meta(version INTEGER NOT NULL, applied_at TEXT NOT NULL);
+            INSERT INTO schema_meta VALUES (14, 'old');
+            CREATE TABLE conversations (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                title_source TEXT NOT NULL,
+                workspace_path TEXT NOT NULL,
+                workspace_key TEXT NOT NULL,
+                profile_id TEXT,
+                state TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                last_activity_at TEXT NOT NULL,
+                archived_at TEXT
+            );
+            INSERT INTO conversations VALUES (
+                'conversation', 'title', 'auto', 'E:/ws', 'ws', NULL,
+                'active', 1, 'created', 'active-at', NULL
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        repo = SQLiteConversationRepository(path, create_backups=False)
+        repo.initialize()
+        columns = {
+            row["name"]
+            for row in repo._connect().execute("PRAGMA table_info(conversations)")
+        }
+        assert "reasoning_effort" in columns
+        assert repo.get_conversation("conversation").reasoning_effort is None
+        assert repo._connect().execute(
+            "SELECT version FROM schema_meta"
+        ).fetchone()["version"] == SCHEMA_VERSION
+
     def test_v5_inbox_migration_is_idempotent_and_adds_state_guard(self, tmp_path):
         database = tmp_path / "state.db"
         baseline = SQLiteConversationRepository(database)
@@ -306,6 +350,14 @@ class TestRepositoryBasics:
         )
         assert conv.state == "active"
         assert repo.get_conversation(conv.id) is not None
+
+        preferred = repo.set_conversation_reasoning_effort(conv.id, "high")
+        assert preferred.reasoning_effort == "high"
+        assert preferred.version == 1
+        repo.close()
+        repo = SQLiteConversationRepository(tmp_path / "state.db")
+        repo.initialize()
+        assert repo.get_conversation(conv.id).reasoning_effort == "high"
 
         renamed = repo.rename_conversation(conv.id, title="改名", expected_version=1)
         assert renamed.title == "改名" and renamed.version == 2

@@ -35,7 +35,7 @@ from .domain import (
     payload_to_canonical_message,
 )
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 DEFAULT_BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA_SQL = """
@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     workspace_path TEXT NOT NULL,
     workspace_key TEXT NOT NULL,
     profile_id TEXT,
+    reasoning_effort TEXT,
     state TEXT NOT NULL DEFAULT 'active'
         CHECK (state IN ('active', 'archived', 'deleted')),
     version INTEGER NOT NULL DEFAULT 1,
@@ -796,6 +797,23 @@ class SQLiteConversationRepository:
                             )
                             """
                         )
+                    if current_version <= 14:
+                        has_conversations = conn.execute(
+                            "SELECT name FROM sqlite_master "
+                            "WHERE type='table' AND name='conversations'"
+                        ).fetchone()
+                        if has_conversations is not None:
+                            columns = {
+                                str(row["name"])
+                                for row in conn.execute(
+                                    "PRAGMA table_info(conversations)"
+                                ).fetchall()
+                            }
+                            if "reasoning_effort" not in columns:
+                                conn.execute(
+                                    "ALTER TABLE conversations "
+                                    "ADD COLUMN reasoning_effort TEXT"
+                                )
                     conn.execute("DELETE FROM schema_meta")
                     conn.execute(
                         "INSERT INTO schema_meta(version, applied_at) VALUES (?, ?)",
@@ -1022,6 +1040,35 @@ class SQLiteConversationRepository:
                     "renamed",
                     {"title": title, "title_source": "manual", "version": next_version},
                 )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        record = self.get_conversation(conversation_id)
+        assert record is not None
+        return record
+
+    def set_conversation_reasoning_effort(
+        self, conversation_id: str, reasoning_effort: Optional[str]
+    ) -> ConversationRecord:
+        """Persist the per-conversation composer preference.
+
+        This does not advance the conversation content version: preference
+        changes are last-write-wins UI state and must not conflict with title,
+        archive, or delete compare-and-set operations.
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                cursor = conn.execute(
+                    """
+                    UPDATE conversations SET reasoning_effort=?
+                    WHERE id=? AND state != 'deleted'
+                    """,
+                    (reasoning_effort, conversation_id),
+                )
+                if cursor.rowcount != 1:
+                    raise KeyError("conversation_not_found")
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -4154,6 +4201,7 @@ class SQLiteConversationRepository:
             workspace_path=str(row["workspace_path"]),
             workspace_key=str(row["workspace_key"]),
             profile_id=row["profile_id"],
+            reasoning_effort=row["reasoning_effort"],
             state=str(row["state"]),
             version=int(row["version"]),
             created_at=str(row["created_at"]),

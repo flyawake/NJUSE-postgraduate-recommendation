@@ -69,6 +69,7 @@ class ConversationRecord:
     workspace_path: str
     workspace_key: str
     profile_id: Optional[str]
+    reasoning_effort: Optional[str]
     state: str
     version: int
     created_at: str

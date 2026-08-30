@@ -23,6 +23,7 @@ export type ChangeSet = components["schemas"]["ChangeSetDTO"];
 export type FileChange = components["schemas"]["FileChangeDTO"];
 export type FilePreview = components["schemas"]["PreviewDTO"];
 export type ConversationCreateRequest = components["schemas"]["ConversationCreateRequest"];
+export type ConversationPreferencesRequest = components["schemas"]["ConversationPreferencesRequest"];
 export type ConversationRenameRequest = components["schemas"]["ConversationRenameRequest"];
 export type ConversationVersionRequest = components["schemas"]["ConversationVersionRequest"];
 export type TurnCreateRequest = components["schemas"]["TurnCreateRequest"];
@@ -182,6 +183,12 @@ export const api = {
 
   getConversation: (id: string) =>
     apiFetch<Conversation>(`/api/conversations/${encodeURIComponent(id)}`),
+
+  updateConversationPreferences: (id: string, input: ConversationPreferencesRequest) =>
+    apiFetch<Conversation>(`/api/conversations/${encodeURIComponent(id)}/preferences`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
 
   renameConversation: (id: string, input: ConversationRenameRequest) =>
     apiFetch<Conversation>(`/api/conversations/${encodeURIComponent(id)}`, {

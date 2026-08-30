@@ -151,6 +151,28 @@ class TestConversationApi:
         )
         assert started.status_code == 202
 
+    def test_conversation_reasoning_preference_is_persisted(self, api):
+        client, headers, _service, _model, ws = api
+        conv = client.post(
+            "/api/conversations",
+            json={"workspace": str(ws), "profile_id": None},
+            headers=headers,
+        ).json()
+        updated = client.put(
+            f"/api/conversations/{conv['id']}/preferences",
+            json={"reasoning_effort": "high"},
+            headers=headers,
+        )
+        assert updated.status_code == 200
+        assert updated.json()["reasoning_effort"] == "high"
+        assert updated.json()["version"] == conv["version"]
+
+        restored = client.get(
+            f"/api/conversations/{conv['id']}", headers=headers
+        )
+        assert restored.status_code == 200
+        assert restored.json()["reasoning_effort"] == "high"
+
     def test_inbox_stores_reasoning_effort(self, api):
         client, headers, _service, _model, ws = api
         conv = client.post(

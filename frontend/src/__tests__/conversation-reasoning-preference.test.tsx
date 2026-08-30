@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   listProfiles: vi.fn(),
   listTurns: vi.fn(),
   getInbox: vi.fn(),
+  updateConversationPreferences: vi.fn(),
+  preferences: new Map<string, string | null>(),
   uploadAttachment: vi.fn(),
   startTurn: vi.fn(),
   deleteAttachment: vi.fn(),
@@ -25,6 +27,7 @@ vi.mock("@/api/client", async () => {
       listProfiles: mocks.listProfiles,
       listTurns: mocks.listTurns,
       getInbox: mocks.getInbox,
+      updateConversationPreferences: mocks.updateConversationPreferences,
       uploadAttachment: mocks.uploadAttachment,
       startTurn: mocks.startTurn,
       deleteAttachment: mocks.deleteAttachment,
@@ -49,6 +52,7 @@ function conversation(id: string) {
     created_at: "2026-08-29T00:00:00Z",
     last_activity_at: "2026-08-29T00:00:00Z",
     profile_id: "profile-1",
+    reasoning_effort: mocks.preferences.get(id) ?? null,
     latest_turn: null,
     archived_at: null,
   };
@@ -57,6 +61,7 @@ function conversation(id: string) {
 describe("conversation reasoning preference", () => {
   beforeEach(() => {
     localStorage.clear();
+    mocks.preferences.clear();
     vi.clearAllMocks();
     mocks.getConversation.mockImplementation(async (id: string) => conversation(id));
     mocks.listProfiles.mockResolvedValue([{
@@ -74,6 +79,12 @@ describe("conversation reasoning preference", () => {
     }]);
     mocks.listTurns.mockResolvedValue({ items: [], next_cursor: null });
     mocks.getInbox.mockResolvedValue({ queue_version: 1, items: [], recent_events: [] });
+    mocks.updateConversationPreferences.mockImplementation(
+      async (id: string, input: { reasoning_effort?: string | null }) => {
+        mocks.preferences.set(id, input.reasoning_effort ?? null);
+        return conversation(id);
+      },
+    );
     mocks.uploadAttachment.mockResolvedValue({
       id: "attachment-1",
       filename: "screen.png",
@@ -96,9 +107,8 @@ describe("conversation reasoning preference", () => {
   });
 
   it("restores an independently selected effort after switching conversations", async () => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const user = userEvent.setup();
-    const view = (id: string) => (
+    const view = (client: QueryClient, id: string) => (
       <QueryClientProvider client={client}>
         <I18nProvider>
           <ConversationView key={id} conversationId={id} />
@@ -106,21 +116,30 @@ describe("conversation reasoning preference", () => {
       </QueryClientProvider>
     );
 
-    const { rerender } = render(view("conversation-a"));
+    const firstClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const firstRender = render(view(firstClient, "conversation-a"));
     const firstEffort = await screen.findByTestId("conversation-reasoning-effort");
     await waitFor(() => expect(firstEffort).toHaveValue("medium"));
     await user.selectOptions(firstEffort, "high");
+    await waitFor(() => expect(mocks.preferences.get("conversation-a")).toBe("high"));
 
-    rerender(view("conversation-b"));
+    firstRender.rerender(view(firstClient, "conversation-b"));
     const secondEffort = await screen.findByTestId("conversation-reasoning-effort");
     await waitFor(() => expect(secondEffort).toHaveValue("medium"));
     await user.selectOptions(secondEffort, "low");
+    await waitFor(() => expect(mocks.preferences.get("conversation-b")).toBe("low"));
 
-    rerender(view("conversation-a"));
+    firstRender.unmount();
+    localStorage.clear();
+    const restartedClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const restartedRender = render(view(restartedClient, "conversation-a"));
     await waitFor(() => {
       expect(screen.getByTestId("conversation-reasoning-effort")).toHaveValue("high");
     });
-    expect(localStorage.getItem("coding-agent-conversation-reasoning-effort:conversation-b")).toBe("low");
+    restartedRender.rerender(view(restartedClient, "conversation-b"));
+    await waitFor(() => {
+      expect(screen.getByTestId("conversation-reasoning-effort")).toHaveValue("low");
+    });
   });
 
   it("uploads an image and sends its reference with an attachment-only turn", async () => {

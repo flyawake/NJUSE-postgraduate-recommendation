@@ -197,6 +197,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/conversations/{conversation_id}/preferences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Conversation Preferences */
+        put: operations["update_conversation_preferences_api_conversations__conversation_id__preferences_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/conversations/{conversation_id}/turns": {
         parameters: {
             query?: never;
@@ -777,6 +794,8 @@ export interface components {
             latest_turn?: components["schemas"]["TurnDTO"] | null;
             /** Profile Id */
             profile_id?: string | null;
+            /** Reasoning Effort */
+            reasoning_effort?: string | null;
             /** State */
             state: string;
             /** Title */
@@ -796,6 +815,11 @@ export interface components {
             items: components["schemas"]["ConversationDTO"][];
             /** Next Cursor */
             next_cursor?: string | null;
+        };
+        /** ConversationPreferencesRequest */
+        ConversationPreferencesRequest: {
+            /** Reasoning Effort */
+            reasoning_effort?: string | null;
         };
         /** ConversationRenameRequest */
         ConversationRenameRequest: {
@@ -2036,6 +2060,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InboxSnapshotDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_conversation_preferences_api_conversations__conversation_id__preferences_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationPreferencesRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationDTO"];
                 };
             };
             /** @description Validation Error */

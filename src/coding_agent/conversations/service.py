@@ -735,6 +735,25 @@ class ConversationService:
             ) from exc
         return self._conversation_to_dict(record)
 
+    def set_conversation_reasoning_effort(
+        self, conversation_id: str, reasoning_effort: Optional[str]
+    ) -> Dict[str, Any]:
+        if reasoning_effort not in (None, "", "low", "medium", "high", "max"):
+            raise ConversationServiceError(
+                "invalid_reasoning_effort",
+                "思考强度必须是 low/medium/high/max、默认或空",
+                field="reasoning_effort",
+            )
+        try:
+            record = self._repository.set_conversation_reasoning_effort(
+                conversation_id, reasoning_effort
+            )
+        except KeyError as exc:
+            raise ConversationServiceError(
+                "conversation_not_found", "会话不存在"
+            ) from exc
+        return self._conversation_to_dict(record)
+
     def archive_conversation(
         self, conversation_id: str, *, expected_version: int
     ) -> Dict[str, Any]:
@@ -1771,6 +1790,7 @@ class ConversationService:
             "workspace_path": record.workspace_path,
             "workspace_key": record.workspace_key,
             "profile_id": record.profile_id,
+            "reasoning_effort": record.reasoning_effort,
             "state": record.state,
             "version": record.version,
             "created_at": record.created_at,

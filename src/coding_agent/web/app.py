@@ -52,6 +52,7 @@ from .schemas import (
     ConversationCreateRequest,
     ConversationDTO,
     ConversationPageDTO,
+    ConversationPreferencesRequest,
     ConversationRenameRequest,
     ConversationVersionRequest,
     CredentialInfoDTO,
@@ -466,6 +467,19 @@ def create_app(
                     conversation_id,
                     title=body.title,
                     expected_version=body.expected_version,
+                )
+            )
+
+        @app.put(
+            "/api/conversations/{conversation_id}/preferences",
+            response_model=ConversationDTO,
+        )
+        async def update_conversation_preferences(
+            conversation_id: str, body: ConversationPreferencesRequest
+        ) -> ConversationDTO:
+            return _conv_dto(
+                conversation_service.set_conversation_reasoning_effort(
+                    conversation_id, body.reasoning_effort
                 )
             )
 
