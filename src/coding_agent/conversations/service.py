@@ -53,12 +53,14 @@ from ..models import (
 )
 from ..prompt import SYSTEM_PROMPT
 from ..provider_config import ProfileError, ProfileStore, ProviderProfile, default_home
+from ..public_redaction import redact_public_run_result
 from ..streaming import ModelRequestOptions
 from ..tools import build_default_tools
+from ..tools.approval import PermissionBroker
 from ..tools.executor import ToolExecutor
 from ..tools.observation import FileObservationTracker
 from ..tools.paths import Workspace, resolve_inside
-from ..tools.policy import WorkspaceToolPolicy
+from ..tools.policy import InteractiveWorkspaceToolPolicy
 from .domain import (
     ConversationRecord,
     ConversationState,
@@ -296,6 +298,7 @@ class ConversationService:
             resolved_home / "state.db"
         )
         self._repository.initialize()
+        self.permissions = PermissionBroker()
         self._memory = MemoryService(self._repository)
         self._recover_active_turns = self._repository.recover_active_turns()
         for turn in self._recover_active_turns:
@@ -754,6 +757,29 @@ class ConversationService:
             ) from exc
         return self._conversation_to_dict(record)
 
+    def set_conversation_command_policy(
+        self, conversation_id: str, command_policy: str
+    ) -> Dict[str, Any]:
+        if command_policy not in ("ask", "allow", "deny"):
+            raise ConversationServiceError(
+                "invalid_command_policy",
+                "命令权限必须是 ask/allow/deny",
+                field="command_policy",
+            )
+        try:
+            record = self._repository.set_conversation_command_policy(
+                conversation_id, command_policy
+            )
+        except KeyError as exc:
+            raise ConversationServiceError(
+                "conversation_not_found", "会话不存在"
+            ) from exc
+        if command_policy != "ask":
+            self.permissions.resolve_conversation(
+                conversation_id, allow=command_policy == "allow"
+            )
+        return self._conversation_to_dict(record)
+
     def archive_conversation(
         self, conversation_id: str, *, expected_version: int
     ) -> Dict[str, Any]:
@@ -1070,8 +1096,40 @@ class ConversationService:
         active = self._repository.get_active_turn(conversation_id)
         if active is None or active.id != turn_id:
             raise ConversationServiceError("turn_not_active", "该 turn 当前未运行")
+        self.permissions.cancel_turn(conversation_id, turn_id)
         self.runtime.cancel(conversation_id)
         return self._turn_to_dict(self._require_turn(conversation_id, turn_id))
+
+    def list_permission_requests(
+        self, conversation_id: str, turn_id: str
+    ) -> List[Dict[str, Any]]:
+        self._require_turn(conversation_id, turn_id)
+        return self.permissions.list_pending(conversation_id, turn_id)
+
+    def resolve_permission_request(
+        self,
+        conversation_id: str,
+        turn_id: str,
+        request_id: str,
+        *,
+        decision: str,
+    ) -> Dict[str, Any]:
+        self._require_turn(conversation_id, turn_id)
+        if decision not in {"allow", "deny"}:
+            raise ConversationServiceError(
+                "invalid_permission_decision", "decision 必须是 allow/deny"
+            )
+        resolved = self.permissions.resolve(
+            conversation_id,
+            turn_id,
+            request_id,
+            allow=decision == "allow",
+        )
+        if resolved is None:
+            raise ConversationServiceError(
+                "permission_request_not_pending", "权限申请不存在或已经处理"
+            )
+        return resolved
 
     # ------------------------------------------------------------ events/changes
 
@@ -1396,6 +1454,7 @@ class ConversationService:
     # ------------------------------------------------------------ shutdown
 
     def shutdown(self, timeout: float = 5.0) -> None:
+        self.permissions.cancel_all()
         self.runtime.shutdown(timeout=timeout)
         recovered = self._repository.recover_active_turns()
         for turn in recovered:
@@ -1736,7 +1795,15 @@ class ConversationService:
         )
         executor = ToolExecutor(
             registry,
-            WorkspaceToolPolicy(),
+            InteractiveWorkspaceToolPolicy(
+                self.permissions,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                is_cancelled=cancel_event.is_set,
+                command_policy=lambda: self._conversation_command_policy(
+                    conversation_id
+                ),
+            ),
             cancel_event.is_set,
             observer=collector,
         )
@@ -1750,6 +1817,7 @@ class ConversationService:
                     conversation_id, turn_id, workspace, task
                 ),
                 attachment_loader=lambda ref: self._attachment_store.read(ref.sha256),
+                context_window_tokens=connection.context_window_tokens,
             ),
             completion_policy=CompletionPolicy(),
             run_id=run_id,
@@ -1775,6 +1843,10 @@ class ConversationService:
             raise ConversationServiceError("conversation_not_found", "会话不存在")
         return record
 
+    def _conversation_command_policy(self, conversation_id: str) -> str:
+        record = self._repository.get_conversation(conversation_id)
+        return record.command_policy if record is not None else "deny"
+
     def _require_turn(self, conversation_id: str, turn_id: str) -> TurnRecord:
         record = self._repository.get_turn(conversation_id, turn_id)
         if record is None:
@@ -1791,6 +1863,7 @@ class ConversationService:
             "workspace_key": record.workspace_key,
             "profile_id": record.profile_id,
             "reasoning_effort": record.reasoning_effort,
+            "command_policy": record.command_policy,
             "state": record.state,
             "version": record.version,
             "created_at": record.created_at,
@@ -1802,7 +1875,7 @@ class ConversationService:
         result = None
         if record.result_json:
             try:
-                result = json.loads(record.result_json)
+                result = redact_public_run_result(json.loads(record.result_json))
             except (TypeError, ValueError):
                 result = None
         return {

@@ -31,6 +31,9 @@ _PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MAX_DISPLAY_NAME = 60
 MAX_MODEL = 200
 MAX_BASE_URL = 500
+DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
+MIN_CONTEXT_WINDOW_TOKENS = 16_000
+MAX_CONTEXT_WINDOW_TOKENS = 4_000_000
 
 
 class ProfileError(ConfigError):
@@ -130,6 +133,7 @@ class ProviderProfile:
     reasoning_mode: str = "auto"
     reasoning_effort: Optional[str] = None
     show_reasoning: bool = False
+    context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS
 
     def to_dict(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {
@@ -142,6 +146,7 @@ class ProviderProfile:
             "reasoning_mode": self.reasoning_mode,
             "reasoning_effort": self.reasoning_effort,
             "show_reasoning": self.show_reasoning,
+            "context_window_tokens": self.context_window_tokens,
         }
         if self.credential_ref is not None:
             data["credential_ref"] = self.credential_ref
@@ -200,6 +205,7 @@ def validate_profile(
     reasoning_mode: str = "auto",
     reasoning_effort: Optional[str] = None,
     show_reasoning: bool = False,
+    context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
 ) -> ProviderProfile:
     """Validate and normalize profile fields (no filesystem access)."""
     if profile_id is not None:
@@ -268,6 +274,19 @@ def validate_profile(
         )
     if not isinstance(show_reasoning, bool):
         raise ProfileError("show_reasoning 必须是布尔值", field="show_reasoning")
+    if (
+        isinstance(context_window_tokens, bool)
+        or not isinstance(context_window_tokens, int)
+        or not (
+            MIN_CONTEXT_WINDOW_TOKENS
+            <= context_window_tokens
+            <= MAX_CONTEXT_WINDOW_TOKENS
+        )
+    ):
+        raise ProfileError(
+            f"context_window_tokens 必须是 {MIN_CONTEXT_WINDOW_TOKENS}-{MAX_CONTEXT_WINDOW_TOKENS} 的整数",
+            field="context_window_tokens",
+        )
     return ProviderProfile(
         id=profile_id or "",
         provider_id=provider_id,
@@ -279,6 +298,7 @@ def validate_profile(
         reasoning_mode=reasoning_mode,
         reasoning_effort=reasoning_effort,
         show_reasoning=show_reasoning,
+        context_window_tokens=context_window_tokens,
     )
 
 
@@ -370,6 +390,7 @@ class ProfileStore:
             "reasoning_mode",
             "reasoning_effort",
             "show_reasoning",
+            "context_window_tokens",
         }
         for pid, item in profiles_raw.items():
             try:
@@ -421,6 +442,9 @@ class ProfileStore:
                 reasoning_mode=item.get("reasoning_mode", "auto"),
                 reasoning_effort=item.get("reasoning_effort"),
                 show_reasoning=item.get("show_reasoning", False),
+                context_window_tokens=item.get(
+                    "context_window_tokens", DEFAULT_CONTEXT_WINDOW_TOKENS
+                ),
             )
         active = raw.get("active_profile")
         if active is not None:

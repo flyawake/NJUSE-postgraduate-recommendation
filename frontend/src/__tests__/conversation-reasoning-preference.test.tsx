@@ -11,10 +11,16 @@ const mocks = vi.hoisted(() => ({
   listTurns: vi.fn(),
   getInbox: vi.fn(),
   updateConversationPreferences: vi.fn(),
+  updateConversationCommandPolicy: vi.fn(),
   preferences: new Map<string, string | null>(),
+  commandPolicies: new Map<string, "ask" | "allow" | "deny">(),
   uploadAttachment: vi.fn(),
   startTurn: vi.fn(),
   deleteAttachment: vi.fn(),
+  listTurnPermissions: vi.fn(),
+  resolveTurnPermission: vi.fn(),
+  getTurnEvents: vi.fn(),
+  getStreamSnapshot: vi.fn(),
 }));
 
 vi.mock("@/api/client", async () => {
@@ -28,9 +34,14 @@ vi.mock("@/api/client", async () => {
       listTurns: mocks.listTurns,
       getInbox: mocks.getInbox,
       updateConversationPreferences: mocks.updateConversationPreferences,
+      updateConversationCommandPolicy: mocks.updateConversationCommandPolicy,
       uploadAttachment: mocks.uploadAttachment,
       startTurn: mocks.startTurn,
       deleteAttachment: mocks.deleteAttachment,
+      listTurnPermissions: mocks.listTurnPermissions,
+      resolveTurnPermission: mocks.resolveTurnPermission,
+      getTurnEvents: mocks.getTurnEvents,
+      getStreamSnapshot: mocks.getStreamSnapshot,
     },
   };
 });
@@ -53,6 +64,7 @@ function conversation(id: string) {
     last_activity_at: "2026-08-29T00:00:00Z",
     profile_id: "profile-1",
     reasoning_effort: mocks.preferences.get(id) ?? null,
+    command_policy: mocks.commandPolicies.get(id) ?? "ask",
     latest_turn: null,
     archived_at: null,
   };
@@ -62,6 +74,7 @@ describe("conversation reasoning preference", () => {
   beforeEach(() => {
     localStorage.clear();
     mocks.preferences.clear();
+    mocks.commandPolicies.clear();
     vi.clearAllMocks();
     mocks.getConversation.mockImplementation(async (id: string) => conversation(id));
     mocks.listProfiles.mockResolvedValue([{
@@ -85,6 +98,12 @@ describe("conversation reasoning preference", () => {
         return conversation(id);
       },
     );
+    mocks.updateConversationCommandPolicy.mockImplementation(
+      async (id: string, input: { command_policy: "ask" | "allow" | "deny" }) => {
+        mocks.commandPolicies.set(id, input.command_policy);
+        return conversation(id);
+      },
+    );
     mocks.uploadAttachment.mockResolvedValue({
       id: "attachment-1",
       filename: "screen.png",
@@ -104,6 +123,10 @@ describe("conversation reasoning preference", () => {
       attachments: [],
     });
     mocks.deleteAttachment.mockResolvedValue(undefined);
+    mocks.listTurnPermissions.mockResolvedValue([]);
+    mocks.resolveTurnPermission.mockResolvedValue(undefined);
+    mocks.getTurnEvents.mockResolvedValue([]);
+    mocks.getStreamSnapshot.mockResolvedValue({ checkpoints: [] });
   });
 
   it("restores an independently selected effort after switching conversations", async () => {
@@ -139,6 +162,55 @@ describe("conversation reasoning preference", () => {
     restartedRender.rerender(view(restartedClient, "conversation-b"));
     await waitFor(() => {
       expect(screen.getByTestId("conversation-reasoning-effort")).toHaveValue("low");
+    });
+  });
+
+  it("persists an independent command policy for every conversation", async () => {
+    const user = userEvent.setup();
+    const view = (client: QueryClient, id: string) => (
+      <QueryClientProvider client={client}>
+        <I18nProvider>
+          <ConversationView key={id} conversationId={id} />
+        </I18nProvider>
+      </QueryClientProvider>
+    );
+
+    const firstClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const firstRender = render(view(firstClient, "conversation-a"));
+    const firstPolicy = await screen.findByTestId("conversation-command-policy");
+    await waitFor(() => expect(firstPolicy).toBeEnabled());
+    expect(firstPolicy).toHaveValue("ask");
+    await user.selectOptions(firstPolicy, "allow");
+    await screen.findByTestId("command-policy-allow-warning");
+    expect(mocks.updateConversationCommandPolicy).not.toHaveBeenCalled();
+    await user.click(screen.getByTestId("command-policy-allow-cancel"));
+    expect(firstPolicy).toHaveValue("ask");
+    expect(mocks.commandPolicies.get("conversation-a")).toBeUndefined();
+
+    await user.selectOptions(firstPolicy, "allow");
+    await screen.findByTestId("command-policy-allow-warning");
+    await user.click(screen.getByTestId("command-policy-allow-confirm"));
+    await waitFor(() => expect(mocks.commandPolicies.get("conversation-a")).toBe("allow"));
+
+    firstRender.rerender(view(firstClient, "conversation-b"));
+    const secondPolicy = await screen.findByTestId("conversation-command-policy");
+    await waitFor(() => {
+      expect(secondPolicy).toBeEnabled();
+      expect(secondPolicy).toHaveValue("ask");
+    });
+    await user.selectOptions(secondPolicy, "deny");
+    await waitFor(() => expect(mocks.commandPolicies.get("conversation-b")).toBe("deny"));
+
+    firstRender.unmount();
+    localStorage.clear();
+    const restartedClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const restartedRender = render(view(restartedClient, "conversation-a"));
+    await waitFor(() => {
+      expect(screen.getByTestId("conversation-command-policy")).toHaveValue("allow");
+    });
+    restartedRender.rerender(view(restartedClient, "conversation-b"));
+    await waitFor(() => {
+      expect(screen.getByTestId("conversation-command-policy")).toHaveValue("deny");
     });
   });
 
@@ -193,5 +265,53 @@ describe("conversation reasoning preference", () => {
     await user.upload(await screen.findByTestId("conversation-file-input"), file);
     await screen.findByText("不支持的附件");
     expect(screen.queryByTestId("pending-attachments")).not.toBeInTheDocument();
+  });
+
+  it("blocks on a host-command permission dialog and resolves one-time approval", async () => {
+    const activeTurn = {
+      id: "turn-active",
+      conversation_id: "conversation-a",
+      ordinal: 1,
+      state: "running",
+      run_id: "run-active",
+      user_text: "verify",
+      created_at: "2026-08-29T00:00:00Z",
+      active: true,
+      attachments: [],
+    };
+    const permission = {
+      id: "permission-1",
+      conversation_id: "conversation-a",
+      turn_id: "turn-active",
+      call_id: "call-1",
+      tool_name: "run_command",
+      executable: "python.exe",
+      argv: ["python.exe", "-c", "print('ok')"],
+      cwd: ".",
+      purpose: "verify",
+      capabilities: ["start_host_process"],
+      created_at: 1,
+    };
+    mocks.listTurns.mockResolvedValue({ items: [activeTurn], next_cursor: null });
+    mocks.listTurnPermissions.mockResolvedValue([permission]);
+    mocks.resolveTurnPermission.mockImplementation(async () => {
+      mocks.listTurnPermissions.mockResolvedValue([]);
+      return { ...permission, decision: "allow" };
+    });
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={client}>
+        <I18nProvider><ConversationView conversationId="conversation-a" /></I18nProvider>
+      </QueryClientProvider>
+    );
+
+    await screen.findByTestId("command-permission-dialog");
+    expect(screen.getByText(/print\('ok'\)/)).toBeInTheDocument();
+    await user.click(screen.getByTestId("command-permission-allow"));
+    await waitFor(() => expect(mocks.resolveTurnPermission).toHaveBeenCalledWith(
+      "conversation-a", "turn-active", "permission-1", "allow"
+    ));
   });
 });

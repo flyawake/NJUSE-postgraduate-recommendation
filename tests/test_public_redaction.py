@@ -6,6 +6,7 @@ from coding_agent.public_redaction import (
     PUBLIC_TOOL_TARGET_MAX_CHARS,
     bound_public_tool_target,
     public_tool_target,
+    redact_public_run_result,
 )
 
 
@@ -48,3 +49,15 @@ def test_public_tool_target_removes_controls_and_command_operands() -> None:
 def test_search_target_prefers_pattern_over_workspace_dot() -> None:
     assert public_tool_target("glob", {"path": ".", "pattern": "**/*.py"}) == "**/*.py"
     assert public_tool_target("grep", {"path": ".", "pattern": "TODO"}) == "TODO"
+
+
+def test_public_run_result_drops_internal_details_fail_closed() -> None:
+    result = redact_public_run_result(
+        {
+            "status": "ERROR",
+            "stop_reason": "INTERNAL_ERROR",
+            "details": {"message": "C:/secret/path?token=SECRET"},
+            "future_internal_field": "SECRET",
+        }
+    )
+    assert result == {"status": "ERROR", "stop_reason": "INTERNAL_ERROR"}

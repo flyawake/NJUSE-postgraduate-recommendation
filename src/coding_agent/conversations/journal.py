@@ -62,6 +62,16 @@ class CanonicalJournal:
         self._expected_calls = set()
         self._received_results = set()
 
+    def abandon_current_tool_group(self) -> None:
+        """Fail closed when one provider tool group violates the protocol."""
+        if self._group_id is not None:
+            self._repo.abandon_pending_groups_for_turn(
+                self._conversation_id, self._turn_id
+            )
+        self._group_id = None
+        self._expected_calls = set()
+        self._received_results = set()
+
     def _begin_tool_group(self, message: AssistantMessage) -> None:
         self._group_id, _ = self._repo.begin_canonical_group(
             self._conversation_id, self._turn_id, kind="tool"

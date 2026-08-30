@@ -110,6 +110,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/conversations/{conversation_id}/command-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Conversation Command Policy */
+        put: operations["update_conversation_command_policy_api_conversations__conversation_id__command_policy_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/conversations/{conversation_id}/inbox": {
         parameters: {
             query?: never;
@@ -345,6 +362,40 @@ export interface paths {
         get: operations["turn_memory_usage_api_conversations__conversation_id__turns__turn_id__memory_usage_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/conversations/{conversation_id}/turns/{turn_id}/permissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Turn Permissions */
+        get: operations["list_turn_permissions_api_conversations__conversation_id__turns__turn_id__permissions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/conversations/{conversation_id}/turns/{turn_id}/permissions/{request_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve Turn Permission */
+        post: operations["resolve_turn_permission_api_conversations__conversation_id__turns__turn_id__permissions__request_id__post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -772,6 +823,11 @@ export interface components {
             /** Turn Id */
             turn_id: string;
         };
+        /** ConversationCommandPolicyRequest */
+        ConversationCommandPolicyRequest: {
+            /** Command Policy */
+            command_policy: string;
+        };
         /** ConversationCreateRequest */
         ConversationCreateRequest: {
             /** Profile Id */
@@ -785,6 +841,11 @@ export interface components {
         ConversationDTO: {
             /** Archived At */
             archived_at?: string | null;
+            /**
+             * Command Policy
+             * @default ask
+             */
+            command_policy: string;
             /** Created At */
             created_at: string;
             /** Id */
@@ -1175,6 +1236,38 @@ export interface components {
             /** Idempotency Key */
             idempotency_key?: string | null;
         };
+        /** PermissionDecisionRequest */
+        PermissionDecisionRequest: {
+            /** Decision */
+            decision: string;
+        };
+        /** PermissionRequestDTO */
+        PermissionRequestDTO: {
+            /** Argv */
+            argv: string[];
+            /** Call Id */
+            call_id: string;
+            /** Capabilities */
+            capabilities: string[];
+            /** Conversation Id */
+            conversation_id: string;
+            /** Created At */
+            created_at: number;
+            /** Cwd */
+            cwd: string;
+            /** Decision */
+            decision?: string | null;
+            /** Executable */
+            executable: string;
+            /** Id */
+            id: string;
+            /** Purpose */
+            purpose: string;
+            /** Tool Name */
+            tool_name: string;
+            /** Turn Id */
+            turn_id: string;
+        };
         /** PreviewDTO */
         PreviewDTO: {
             /**
@@ -1224,6 +1317,11 @@ export interface components {
         ProfileDTO: {
             /** Base Url */
             base_url: string;
+            /**
+             * Context Window Tokens
+             * @default 128000
+             */
+            context_window_tokens: number;
             credential: components["schemas"]["CredentialInfoDTO"];
             /** Credential Ref */
             credential_ref?: string | null;
@@ -1254,6 +1352,11 @@ export interface components {
         ProfileInput: {
             /** Base Url */
             base_url: string;
+            /**
+             * Context Window Tokens
+             * @default 128000
+             */
+            context_window_tokens: number;
             /** Credential Ref */
             credential_ref?: string | null;
             /** Display Name */
@@ -1816,6 +1919,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_conversation_command_policy_api_conversations__conversation_id__command_policy_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationCommandPolicyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationDTO"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -2395,6 +2533,75 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MemoryUsageDTO"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_turn_permissions_api_conversations__conversation_id__turns__turn_id__permissions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PermissionRequestDTO"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolve_turn_permission_api_conversations__conversation_id__turns__turn_id__permissions__request_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                turn_id: string;
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PermissionDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PermissionRequestDTO"];
                 };
             };
             /** @description Validation Error */

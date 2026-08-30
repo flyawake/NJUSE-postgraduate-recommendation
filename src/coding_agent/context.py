@@ -25,6 +25,9 @@ from .models import (
 )
 
 DEFAULT_CHAR_BUDGET = 258_000
+DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
+DEFAULT_CONTEXT_TOKEN_RESERVE = 8_000
+DEFAULT_REQUEST_BYTE_BUDGET = 32 * 1024 * 1024
 RECENT_STEPS_TO_KEEP = 2
 MAX_REASONING_CHARS = 800
 MAX_ASSISTANT_TEXT_CHARS = 4_000
@@ -78,6 +81,8 @@ class MemoryProjection:
 class RequestView:
     messages: Tuple[Dict[str, Any], ...]
     char_count: int
+    estimated_token_count: int = 0
+    request_byte_count: int = 0
     compacted_results: int = 0
     compacted_assistants: int = 0
     omitted_chars: int = 0
@@ -207,6 +212,50 @@ def _message_chars(value: Any) -> int:
     return len(str(value))
 
 
+def _message_bytes(value: Any) -> int:
+    """Bounded recursive estimate that includes inline base64 payload bytes."""
+    if isinstance(value, str):
+        return len(value) if value.isascii() else len(value.encode("utf-8"))
+    if isinstance(value, dict):
+        return sum(
+            _message_bytes(key) + _message_bytes(item) + 2
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return sum(_message_bytes(item) + 1 for item in value)
+    if value is None:
+        return 4
+    return len(str(value).encode("utf-8"))
+
+
+def _estimated_tokens(value: Any) -> int:
+    """Provider-neutral conservative token estimate for projected messages.
+
+    Images are charged a bounded visual-input allowance rather than their
+    base64 transport size. Generic input files are conservatively charged by
+    their encoded payload, while the separate byte budget always accounts for
+    the full HTTP request cost.
+    """
+    if isinstance(value, str):
+        return max(1, (len(value) + 3) // 4)
+    if isinstance(value, dict):
+        part_type = value.get("type")
+        if part_type == "input_image" and isinstance(value.get("image_url"), str):
+            metadata = {key: item for key, item in value.items() if key != "image_url"}
+            return 4_096 + _estimated_tokens(metadata)
+        if part_type == "input_file" and isinstance(value.get("file_data"), str):
+            payload = value["file_data"]
+            metadata = {key: item for key, item in value.items() if key != "file_data"}
+            return max(1, (len(payload) + 3) // 4) + _estimated_tokens(metadata)
+        return sum(
+            _estimated_tokens(key) + _estimated_tokens(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return sum(_estimated_tokens(item) for item in value)
+    return 1
+
+
 def _compaction_marker(message: ToolMessage) -> str:
     marker: Dict[str, Any] = {
         "ok": True,
@@ -236,10 +285,28 @@ class ContextManager:
         *,
         memory_provider: Optional[Callable[[], Optional[MemoryProjection]]] = None,
         attachment_loader: Optional[Callable[[AttachmentRef], bytes]] = None,
+        context_window_tokens: Optional[int] = None,
+        context_token_reserve: int = DEFAULT_CONTEXT_TOKEN_RESERVE,
+        request_byte_budget: int = DEFAULT_REQUEST_BYTE_BUDGET,
     ) -> None:
         if char_budget < 1:
             raise ValueError("char_budget must be positive")
         self.char_budget = char_budget
+        if (
+            context_window_tokens is not None
+            and context_window_tokens <= context_token_reserve
+        ):
+            raise ValueError("context_window_tokens must exceed the reserved tokens")
+        if request_byte_budget < 1:
+            raise ValueError("request_byte_budget must be positive")
+        self.context_window_tokens = context_window_tokens
+        self.context_token_reserve = context_token_reserve
+        self.token_budget = (
+            context_window_tokens - context_token_reserve
+            if context_window_tokens is not None
+            else None
+        )
+        self.request_byte_budget = request_byte_budget
         self._memory_provider = memory_provider
         self._attachment_loader = attachment_loader
         self._memory_projection_loaded = False
@@ -350,6 +417,17 @@ class ContextManager:
         if count > self.char_budget:
             raise ContextOverflowError(count, self.char_budget)
 
+        request_bytes = _message_bytes(rendered)
+        if request_bytes > self.request_byte_budget:
+            raise ContextOverflowError(
+                request_bytes, self.request_byte_budget, metric="request_bytes"
+            )
+        estimated_tokens = _estimated_tokens(rendered)
+        if self.token_budget is not None and estimated_tokens > self.token_budget:
+            raise ContextOverflowError(
+                estimated_tokens, self.token_budget, metric="estimated_tokens"
+            )
+
         if (
             memory_projection is not None
             and memory_projection.block
@@ -371,6 +449,8 @@ class ContextManager:
         return RequestView(
             messages=tuple(rendered),
             char_count=count,
+            estimated_token_count=estimated_tokens,
+            request_byte_count=request_bytes,
             compacted_results=compacted_results,
             compacted_assistants=compacted_assistants,
             omitted_chars=omitted,

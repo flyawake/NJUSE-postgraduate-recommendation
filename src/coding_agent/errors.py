@@ -31,11 +31,15 @@ class ModelRequestError(CodingAgentError):
 
 
 class ContextOverflowError(CodingAgentError):
-    """Even the protected projection exceeds the configured character budget."""
+    """A protected projection exceeds a text, token, or request-byte budget."""
 
-    def __init__(self, char_count: int, budget: int) -> None:
-        self.char_count = char_count
+    def __init__(self, count: int, budget: int, *, metric: str = "chars") -> None:
+        self.count = count
         self.budget = budget
+        self.metric = metric
+        # Backwards-compatible attributes for callers/tests that inspect the
+        # original character-budget exception.
+        self.char_count = count if metric == "chars" else 0
         super().__init__(
-            f"protected context is {char_count} chars, exceeding budget {budget}"
+            f"protected context is {count} {metric}, exceeding budget {budget}"
         )

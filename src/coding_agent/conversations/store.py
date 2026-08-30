@@ -35,7 +35,7 @@ from .domain import (
     payload_to_canonical_message,
 )
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 DEFAULT_BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA_SQL = """
@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     workspace_key TEXT NOT NULL,
     profile_id TEXT,
     reasoning_effort TEXT,
+    command_policy TEXT NOT NULL DEFAULT 'ask'
+        CHECK (command_policy IN ('ask', 'allow', 'deny')),
     state TEXT NOT NULL DEFAULT 'active'
         CHECK (state IN ('active', 'archived', 'deleted')),
     version INTEGER NOT NULL DEFAULT 1,
@@ -814,6 +816,25 @@ class SQLiteConversationRepository:
                                     "ALTER TABLE conversations "
                                     "ADD COLUMN reasoning_effort TEXT"
                                 )
+                    if current_version <= 15:
+                        has_conversations = conn.execute(
+                            "SELECT name FROM sqlite_master "
+                            "WHERE type='table' AND name='conversations'"
+                        ).fetchone()
+                        if has_conversations is not None:
+                            columns = {
+                                str(row["name"])
+                                for row in conn.execute(
+                                    "PRAGMA table_info(conversations)"
+                                ).fetchall()
+                            }
+                            if "command_policy" not in columns:
+                                conn.execute(
+                                    "ALTER TABLE conversations ADD COLUMN "
+                                    "command_policy TEXT NOT NULL DEFAULT 'ask' "
+                                    "CHECK (command_policy IN "
+                                    "('ask', 'allow', 'deny'))"
+                                )
                     conn.execute("DELETE FROM schema_meta")
                     conn.execute(
                         "INSERT INTO schema_meta(version, applied_at) VALUES (?, ?)",
@@ -1066,6 +1087,30 @@ class SQLiteConversationRepository:
                     WHERE id=? AND state != 'deleted'
                     """,
                     (reasoning_effort, conversation_id),
+                )
+                if cursor.rowcount != 1:
+                    raise KeyError("conversation_not_found")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        record = self.get_conversation(conversation_id)
+        assert record is not None
+        return record
+
+    def set_conversation_command_policy(
+        self, conversation_id: str, command_policy: str
+    ) -> ConversationRecord:
+        """Persist the per-conversation host-command permission policy."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                cursor = conn.execute(
+                    """
+                    UPDATE conversations SET command_policy=?
+                    WHERE id=? AND state != 'deleted'
+                    """,
+                    (command_policy, conversation_id),
                 )
                 if cursor.rowcount != 1:
                     raise KeyError("conversation_not_found")
@@ -4202,6 +4247,7 @@ class SQLiteConversationRepository:
             workspace_key=str(row["workspace_key"]),
             profile_id=row["profile_id"],
             reasoning_effort=row["reasoning_effort"],
+            command_policy=str(row["command_policy"]),
             state=str(row["state"]),
             version=int(row["version"]),
             created_at=str(row["created_at"]),

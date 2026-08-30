@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from . import events as event_types
 from .completion import CompletionPolicy
@@ -83,7 +84,7 @@ ALLOWED_TRANSITIONS: Dict[LoopPhase, frozenset] = {
 }
 
 REPEAT_REMINDER_MESSAGE = (
-    "重复调用提醒：已连续 {count} 次使用相同签名调用工具 {tool}（{signature}）。"
+    "重复调用提醒：已连续 {count} 次使用相同签名调用工具 {tool}（摘要 {signature_hash}）。"
     "请停止机械重试，改用其他参数、其他工具或重新分析工具结果。"
 )
 
@@ -233,7 +234,11 @@ class AgentLoop:
                 self._finish(
                     RunStatus.ERROR,
                     StopReason.CONTEXT_OVERFLOW,
-                    details={"char_count": exc.char_count, "budget": exc.budget},
+                    details={
+                        "metric": exc.metric,
+                        "count": exc.count,
+                        "budget": exc.budget,
+                    },
                 )
             except ModelRequestError as exc:
                 self._finish(
@@ -245,7 +250,10 @@ class AgentLoop:
                 self._finish(
                     RunStatus.ERROR,
                     StopReason.INTERNAL_ERROR,
-                    details={"error": type(exc).__name__, "message": str(exc)[:200]},
+                    details={
+                        "error": type(exc).__name__,
+                        "message": "internal operation failed",
+                    },
                 )
         return self._build_result()
 
@@ -265,9 +273,11 @@ class AgentLoop:
 
     # ------------------------------------------------------------- history
 
-    def _append_history(self, message: CanonicalMessage) -> None:
+    def _append_history(
+        self, message: CanonicalMessage, *, persist: bool = True
+    ) -> None:
         self._history.append(message)
-        if self._journal is not None:
+        if persist and self._journal is not None:
             self._journal.append(message)
 
     def _poll_steer(self) -> bool:
@@ -366,14 +376,17 @@ class AgentLoop:
         if turn is None:
             self._finish(RunStatus.ERROR, StopReason.MODEL_ERROR)
             return
-        self._append_history(
-            AssistantMessage(
-                text=turn.text or "",
-                tool_calls=tuple(turn.tool_calls),
-                reasoning=turn.reasoning,
-                continuations=turn.continuations,
-            )
+        assistant_message = AssistantMessage(
+            text=turn.text or "",
+            tool_calls=tuple(turn.tool_calls),
+            reasoning=turn.reasoning,
+            continuations=turn.continuations,
         )
+        # Validate IDs before the assistant tool group can cross the durable
+        # journal boundary. Invalid provider output remains diagnosable in
+        # this run's memory, but can never be replayed as canonical history.
+        persist_assistant = not self._invalid_tool_call_indices(turn.tool_calls)
+        self._append_history(assistant_message, persist=persist_assistant)
         self._last_assistant = turn
         self._emit(
             event_types.EVENT_ASSISTANT_RECEIVED,
@@ -479,14 +492,16 @@ class AgentLoop:
             return
 
         # Loop guard: call ids must be non-empty and unique within the turn.
-        seen: set[str] = set()
-        bad: set[int] = set()
-        for index, call in enumerate(calls):
-            if not call.id or call.id in seen:
-                bad.add(index)
-            if call.id:
-                seen.add(call.id)
+        bad = self._invalid_tool_call_indices(calls)
         if bad:
+            # Invalid provider output was kept out of the durable journal in
+            # _handle_requesting. The abandon call is defense in depth for a
+            # custom journal implementation; synthetic results remain local
+            # to this run so call/result pairing is still auditable.
+            if self._journal is not None and hasattr(
+                self._journal, "abandon_current_tool_group"
+            ):
+                self._journal.abandon_current_tool_group()
             for index, call in enumerate(calls):
                 self._tool_call_count += 1
                 if index in bad:
@@ -494,12 +509,14 @@ class AgentLoop:
                         call,
                         PROTOCOL_ERROR,
                         "tool call id is empty or duplicated inside this assistant turn",
+                        persist=False,
                     )
                 else:
                     self._append_error_result(
                         call,
                         ABORTED_BEFORE_DISPATCH,
                         "not dispatched because the turn contained an invalid tool call id",
+                        persist=False,
                     )
             self._finish(
                 RunStatus.ERROR,
@@ -538,7 +555,12 @@ class AgentLoop:
                 self._finish(
                     RunStatus.ERROR,
                     StopReason.REPEATED_TOOL_CALL,
-                    details={"signature": prepared.signature},
+                    details={
+                        "tool": prepared.tool_name,
+                        "signature_sha256": hashlib.sha256(
+                            prepared.signature.encode("utf-8")
+                        ).hexdigest(),
+                    },
                 )
                 return
             if self._repeat_count == self._repeat_remind_at:
@@ -594,7 +616,9 @@ class AgentLoop:
                     REPEAT_REMINDER_MESSAGE.format(
                         count=self._repeat_remind_at,
                         tool=calls[-1].name if calls else "",
-                        signature=signature,
+                        signature_hash=hashlib.sha256(
+                            signature.encode("utf-8")
+                        ).hexdigest()[:12],
                     ),
                     source="loop_guard",
                 )
@@ -650,7 +674,18 @@ class AgentLoop:
 
     # ------------------------------------------------------------ helpers
 
-    def _append_outcome(self, outcome: ToolOutcome) -> None:
+    @staticmethod
+    def _invalid_tool_call_indices(calls: Sequence[ToolCall]) -> set[int]:
+        seen: set[str] = set()
+        bad: set[int] = set()
+        for index, call in enumerate(calls):
+            if not call.id or call.id in seen:
+                bad.add(index)
+            if call.id:
+                seen.add(call.id)
+        return bad
+
+    def _append_outcome(self, outcome: ToolOutcome, *, persist: bool = True) -> None:
         data = outcome.data or {}
         file_path = None
         is_read_success = False
@@ -668,10 +703,18 @@ class AgentLoop:
                 resource_key=outcome.resource_key(),
                 is_read_success=is_read_success,
                 file_path=file_path,
-            )
+            ),
+            persist=persist,
         )
 
-    def _append_error_result(self, call: ToolCall, code: str, message: str) -> None:
+    def _append_error_result(
+        self,
+        call: ToolCall,
+        code: str,
+        message: str,
+        *,
+        persist: bool = True,
+    ) -> None:
         outcome = ToolOutcome(
             call_id=call.id,
             tool_name=call.name,
@@ -679,7 +722,7 @@ class AgentLoop:
             normalized_args={},
             error=ToolError(code, message),
         )
-        self._append_outcome(outcome)
+        self._append_outcome(outcome, persist=persist)
 
     def _append_remaining_aborted(self, calls: List[ToolCall]) -> None:
         for call in calls:

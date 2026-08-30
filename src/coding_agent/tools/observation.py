@@ -22,6 +22,10 @@ class FileObservationTracker:
 
     def record(self, rel: str, data: bytes) -> str:
         fingerprint = self.fingerprint(data)
+        return self.record_fingerprint(rel, fingerprint)
+
+    def record_fingerprint(self, rel: str, fingerprint: str) -> str:
+        """Record a digest computed by a bounded streaming reader."""
         self._versions[rel] = fingerprint
         return fingerprint
 

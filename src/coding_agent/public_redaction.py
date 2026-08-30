@@ -19,6 +19,32 @@ _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]+")
 
 PUBLIC_TOOL_TARGET_MAX_CHARS = 160
 
+_PUBLIC_RUN_RESULT_FIELDS = {
+    "run_id",
+    "status",
+    "stop_reason",
+    "final_text",
+    "step_count",
+    "provider_attempt_count",
+    "tool_call_count",
+    "verification_status",
+    "mutated_paths",
+    "last_verification",
+    "final_phase",
+    "context_char_count",
+}
+
+
+def redact_public_run_result(value: Any) -> Optional[Dict[str, Any]]:
+    """Project a persisted run result onto a fail-closed public allowlist.
+
+    Internal ``details`` may contain diagnostic metadata added by future code.
+    It is intentionally never copied across the HTTP boundary.
+    """
+    if not isinstance(value, dict):
+        return None
+    return {key: value[key] for key in _PUBLIC_RUN_RESULT_FIELDS if key in value}
+
 
 def redact_command_arg(part: str) -> str:
     """Keep standalone option flags; redact every operand or inline value."""

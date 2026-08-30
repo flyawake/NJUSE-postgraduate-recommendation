@@ -114,6 +114,17 @@ class BlockingModel:
         return AssistantTurn(text="done", tool_calls=())
 
 
+class DuplicateCallIdModel:
+    def request(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        return AssistantTurn(
+            text="",
+            tool_calls=(
+                make_call("glob", {"pattern": "*.py"}, "duplicate"),
+                make_call("glob", {"pattern": "*.txt"}, "duplicate"),
+            ),
+        )
+
+
 @pytest.fixture
 def workspace_factory(tmp_path):
     def make():
@@ -171,10 +182,15 @@ class TestRepositoryBasics:
             for row in repo._connect().execute("PRAGMA table_info(conversations)")
         }
         assert "reasoning_effort" in columns
+        assert "command_policy" in columns
         assert repo.get_conversation("conversation").reasoning_effort is None
-        assert repo._connect().execute(
-            "SELECT version FROM schema_meta"
-        ).fetchone()["version"] == SCHEMA_VERSION
+        assert repo.get_conversation("conversation").command_policy == "ask"
+        assert (
+            repo._connect()
+            .execute("SELECT version FROM schema_meta")
+            .fetchone()["version"]
+            == SCHEMA_VERSION
+        )
 
     def test_v5_inbox_migration_is_idempotent_and_adds_state_guard(self, tmp_path):
         database = tmp_path / "state.db"
@@ -358,6 +374,20 @@ class TestRepositoryBasics:
         repo = SQLiteConversationRepository(tmp_path / "state.db")
         repo.initialize()
         assert repo.get_conversation(conv.id).reasoning_effort == "high"
+
+        second = repo.create_conversation(
+            workspace_path=str(ws),
+            workspace_key=str(ws),
+            profile_id=None,
+            title="另一个会话",
+        )
+        repo.set_conversation_command_policy(conv.id, "allow")
+        repo.set_conversation_command_policy(second.id, "deny")
+        repo.close()
+        repo = SQLiteConversationRepository(tmp_path / "state.db")
+        repo.initialize()
+        assert repo.get_conversation(conv.id).command_policy == "allow"
+        assert repo.get_conversation(second.id).command_policy == "deny"
 
         renamed = repo.rename_conversation(conv.id, title="改名", expected_version=1)
         assert renamed.title == "改名" and renamed.version == 2
@@ -655,6 +685,70 @@ class TestRepositoryBasics:
 
 
 class TestConversationService:
+    def test_command_policy_survives_service_restart_per_conversation(
+        self, tmp_path, workspace_factory
+    ):
+        home = tmp_path / "persistent-home"
+        env = {"OPENAI_API_KEY": "sk-test", "OPENAI_MODEL": "fake-model"}
+        first_service = ConversationService(
+            home=home,
+            env=env,
+            client_factory=lambda _connection: FinalModel(),
+        )
+        workspace = workspace_factory()
+        first = first_service.create_conversation(
+            workspace_path=str(workspace), profile_id=None
+        )
+        second = first_service.create_conversation(
+            workspace_path=str(workspace), profile_id=None
+        )
+        first_service.set_conversation_command_policy(first["id"], "allow")
+        first_service.set_conversation_command_policy(second["id"], "deny")
+        first_service.shutdown()
+        first_service._repository.close()
+
+        restarted = ConversationService(
+            home=home,
+            env=env,
+            client_factory=lambda _connection: FinalModel(),
+        )
+        try:
+            assert restarted.get_conversation(first["id"])["command_policy"] == "allow"
+            assert restarted.get_conversation(second["id"])["command_policy"] == "deny"
+        finally:
+            restarted.shutdown()
+
+    def test_duplicate_tool_call_ids_never_commit_to_canonical_history(
+        self, tmp_path, workspace_factory
+    ):
+        service = make_service(tmp_path, DuplicateCallIdModel())
+        try:
+            workspace = workspace_factory()
+            conversation = service.create_conversation(
+                workspace_path=str(workspace), profile_id=None
+            )
+            started = service.start_turn(conversation["id"], user_text="inspect")
+            finished = wait_turn(service, conversation["id"], started["id"])
+            assert finished["state"] == "error"
+            history = service._repository.get_canonical_history(conversation["id"])
+            assert not any(
+                isinstance(message, AssistantMessage)
+                and len(message.tool_calls) == 2
+                and {call.id for call in message.tool_calls} == {"duplicate"}
+                for message in history
+            )
+            states = (
+                service._repository._connect()
+                .execute(
+                    "SELECT kind, state FROM canonical_groups WHERE turn_id=? ORDER BY group_seq",
+                    (started["id"],),
+                )
+                .fetchall()
+            )
+            assert not any(row["kind"] == "tool" for row in states)
+        finally:
+            service.shutdown(timeout=5)
+
     def test_multi_turn_history_isolated_between_conversations(
         self, tmp_path, workspace_factory
     ):

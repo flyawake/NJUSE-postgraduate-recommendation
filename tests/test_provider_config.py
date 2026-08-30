@@ -98,6 +98,15 @@ class TestProfileValidation:
         profile = make_profile()
         assert profile.id == "deepseek-main"
         assert profile.credential_ref == "deepseek"
+        assert profile.context_window_tokens == 128_000
+
+    def test_context_window_is_model_specific_and_bounded(self):
+        assert (
+            make_profile(context_window_tokens=256_000).context_window_tokens == 256_000
+        )
+        for invalid in (15_999, 4_000_001, True, 128_000.5):
+            with pytest.raises(ProfileError, match="context_window_tokens"):
+                make_profile(context_window_tokens=invalid)
 
     def test_rejects_unknown_provider(self):
         with pytest.raises(ProfileError, match="provider"):

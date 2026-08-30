@@ -58,6 +58,15 @@ async function waitForHttp(url: string, timeoutMs = 30_000): Promise<void> {
 }
 
 test.describe("Conversation product flow with the Fake Model", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addLocatorHandler(
+      page.getByTestId("command-permission-dialog"),
+      async (dialog) => {
+        await dialog.getByTestId("command-permission-allow").click();
+      }
+    );
+  });
+
   test("image and text attachments reach the model and survive refresh", async ({ page }) => {
     await page.goto("/");
     await createConversation(page, process.env.E2E_WORKSPACE as string);

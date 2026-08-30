@@ -167,11 +167,41 @@ class TestConversationApi:
         assert updated.json()["reasoning_effort"] == "high"
         assert updated.json()["version"] == conv["version"]
 
-        restored = client.get(
-            f"/api/conversations/{conv['id']}", headers=headers
-        )
+        restored = client.get(f"/api/conversations/{conv['id']}", headers=headers)
         assert restored.status_code == 200
         assert restored.json()["reasoning_effort"] == "high"
+
+    def test_conversation_command_policy_is_persisted_and_validated(self, api):
+        client, headers, _service, _model, ws = api
+        conv = client.post(
+            "/api/conversations",
+            json={"workspace": str(ws), "profile_id": None},
+            headers=headers,
+        ).json()
+        assert conv["command_policy"] == "ask"
+
+        updated = client.put(
+            f"/api/conversations/{conv['id']}/command-policy",
+            json={"command_policy": "allow"},
+            headers=headers,
+        )
+        assert updated.status_code == 200
+        assert updated.json()["command_policy"] == "allow"
+        assert updated.json()["version"] == conv["version"]
+        assert (
+            client.get(f"/api/conversations/{conv['id']}", headers=headers).json()[
+                "command_policy"
+            ]
+            == "allow"
+        )
+
+        invalid = client.put(
+            f"/api/conversations/{conv['id']}/command-policy",
+            json={"command_policy": "sometimes"},
+            headers=headers,
+        )
+        assert invalid.status_code == 400
+        assert invalid.json()["error"]["code"] == "invalid_command_policy"
 
     def test_inbox_stores_reasoning_effort(self, api):
         client, headers, _service, _model, ws = api

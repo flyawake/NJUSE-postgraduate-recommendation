@@ -192,6 +192,20 @@
         "title": "ChangeSetDTO",
         "type": "object"
       },
+      "ConversationCommandPolicyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "command_policy": {
+            "title": "Command Policy",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_policy"
+        ],
+        "title": "ConversationCommandPolicyRequest",
+        "type": "object"
+      },
       "ConversationCreateRequest": {
         "additionalProperties": false,
         "properties": {
@@ -243,6 +257,11 @@
               }
             ],
             "title": "Archived At"
+          },
+          "command_policy": {
+            "default": "ask",
+            "title": "Command Policy",
+            "type": "string"
           },
           "created_at": {
             "title": "Created At",
@@ -1524,6 +1543,100 @@
         "title": "MemoryVersionRequest",
         "type": "object"
       },
+      "PermissionDecisionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "title": "PermissionDecisionRequest",
+        "type": "object"
+      },
+      "PermissionRequestDTO": {
+        "properties": {
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Argv",
+            "type": "array"
+          },
+          "call_id": {
+            "title": "Call Id",
+            "type": "string"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "number"
+          },
+          "cwd": {
+            "title": "Cwd",
+            "type": "string"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "executable": {
+            "title": "Executable",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool_name": {
+            "title": "Tool Name",
+            "type": "string"
+          },
+          "turn_id": {
+            "title": "Turn Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "conversation_id",
+          "turn_id",
+          "call_id",
+          "tool_name",
+          "executable",
+          "argv",
+          "cwd",
+          "purpose",
+          "capabilities",
+          "created_at"
+        ],
+        "title": "PermissionRequestDTO",
+        "type": "object"
+      },
       "PreviewDTO": {
         "properties": {
           "additions": {
@@ -1633,6 +1746,11 @@
             "title": "Base Url",
             "type": "string"
           },
+          "context_window_tokens": {
+            "default": 128000,
+            "title": "Context Window Tokens",
+            "type": "integer"
+          },
           "credential": {
             "$ref": "#/components/schemas/CredentialInfoDTO"
           },
@@ -1707,6 +1825,13 @@
           "base_url": {
             "title": "Base Url",
             "type": "string"
+          },
+          "context_window_tokens": {
+            "default": 128000,
+            "maximum": 4000000.0,
+            "minimum": 16000.0,
+            "title": "Context Window Tokens",
+            "type": "integer"
           },
           "credential_ref": {
             "anyOf": [
@@ -2952,6 +3077,55 @@
         "summary": "Get Attachment"
       }
     },
+    "/api/conversations/{conversation_id}/command-policy": {
+      "put": {
+        "operationId": "update_conversation_command_policy_api_conversations__conversation_id__command_policy_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationCommandPolicyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Conversation Command Policy"
+      }
+    },
     "/api/conversations/{conversation_id}/inbox": {
       "get": {
         "operationId": "get_inbox_api_conversations__conversation_id__inbox_get",
@@ -3868,6 +4042,125 @@
           }
         },
         "summary": "Turn Memory Usage"
+      }
+    },
+    "/api/conversations/{conversation_id}/turns/{turn_id}/permissions": {
+      "get": {
+        "operationId": "list_turn_permissions_api_conversations__conversation_id__turns__turn_id__permissions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "turn_id",
+            "required": true,
+            "schema": {
+              "title": "Turn Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PermissionRequestDTO"
+                  },
+                  "title": "Response List Turn Permissions Api Conversations  Conversation Id  Turns  Turn Id  Permissions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Turn Permissions"
+      }
+    },
+    "/api/conversations/{conversation_id}/turns/{turn_id}/permissions/{request_id}": {
+      "post": {
+        "operationId": "resolve_turn_permission_api_conversations__conversation_id__turns__turn_id__permissions__request_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "turn_id",
+            "required": true,
+            "schema": {
+              "title": "Turn Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PermissionDecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PermissionRequestDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Turn Permission"
       }
     },
     "/api/conversations/{conversation_id}/turns/{turn_id}/stream": {

@@ -70,6 +70,7 @@ class ConversationRecord:
     workspace_key: str
     profile_id: Optional[str]
     reasoning_effort: Optional[str]
+    command_policy: str
     state: str
     version: int
     created_at: str

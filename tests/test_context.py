@@ -15,6 +15,7 @@ from coding_agent.context import (
 from coding_agent.errors import ContextOverflowError
 from coding_agent.models import (
     AssistantMessage,
+    AttachmentRef,
     SystemMessage,
     ToolMessage,
     UserMessage,
@@ -318,3 +319,48 @@ def test_steps_only_start_at_assistant_tool_turns():
     history.append(AssistantMessage("no tools", ()))
     manager = ContextManager()
     assert manager._segment_steps(list(history.messages)) == []
+
+
+def test_attachment_budget_counts_real_payload_and_model_tokens():
+    history = CanonicalHistory()
+    history.append(SystemMessage("system"))
+    ref = AttachmentRef(
+        id="a1",
+        filename="large.pdf",
+        media_type="application/pdf",
+        kind="file",
+        size_bytes=100_000,
+        sha256="a" * 64,
+    )
+    history.append(UserMessage("inspect", attachments=(ref,)))
+    manager = ContextManager(
+        1_000_000,
+        attachment_loader=lambda _ref: b"x" * 100_000,
+        context_window_tokens=16_000,
+        context_token_reserve=8_000,
+    )
+    with pytest.raises(ContextOverflowError) as excinfo:
+        manager.build_request(history)
+    assert excinfo.value.metric == "estimated_tokens"
+    assert excinfo.value.count > excinfo.value.budget
+
+
+def test_image_uses_visual_token_estimate_but_request_bytes_include_base64():
+    history = CanonicalHistory()
+    history.append(SystemMessage("system"))
+    ref = AttachmentRef(
+        id="a1",
+        filename="screen.png",
+        media_type="image/png",
+        kind="image",
+        size_bytes=100_000,
+        sha256="b" * 64,
+    )
+    history.append(UserMessage("inspect", attachments=(ref,)))
+    view = ContextManager(
+        1_000_000,
+        attachment_loader=lambda _ref: b"x" * 100_000,
+        context_window_tokens=32_000,
+    ).build_request(history)
+    assert view.estimated_token_count < 10_000
+    assert view.request_byte_count > 130_000

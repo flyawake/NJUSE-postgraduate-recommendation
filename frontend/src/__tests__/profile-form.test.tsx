@@ -55,6 +55,7 @@ describe("ProfileForm credential readiness", () => {
       credential_ref: "openai",
       reasoning_mode: "auto",
       show_reasoning: false,
+      context_window_tokens: 128000,
       credential: { configured: false, source: null, writable: true },
     });
     const onSaved = vi.fn();
@@ -81,6 +82,7 @@ describe("ProfileForm credential readiness", () => {
       credential_ref: null,
       reasoning_mode: "auto",
       show_reasoning: false,
+      context_window_tokens: 128000,
       credential: { configured: false, source: null, writable: false },
     };
     const repaired = {

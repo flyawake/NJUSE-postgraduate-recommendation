@@ -145,8 +145,8 @@ class ToolExecutor:
         except Exception as exc:  # defensive: never leak a crash into the loop
             error = ToolError(
                 INTERNAL_ERROR,
-                f"{type(exc).__name__}: {exc}",
-                recovery_hint="inspect the tool result and adjust arguments",
+                f"tool implementation failed ({type(exc).__name__})",
+                recovery_hint="report this as a tool implementation bug",
             )
             outcome = ToolOutcome(
                 call_id=prepared.call_id,

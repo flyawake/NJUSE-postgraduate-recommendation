@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import sys
 import threading
 import time
@@ -315,6 +316,21 @@ def test_empty_assistant_text_without_tools_is_protocol_error(tmp_path):
     assert result.status is RunStatus.ERROR
     assert result.stop_reason is StopReason.PROTOCOL_ERROR
     assert_valid_event_stream(sink.events)
+
+
+def test_unknown_exception_is_sanitized_before_run_result(tmp_path):
+    class BrokenModel:
+        def request(self, messages, tools):
+            raise RuntimeError("C:/private/secret.txt?token=SECRET-SENTINEL")
+
+    loop, _sink, _model = build_loop(tmp_path, BrokenModel())
+    result = loop.run("task")
+    assert result.status is RunStatus.ERROR
+    assert result.stop_reason is StopReason.INTERNAL_ERROR
+    rendered = json.dumps(result.to_dict(), ensure_ascii=False)
+    assert "SECRET-SENTINEL" not in rendered
+    assert "C:/private" not in rendered
+    assert result.details["message"] == "internal operation failed"
 
 
 # -------------------------------------------------- model retry and limits

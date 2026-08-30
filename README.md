@@ -1,8 +1,8 @@
 # coding-agent
 
-一个完全本地实现核心循环的编程智能体（coding agent）MVP：模型只负责决策，项目代码负责对话历史、工具定义与执行、输出解析、循环终止和错误处理。它使用普通 `openai` Python 客户端和 OpenAI-compatible Chat Completions tool calling，不依赖任何 agent 框架或 Agent SDK。
+一个完全本地实现核心循环的编程智能体（coding agent）MVP：模型只负责决策，项目代码负责对话历史、工具定义与执行、输出解析、循环终止和错误处理。它使用普通 `openai` Python 客户端，支持 OpenAI-compatible Chat Completions 与 OpenAI Responses，不依赖任何 agent 框架或 Agent SDK。
 
-> 本实现是可审计的教学/原型内核。`run_command` 会在本机直接执行任意可执行文件，**不是安全沙箱**，只能在可信或一次性工作区中运行。
+> 本实现是可审计的教学/原型内核。GUI 为每个对话持久保存 `run_command` 策略：每次询问、默认允许或默认拒绝；选择“每次询问”时会在启动进程前弹出一次性权限确认。允许后仍是在宿主机直接执行，**不是操作系统安全沙箱**。CLI/直接库调用属于显式可信模式，只应在可信或一次性工作区运行。
 
 ## 安装
 
@@ -135,12 +135,12 @@ assistant ToolCall
 
 | 工具 | effect | 关键语义 |
 | --- | --- | --- |
-| `glob(pattern, path=".")` | READ | 标准库实现；最多 100 项；跳过 `.git/.venv/node_modules` 与常见缓存/构建目录；报告省略量 |
-| `grep(pattern, path=".", include?)` | READ | UTF-8 正则搜索；最多 200 条、每行预览 ≤2000 字符；无匹配是成功空结果，无效正则是参数错误 |
-| `read_file(path, offset=1, limit=200)` | READ | 1-based 行号；limit ≤500、窗口 ≤50 KiB；返回 `total_lines`、`next_offset` 与 SHA-256 指纹 |
+| `glob(pattern, path=".")` | READ | 标准库实现；发现第 101 个匹配即停止，扫描项上限 50,000；跳过 `.git/.venv/node_modules` 与常见缓存/构建目录；省略量标明为下界 |
+| `grep(pattern, path=".", include?)` | READ | 逐行 UTF-8 正则搜索；发现第 201 条即停止；单文件≤2 MiB、整次扫描≤64 MiB/10,000 文件、每行搜索≤20,000 字符，结果≤200 条 |
+| `read_file(path, offset=1, limit=200)` | READ | 流式哈希和逐行窗口；文件≤16 MiB、limit ≤500、窗口≤50 KiB；返回 `total_lines`、`next_offset` 与 SHA-256 指纹 |
 | `write_file(path, content)` | WRITE | 创建或整体覆盖；父目录自动创建；单次 ≤1 MiB；覆盖必须先观察当前版本 |
 | `edit_file(path, old_string, new_string, replace_all=false)` | WRITE | 字面量替换；默认唯一匹配；`replace_all=true` 至少匹配一次；先读后改 + 版本新鲜度 |
-| `run_command(argv, cwd=".", timeout_seconds=30, purpose="inspect\|verify\|other")` | EXECUTE | `shell=False`；cwd 必须在工作区内；超时 1-120 秒；stdout/stderr 各保留 head 4000 + tail 6000 字符并报告省略量；非零退出码仍是成功观察 |
+| `run_command(argv, cwd=".", timeout_seconds=30, purpose="inspect\|verify\|other")` | EXECUTE | `shell=False`；GUI 在进程启动前应用当前对话持久策略（每次询问/默认允许/默认拒绝）；cwd 必须在工作区内；超时 1-120 秒；后台持续排空 stdout/stderr、内存中各只保留 head 4000 + tail 6000 字符；非零退出码仍是成功观察 |
 | `web_search(query, max_results=5)` | READ | 搜索公开互联网；结果数≤10，只返回有界 title/url/snippet；网页结果始终视为不可信观察 |
 | `web_fetch(url, max_chars=12000)` | READ | 仅抓取公开 HTTP(S) 文本页；拒绝凭据、非标准端口、本机/私网/保留地址及重定向 rebinding；不执行脚本，响应≤1 MB、正文≤20,000 字符 |
 
@@ -170,9 +170,9 @@ FastAPI local app server (loopback only)
 - 文件变化按 turn 的首个 before 与最终 after 合并，成功 write/edit 是 confirmed 证据，`run_command` 使用有文件数/字节/时间预算的 workspace probe 补充副作用；超预算 fail-closed 为 incomplete，但不阻止主 turn 完成。
 - 文本 artifact 单个最多 1 MiB、单 turn 新增快照默认最多 20 MiB，CAS 按 SHA-256 去重并校验读取完整性；delete 事务清理引用，启动时可重试物理 GC。preview 只接受 conversation→turn→change 的层级 ID，不接受任意路径读取。
 - API 错误使用稳定 `code` + 用户可读 `message` + 不含 secret 的 `field`；前端从不解析 message 判断逻辑。
-- Profile 存取：`config.json` 顶层固定 `version:1/active_profile/profiles`；profile ID 创建后不可改名；`wire_api` 当前唯一允许 `openai_chat_completions`；ModelClientFactory 按 wire API 分派，AgentLoop 中不存在 provider 名称分支。
+- Profile 存取：`config.json` 顶层固定 `version:1/active_profile/profiles`；profile ID 创建后不可改名；`wire_api` 支持 `openai_chat_completions` 与 `openai_responses`；ModelClientFactory 按 wire API 分派，AgentLoop 中不存在 provider 名称分支。
 - 凭据：`credentials.json` 与 config 分离，只有 `ref -> secret`，读取接口只返回 `configured/source/writable`；写入用同目录临时文件 + flush/fsync + `os.replace`（POSIX 目录 0700 / 文件 0600，尽力而为）；损坏文件拒绝写入并保留原文件。
-- 安全：仅监听 loopback；Host 必须为语法合法的 loopback 主机（IPv4/IPv6 字面量或 localhost，端口必须为数字，畸形 Host 直接 403）；Origin 必须与当前请求的 scheme/host/effective port **精确一致**，另一个 loopback 端口、userinfo 或 path 均被拒绝；状态变更必须携带随机会话令牌（`X-Coding-Agent-Token`，由 `/api/bootstrap` 下发，前端仅在内存中保存）；不配置宽泛 CORS；CSP `default-src 'self'` 禁止外部脚本与 CDN，默认 Swagger/ReDoc UI 已禁用（OpenAPI JSON 仍保留）；profile 的 base URL 与 legacy `OPENAI_BASE_URL` 走同一个 validator（仅绝对 HTTP(S)、HTTP 仅限 loopback、无 userinfo/query/fragment、端口必须合法）；workspace 在启动 run 前解析为已存在目录并交给既有路径守卫。
+- 安全：仅监听 loopback；Host 必须为语法合法的 loopback 主机（IPv4/IPv6 字面量或 localhost，端口必须为数字，畸形 Host 直接 403）；Origin 必须与当前请求的 scheme/host/effective port **精确一致**；状态变更必须携带随机会话令牌；CSP 禁止外部脚本与 CDN。Composer 的命令权限选择写入 SQLite，按 conversation 隔离并在刷新/重启后恢复。切换到 `allow` 前必须在风险警告框中二次确认，取消不会修改持久设置；`ask` 在 `Popen` 前由内存权限 broker 暂停并展示完整 argv/cwd，`deny` 在进程创建前拒绝，`allow` 保留直接执行能力。挂起时改为允许/拒绝会立即处理当前申请。允许后进程仍可能访问工作区外文件、网络和继承环境，因此界面明确不把它表述为沙箱。
 - 前端：TypeScript + React + Vite + Tailwind（全部视觉值来自 design tokens）+ Radix Primitives（Dialog/Select/Tabs/Collapsible/AlertDialog）+ Lucide；TanStack Query 负责持久 snapshot 与按 cursor 拉取事件，投影器只增量处理新 event；legacy `/api/runs` 继续保留 SSE 兼容；i18n 资源完整 zh-CN/en-US，侧栏和文件审查在窄屏分别进入可访问 drawer。
 - 聊天附件：Composer 支持选择、拖放与粘贴 PNG/JPEG/GIF/WebP，以及 PDF、UTF-8 文本/代码和常见 Office 文件。单文件≤10 MiB、每轮≤4 个且合计≤20 MiB；二进制保存在 `CODING_AGENT_HOME/attachments/`，SQLite/canonical history 只保存引用与元数据。turn 创建事务原子认领附件；ContextManager 在 detached request view 中将图片/文件映射到 Chat Completions 或 Responses 的对应输入格式，文本附件最多内联 50,000 字符。
 
@@ -180,7 +180,7 @@ FastAPI local app server (loopback only)
 
 ### 上下文投影
 
-`canonical history` 只追加、永不改写；每步由 ContextManager 生成独立的临时 request view。默认字符预算 258,000（近似值，不声称精确 token 计数）。投影确定性保留：system prompt、原始 user task、所有 tool-call/result 协议骨架、最近两个逻辑 step、最近的错误结果、每个文件最近一次成功的 `read_file` 窗口；较早的成功工具正文按确定性规则替换为 `{ok, omitted, tool, resource, original_chars, omitted_chars}` 标记。若仍超预算，ContextManager 会进一步自动裁剪旧 assistant 消息的可见 reasoning 与长文本（不修改 canonical history，且保留最近两个逻辑 step 完整）。若保护项本身仍超预算，以 `CONTEXT_OVERFLOW` 终止。
+`canonical history` 只追加、永不改写；每步由 ContextManager 生成独立的临时 request view。预算分三层：258,000 字符用于确定性历史压缩；每个 profile 配置真实 `context_window_tokens`（默认 128,000，并预留 8,000 tokens 给输出），发送前做 provider-neutral token 估算；完整请求体（包括 base64）另设 32 MiB 字节上限。图片按有界视觉输入估算，普通文件按内联编码保守估算，但二者的完整 base64 都计入请求字节。任一保护项超过相应预算即以 `CONTEXT_OVERFLOW` 终止，不把超大请求交给 provider。
 
 ### 完成验证与终止
 
@@ -197,7 +197,7 @@ FastAPI local app server (loopback only)
 ### 消息不变量
 
 - canonical history 只追加，上下文裁剪只作用于每步临时派生的 request view。
-- 下一次模型请求之前，每个 assistant tool call 恰有一个同 ID 的 tool result；重复/空 call ID 属协议错误并终止，且为诊断起见补齐全部结果。
+- 下一次模型请求之前，每个 assistant tool call 恰有一个同 ID 的 tool result；重复/空 call ID 在写入 journal 前即判为协议错误，非法 assistant 组和诊断结果只留在本轮内存、绝不进入持久 canonical history。
 - Ctrl+C 会尝试终止当前 `run_command` 拥有的子进程，当前调用返回 `TOOL_ABORTED`，同组未分派调用返回 `ABORTED_BEFORE_DISPATCH`，随后以 `INTERRUPTED` 结束，CLI 退出码 130。取消不仅在每次分派前检查，还在 policy/prepare 返回后、handler 启动前再次检查，保证已取消的 WRITE/EXECUTE 不产生副作用，且每个模型调用只计数一次。
 
 ## 测试
@@ -229,13 +229,13 @@ npm run test:e2e     # Playwright + Fake Model：多轮、后台切换、文件�
 
 ## 已知限制
 
-- 字符预算是确定性近似，不是精确 token 计数。
+- token 预算是 provider-neutral 保守估算，不等同于 provider 的精确 tokenizer；profile 必须填写模型实际 context window，另有独立请求字节上限兜底。
 - `glob`/`grep` 使用标准库，性能不与 ripgrep 等同；ripgrep 后端属于后续路线。
 - SHA-256 观察是单进程尽力新鲜度防护，存在跨进程 TOCTOU 窗口；不宣称事务或 CAS。
-- `run_command` 无安全沙箱：任意可执行文件可能访问工作区外资源。只应在可信或一次性工作区使用。
+- `run_command` 仍无操作系统级沙箱：GUI 的“每次询问/默认拒绝”可防止静默执行，但用户选择“默认允许”或批准单次命令后，任意可执行文件仍可能访问工作区外资源。CLI/库调用是可信模式。
 - 本地 GUI 服务只监听 `127.0.0.1`：任何本机进程/网页仍可能发起请求，因此状态变更要求随机会话令牌、Host/Origin 精确同源校验且页面使用 CSP；普通网页无法可靠返回本机目录绝对路径，工作区使用路径输入加后端校验。
 - 凭据文件是用户目录内的本地明文 JSON（Windows 上没有 OS 密钥串级别的加密），推荐使用环境变量；不宣称加密存储。
-- GUI 仅支持一个 provider 协议：`openai_chat_completions`（OpenAI/DeepSeek/自定义网关皆为 Chat Completions 兼容）；不支持 Anthropic Messages、OpenAI Responses 或 OAuth。
-- 当前不包含运行中消息 Queue/Steer、可展示 reasoning stream 与跨会话 Memory；这些能力分别属于后续任务，界面不会提前伪造。
+- GUI 支持 `openai_chat_completions` 与 `openai_responses`；尚不支持 Anthropic Messages 或 OAuth，DeepSeek profile 只允许其 Chat Completions 兼容协议。
+- Queue/Steer 只在工具组已完整提交且没有工具执行的安全边界送入模型上下文，不会中断正在进行的模型请求或工具调用；跨会话 Memory 使用本地词项/FTS 检索，不提供 embedding 语义检索。
 - 默认允许最多 2 个不同 workspace 的后台 turn；相同 workspace 采用保守整轮互斥，不区分只读与写入任务。
 - 完成验证证据是“agent 声明的 verify 命令 + 退出码”，不是测试充分性证明。

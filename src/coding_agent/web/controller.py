@@ -416,7 +416,10 @@ class RunController:
             model_client=self._client_factory(connection),
             tool_registry=registry,
             tool_executor=executor,
-            context_manager=ContextManager(DEFAULT_CHAR_BUDGET),
+            context_manager=ContextManager(
+                DEFAULT_CHAR_BUDGET,
+                context_window_tokens=connection.context_window_tokens,
+            ),
             completion_policy=CompletionPolicy(),
             run_id=run_id,
             max_steps=DEFAULT_MAX_STEPS,

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import * as Dialog from "@radix-ui/react-dialog";
-import { ArrowUp, BookOpen, CircleStop, FileText, ListPlus, Paperclip, X, Zap } from "lucide-react";
+import { ArrowUp, BookOpen, CircleStop, FileText, Folder, Globe2, ListPlus, Paperclip, ShieldAlert, SquareTerminal, TriangleAlert, X, Zap } from "lucide-react";
 import { api } from "@/api/client";
 import type { Attachment, ChangeSet, FileChange, ToolEvent, Turn } from "@/api/client";
 import { useI18n } from "@/lib/i18n";
@@ -13,6 +14,8 @@ import { QueueDock } from "./QueueDock";
 import { TurnChangeSummary } from "./TurnChangeSummary";
 import { TurnNavigator } from "./TurnNavigator";
 import { subscribeToConversationEvents, subscribeToInbox } from "@/lib/sse";
+
+type CommandPolicy = "ask" | "allow" | "deny";
 
 export interface ConversationViewProps {
   conversationId: string;
@@ -77,6 +80,8 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
   const [reasoningEffort, setReasoningEffort] = useState(
     () => storedReasoningEffort(conversationId) ?? ""
   );
+  const [commandPolicy, setCommandPolicy] = useState<CommandPolicy>("ask");
+  const [allowWarningOpen, setAllowWarningOpen] = useState(false);
   const [effortTouched, setEffortTouched] = useState(
     () => storedReasoningEffort(conversationId) !== null
   );
@@ -126,6 +131,26 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
     queryKey: ["conversation", conversationId],
     queryFn: () => api.getConversation(conversationId),
     refetchInterval: 1_000,
+  });
+  useEffect(() => {
+    setAllowWarningOpen(false);
+    setCommandPolicy(
+      (conversationQuery.data?.command_policy as CommandPolicy | undefined) ?? "ask"
+    );
+  }, [conversationId, conversationQuery.data?.command_policy]);
+  const commandPolicyMutation = useMutation({
+    mutationFn: (value: CommandPolicy) => api.updateConversationCommandPolicy(
+      conversationId, { command_policy: value }
+    ),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["conversation", conversationId], updated);
+    },
+    onError: (error) => {
+      setCommandPolicy(
+        (conversationQuery.data?.command_policy as CommandPolicy | undefined) ?? "ask"
+      );
+      setComposerError(error instanceof Error ? error.message : t("error.runFailure"));
+    },
   });
   const persistReasoningEffort = useCallback((value: string | null) => {
     const request = preferenceSaveRef.current
@@ -217,6 +242,29 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
     enabled: turns.length > 0,
   });
   const activeTurn = turns.find((turn) => turn.active) ?? null;
+  const permissionsQuery = useQuery({
+    queryKey: ["turn-permissions", conversationId, activeTurn?.id ?? null],
+    queryFn: () => activeTurn
+      ? api.listTurnPermissions(conversationId, activeTurn.id)
+      : Promise.resolve([]),
+    enabled: Boolean(activeTurn),
+    refetchInterval: activeTurn ? 400 : false,
+  });
+  const pendingPermission = permissionsQuery.data?.[0] ?? null;
+  const permissionMutation = useMutation({
+    mutationFn: (decision: "allow" | "deny") => {
+      if (!activeTurn || !pendingPermission) throw new Error("permission request is no longer active");
+      return api.resolveTurnPermission(
+        conversationId,
+        activeTurn.id,
+        pendingPermission.id,
+        decision
+      );
+    },
+    onSettled: () => queryClient.invalidateQueries({
+      queryKey: ["turn-permissions", conversationId, activeTurn?.id ?? null],
+    }),
+  });
 
   useEffect(() => {
     if (turnsQuery.isLoading || turns.length === 0 || initialScrollConversationRef.current === conversationId) return;
@@ -462,6 +510,20 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
     persistReasoningEffort(value);
   };
 
+  const saveCommandPolicy = (value: CommandPolicy) => {
+    setComposerError(null);
+    setCommandPolicy(value);
+    commandPolicyMutation.mutate(value);
+  };
+
+  const handleCommandPolicyChange = (value: CommandPolicy) => {
+    if (value === "allow" && commandPolicy !== "allow") {
+      setAllowWarningOpen(true);
+      return;
+    }
+    saveCommandPolicy(value);
+  };
+
   const conversation = conversationQuery.data;
   const defaultThinkOpen = Boolean(selectedProfile?.show_reasoning);
   const supportsReasoningEffort = Boolean(selectedProfile && (
@@ -612,6 +674,31 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
                 <Paperclip aria-hidden size={15} />
                 <span className="hidden sm:inline">{t("attachment.add")}</span>
               </button>
+              <label
+                htmlFor="conversation-command-policy"
+                className="flex items-center rounded-[9px] text-xs text-muted"
+                title={t(`composer.commandPolicy.${commandPolicy}.hint`)}
+              >
+                <ShieldAlert
+                  aria-hidden
+                  size={15}
+                  className={commandPolicy === "allow" ? "ml-2 text-warning" : commandPolicy === "deny" ? "ml-2 text-danger" : "ml-2"}
+                />
+                <span className="sr-only">{t("composer.commandPolicy")}</span>
+                <select
+                  id="conversation-command-policy"
+                  className="composer-control w-auto pl-1"
+                  value={commandPolicy}
+                  onChange={(event) => handleCommandPolicyChange(event.target.value as CommandPolicy)}
+                  disabled={commandPolicyMutation.isPending || conversation?.state !== "active"}
+                  aria-label={t("composer.commandPolicy")}
+                  data-testid="conversation-command-policy"
+                >
+                  <option value="ask">{t("composer.commandPolicy.ask")}</option>
+                  <option value="allow">{t("composer.commandPolicy.allow")}</option>
+                  <option value="deny">{t("composer.commandPolicy.deny")}</option>
+                </select>
+              </label>
               <label htmlFor="conversation-model" className="mr-auto flex min-w-0 items-center text-xs text-muted">
                 <span className="sr-only">{t("composer.model")}</span>
                 <select
@@ -713,6 +800,114 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
           </div>
         </div>
       </div>
+      <AlertDialog.Root open={allowWarningOpen} onOpenChange={setAllowWarningOpen}>
+        <AlertDialog.Portal>
+          <AlertDialog.Overlay className="fixed inset-0 z-[80] bg-overlay" />
+          <AlertDialog.Content
+            className="fixed left-1/2 top-1/2 z-[81] w-[min(39rem,94vw)] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-warning/40 bg-surface p-5 shadow-md outline-none sm:p-6"
+            data-testid="command-policy-allow-warning"
+          >
+            <AlertDialog.Title className="flex items-center gap-2 text-lg font-semibold">
+              <TriangleAlert aria-hidden size={20} className="shrink-0 text-warning" />
+              {t("commandPolicyWarning.title")}
+            </AlertDialog.Title>
+            <AlertDialog.Description className="mt-3 text-sm leading-6 text-muted">
+              {t("commandPolicyWarning.description")}
+            </AlertDialog.Description>
+            <div className="mt-4 divide-y divide-border rounded-lg bg-surface-2 px-4">
+              <PermissionRiskRow
+                icon={<Folder aria-hidden size={20} className="text-accent" />}
+                title={t("commandPolicyWarning.files.title")}
+                description={t("commandPolicyWarning.files.description")}
+              />
+              <PermissionRiskRow
+                icon={<SquareTerminal aria-hidden size={20} className="text-muted" />}
+                title={t("commandPolicyWarning.commands.title")}
+                description={t("commandPolicyWarning.commands.description")}
+              />
+              <PermissionRiskRow
+                icon={<Globe2 aria-hidden size={20} className="text-accent" />}
+                title={t("commandPolicyWarning.network.title")}
+                description={t("commandPolicyWarning.network.description")}
+              />
+            </div>
+            <p className="mt-4 text-sm leading-6 text-muted">
+              {t("commandPolicyWarning.risk")}
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <AlertDialog.Cancel asChild>
+                <button type="button" className="btn-secondary" data-testid="command-policy-allow-cancel">
+                  {t("common.cancel")}
+                </button>
+              </AlertDialog.Cancel>
+              <AlertDialog.Action asChild>
+                <button
+                  type="button"
+                  className="btn-danger"
+                  onClick={() => saveCommandPolicy("allow")}
+                  data-testid="command-policy-allow-confirm"
+                >
+                  <TriangleAlert aria-hidden size={15} />
+                  {t("commandPolicyWarning.confirm")}
+                </button>
+              </AlertDialog.Action>
+            </div>
+          </AlertDialog.Content>
+        </AlertDialog.Portal>
+      </AlertDialog.Root>
+      <Dialog.Root open={Boolean(pendingPermission)}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-[70] bg-overlay" />
+          <Dialog.Content
+            className="fixed left-1/2 top-1/2 z-[71] w-[min(38rem,94vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-warning/50 bg-surface p-5 shadow-md outline-none"
+            onEscapeKeyDown={(event) => event.preventDefault()}
+            onPointerDownOutside={(event) => event.preventDefault()}
+            data-testid="command-permission-dialog"
+          >
+            <Dialog.Title className="font-semibold">{t("permission.title")}</Dialog.Title>
+            <Dialog.Description className="mt-2 text-sm leading-6 text-muted">
+              {t("permission.description")}
+            </Dialog.Description>
+            {pendingPermission ? (
+              <div className="mt-4 space-y-3">
+                <div className="rounded-md border border-border bg-bg/75 p-3">
+                  <p className="text-xs text-faint">{t("permission.command")}</p>
+                  <pre className="mono mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all text-xs text-text">
+                    {JSON.stringify(pendingPermission.argv)}
+                  </pre>
+                  <p className="mt-2 text-xs text-faint">
+                    {t("permission.cwd")}: <span className="mono text-text">{pendingPermission.cwd}</span>
+                  </p>
+                </div>
+                <p className="text-xs leading-5 text-warning">{t("permission.capabilities")}</p>
+              </div>
+            ) : null}
+            {permissionMutation.isError ? (
+              <p className="mt-3 text-xs text-danger" role="alert">{t("permission.resolveFailed")}</p>
+            ) : null}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={permissionMutation.isPending}
+                onClick={() => permissionMutation.mutate("deny")}
+                data-testid="command-permission-deny"
+              >
+                {t("permission.deny")}
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={permissionMutation.isPending}
+                onClick={() => permissionMutation.mutate("allow")}
+                data-testid="command-permission-allow"
+              >
+                {t("permission.allowOnce")}
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
       <Dialog.Root open={rememberOpen} onOpenChange={setRememberOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-overlay" />
@@ -754,6 +949,26 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
+    </div>
+  );
+}
+
+function PermissionRiskRow({
+  icon,
+  title,
+  description,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="flex items-start gap-3 py-3">
+      <span className="mt-0.5 shrink-0">{icon}</span>
+      <span className="min-w-0">
+        <span className="block text-sm font-medium text-text">{title}</span>
+        <span className="mt-0.5 block text-xs leading-5 text-muted">{description}</span>
+      </span>
     </div>
   );
 }

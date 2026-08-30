@@ -194,7 +194,10 @@ def _default_agent_factory(
         model_client=model_client,
         tool_registry=registry,
         tool_executor=executor,
-        context_manager=ContextManager(config.char_budget),
+        context_manager=ContextManager(
+            config.char_budget,
+            context_window_tokens=config.context_window_tokens,
+        ),
         completion_policy=CompletionPolicy(),
         event_sink=event_sink,
         max_steps=config.max_steps,

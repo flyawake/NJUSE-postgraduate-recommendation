@@ -24,6 +24,7 @@ export type FileChange = components["schemas"]["FileChangeDTO"];
 export type FilePreview = components["schemas"]["PreviewDTO"];
 export type ConversationCreateRequest = components["schemas"]["ConversationCreateRequest"];
 export type ConversationPreferencesRequest = components["schemas"]["ConversationPreferencesRequest"];
+export type ConversationCommandPolicyRequest = components["schemas"]["ConversationCommandPolicyRequest"];
 export type ConversationRenameRequest = components["schemas"]["ConversationRenameRequest"];
 export type ConversationVersionRequest = components["schemas"]["ConversationVersionRequest"];
 export type TurnCreateRequest = components["schemas"]["TurnCreateRequest"];
@@ -42,6 +43,21 @@ export type MemoryResetRequest = components["schemas"]["MemoryResetRequest"];
 export type MemorySettingsRequest = components["schemas"]["MemorySettingsRequest"];
 export type MemorySettings = components["schemas"]["MemorySettingsDTO"];
 export type MemoryUsage = components["schemas"]["MemoryUsageDTO"];
+
+export interface PermissionRequest {
+  id: string;
+  conversation_id: string;
+  turn_id: string;
+  call_id: string;
+  tool_name: string;
+  executable: string;
+  argv: string[];
+  cwd: string;
+  purpose: string;
+  capabilities: string[];
+  created_at: number;
+  decision?: "allow" | "deny" | null;
+}
 
 export class ApiError extends Error {
   readonly code: string;
@@ -190,6 +206,12 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
+  updateConversationCommandPolicy: (id: string, input: ConversationCommandPolicyRequest) =>
+    apiFetch<Conversation>(`/api/conversations/${encodeURIComponent(id)}/command-policy`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+
   renameConversation: (id: string, input: ConversationRenameRequest) =>
     apiFetch<Conversation>(`/api/conversations/${encodeURIComponent(id)}`, {
       method: "PATCH",
@@ -263,6 +285,22 @@ export const api = {
     apiFetch<Turn>(`/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/cancel`, {
       method: "POST",
     }),
+
+  listTurnPermissions: (id: string, turnId: string) =>
+    apiFetch<PermissionRequest[]>(
+      `/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/permissions`
+    ),
+
+  resolveTurnPermission: (
+    id: string,
+    turnId: string,
+    requestId: string,
+    decision: "allow" | "deny"
+  ) =>
+    apiFetch<PermissionRequest>(
+      `/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/permissions/${encodeURIComponent(requestId)}`,
+      { method: "POST", body: JSON.stringify({ decision }) }
+    ),
 
   getStreamSnapshot: (id: string, turnId: string) =>
     apiFetch<StreamSnapshot>(

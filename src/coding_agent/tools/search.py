@@ -5,6 +5,9 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterator, List, Tuple
 
 from .base import INVALID_ARGUMENT, ToolExecutionError
 
@@ -24,6 +27,56 @@ SKIPPED_DIR_NAMES = {
     "build",
     "target",
 }
+
+
+@dataclass
+class WalkBudget:
+    entries: int = 0
+    truncated: bool = False
+
+
+def iter_bounded_files(
+    base: Path, *, max_entries: int, budget: WalkBudget
+) -> Iterator[Path]:
+    """Yield files without allowing ``os.walk`` to materialize huge dirs.
+
+    At most ``max_entries`` directory entries are retained/visited across the
+    walk. Directory symlinks are not followed. Entries are sorted within each
+    visited directory for deterministic tests and provider observations.
+    """
+    stack: List[Path] = [Path(base)]
+    while stack:
+        current = stack.pop()
+        entries: List[Tuple[str, Path, bool]] = []
+        stop_after_current = False
+        try:
+            with os.scandir(current) as iterator:
+                for entry in iterator:
+                    if budget.entries >= max_entries:
+                        budget.truncated = True
+                        stop_after_current = True
+                        break
+                    budget.entries += 1
+                    try:
+                        if entry.is_symlink() and entry.is_dir(follow_symlinks=True):
+                            continue
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    entries.append((entry.name, Path(entry.path), is_dir))
+        except OSError:
+            continue
+        entries.sort(key=lambda item: item[0])
+        child_dirs: List[Path] = []
+        for name, path, is_dir in entries:
+            if is_dir:
+                if not should_skip_dir(name):
+                    child_dirs.append(path)
+            else:
+                yield path
+        if stop_after_current:
+            return
+        stack.extend(reversed(child_dirs))
 
 
 def should_skip_dir(name: str) -> bool:

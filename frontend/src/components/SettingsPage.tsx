@@ -193,6 +193,7 @@ export function SettingsPage() {
                   wire_api: editing.wire_api,
                   reasoning_mode: editing.reasoning_mode,
                   show_reasoning: editing.show_reasoning,
+                  context_window_tokens: editing.context_window_tokens,
                 }}
                 onSaved={() => undefined}
                 onCancel={() => setSelectedId(null)}

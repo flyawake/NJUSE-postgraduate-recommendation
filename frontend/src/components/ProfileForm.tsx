@@ -24,6 +24,7 @@ export interface ProfileFormProps {
     wire_api?: string;
     reasoning_mode?: string;
     show_reasoning?: boolean;
+    context_window_tokens?: number;
   };
   onSaved: (profileId: string) => void;
   onCancel?: () => void;
@@ -34,6 +35,7 @@ interface FieldErrors {
   displayName?: string;
   baseUrl?: string;
   model?: string;
+  contextWindowTokens?: string;
   credentialRef?: string;
 }
 
@@ -52,6 +54,9 @@ export function ProfileForm({ mode, presets, editing, onSaved, onCancel }: Profi
   const [wireApi, setWireApi] = useState(editing?.wire_api ?? "openai_chat_completions");
   const [reasoningMode, setReasoningMode] = useState(editing?.reasoning_mode ?? "auto");
   const [showReasoning, setShowReasoning] = useState(editing?.show_reasoning ?? false);
+  const [contextWindowTokens, setContextWindowTokens] = useState(
+    String(editing?.context_window_tokens ?? 128000)
+  );
   const [errors, setErrors] = useState<FieldErrors>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -70,8 +75,9 @@ export function ProfileForm({ mode, presets, editing, onSaved, onCancel }: Profi
       wireApi !== (editing?.wire_api ?? "openai_chat_completions") ||
       reasoningMode !== (editing?.reasoning_mode ?? "auto") ||
       showReasoning !== (editing?.show_reasoning ?? false) ||
+      contextWindowTokens !== String(editing?.context_window_tokens ?? 128000) ||
       (mode === "create" && providerId !== ""),
-    [mode, displayName, baseUrl, model, credentialRef, wireApi, reasoningMode, showReasoning, providerId, editing]
+    [mode, displayName, baseUrl, model, credentialRef, wireApi, reasoningMode, showReasoning, contextWindowTokens, providerId, editing]
   );
 
   const saveMutation = useMutation({
@@ -85,6 +91,7 @@ export function ProfileForm({ mode, presets, editing, onSaved, onCancel }: Profi
         wire_api: wireApi,
         reasoning_mode: reasoningMode,
         show_reasoning: showReasoning,
+        context_window_tokens: Number(contextWindowTokens),
       };
       return mode === "create"
         ? api.createProfile(input)
@@ -111,6 +118,10 @@ export function ProfileForm({ mode, presets, editing, onSaved, onCancel }: Profi
     const urlError = providerUrlError(baseUrl);
     if (urlError) next.baseUrl = t("error.validation");
     if (!model.trim()) next.model = t("error.validation");
+    const parsedContextWindow = Number(contextWindowTokens);
+    if (!Number.isInteger(parsedContextWindow) || parsedContextWindow < 16000 || parsedContextWindow > 4000000) {
+      next.contextWindowTokens = t("form.contextWindowTokens.error");
+    }
     if (!credentialRef.trim()) next.credentialRef = t("form.credentialRefRequired");
     setErrors(next);
     return Object.keys(next).length === 0;
@@ -201,6 +212,15 @@ export function ProfileForm({ mode, presets, editing, onSaved, onCancel }: Profi
         onChange={setModel}
         placeholder={t("form.model.placeholder")}
         error={errors.model}
+      />
+      <Field
+        id="form-context-window"
+        label={t("form.contextWindowTokens")}
+        value={contextWindowTokens}
+        onChange={setContextWindowTokens}
+        placeholder="128000"
+        error={errors.contextWindowTokens}
+        hint={t("form.contextWindowTokens.hint")}
       />
       <Field
         id="form-credential-ref"

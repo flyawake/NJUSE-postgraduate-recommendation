@@ -49,6 +49,7 @@ from .schemas import (
     BootstrapDTO,
     CapabilitiesDTO,
     ChangeSetDTO,
+    ConversationCommandPolicyRequest,
     ConversationCreateRequest,
     ConversationDTO,
     ConversationPageDTO,
@@ -75,6 +76,8 @@ from .schemas import (
     MemorySettingsRequest,
     MemoryUsageDTO,
     MemoryVersionRequest,
+    PermissionDecisionRequest,
+    PermissionRequestDTO,
     PreviewDTO,
     ProfileDTO,
     ProfileInput,
@@ -126,6 +129,7 @@ def profile_dto(profile: ProviderProfile, controller: RunController) -> ProfileD
         reasoning_mode=profile.reasoning_mode,
         reasoning_effort=profile.reasoning_effort,
         show_reasoning=profile.show_reasoning,
+        context_window_tokens=profile.context_window_tokens,
         credential=CredentialInfoDTO(
             configured=bool(info and info.configured),
             source=info.source if info else None,
@@ -483,6 +487,19 @@ def create_app(
                 )
             )
 
+        @app.put(
+            "/api/conversations/{conversation_id}/command-policy",
+            response_model=ConversationDTO,
+        )
+        async def update_conversation_command_policy(
+            conversation_id: str, body: ConversationCommandPolicyRequest
+        ) -> ConversationDTO:
+            return _conv_dto(
+                conversation_service.set_conversation_command_policy(
+                    conversation_id, body.command_policy
+                )
+            )
+
         @app.post(
             "/api/conversations/{conversation_id}/archive",
             response_model=ConversationDTO,
@@ -606,6 +623,39 @@ def create_app(
         )
         async def get_turn(conversation_id: str, turn_id: str) -> TurnDTO:
             return _turn_dto(conversation_service.get_turn(conversation_id, turn_id))
+
+        @app.get(
+            "/api/conversations/{conversation_id}/turns/{turn_id}/permissions",
+            response_model=list[PermissionRequestDTO],
+        )
+        async def list_turn_permissions(
+            conversation_id: str, turn_id: str
+        ) -> list[PermissionRequestDTO]:
+            return [
+                PermissionRequestDTO(**item)
+                for item in conversation_service.list_permission_requests(
+                    conversation_id, turn_id
+                )
+            ]
+
+        @app.post(
+            "/api/conversations/{conversation_id}/turns/{turn_id}/permissions/{request_id}",
+            response_model=PermissionRequestDTO,
+        )
+        async def resolve_turn_permission(
+            conversation_id: str,
+            turn_id: str,
+            request_id: str,
+            body: PermissionDecisionRequest,
+        ) -> PermissionRequestDTO:
+            return PermissionRequestDTO(
+                **conversation_service.resolve_permission_request(
+                    conversation_id,
+                    turn_id,
+                    request_id,
+                    decision=body.decision,
+                )
+            )
 
         @app.post(
             "/api/conversations/{conversation_id}/turns/{turn_id}/cancel",
@@ -1030,6 +1080,7 @@ def create_app(
             reasoning_mode=body.reasoning_mode or "auto",
             reasoning_effort=body.reasoning_effort,
             show_reasoning=bool(body.show_reasoning),
+            context_window_tokens=body.context_window_tokens,
         )
         controller.profile_store.create(profile)
         return profile_dto(profile, controller)
@@ -1050,6 +1101,7 @@ def create_app(
             reasoning_mode=body.reasoning_mode or "auto",
             reasoning_effort=body.reasoning_effort,
             show_reasoning=bool(body.show_reasoning),
+            context_window_tokens=body.context_window_tokens,
         )
         controller.profile_store.update(profile_id, profile)
         return profile_dto(profile, controller)

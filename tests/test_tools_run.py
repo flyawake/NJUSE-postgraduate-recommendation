@@ -6,6 +6,7 @@ import json
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -178,6 +179,49 @@ def test_head_tail_retention_and_omitted_report(env, monkeypatch):
     assert outcome.data["stdout_truncated"] is True
     assert outcome.data["stdout_omitted"] == 10_000
     assert outcome.data["stderr_truncated"] is False
+
+
+def test_real_process_output_is_drained_into_constant_size_head_tail(env):
+    _root, _tracker, executor = env
+    outcome = run(
+        executor,
+        "c1",
+        {
+            "argv": [sys.executable, "-c", "import sys; sys.stdout.write('a'*2000000)"],
+            "timeout_seconds": 10,
+            "purpose": "inspect",
+        },
+    )
+    assert outcome.ok is True
+    assert len(outcome.data["stdout"]) == 10_000
+    assert outcome.data["stdout_omitted"] == 1_990_000
+    assert outcome.data["stdout_truncated"] is True
+
+
+def test_windows_taskkill_failure_falls_back_to_process_kill(monkeypatch):
+    import coding_agent.tools.run_command_tool as module
+
+    class FakeProcess:
+        pid = 123
+
+        def __init__(self):
+            self.killed = False
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            self.killed = True
+
+    process = FakeProcess()
+    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=1),
+    )
+    module._terminate_tree(process)
+    assert process.killed is True
 
 
 def test_timeout_kills_long_command(env):

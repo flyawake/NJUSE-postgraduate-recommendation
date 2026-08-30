@@ -46,6 +46,10 @@ class ConversationPreferencesRequest(StrictModel):
     reasoning_effort: Optional[str] = None
 
 
+class ConversationCommandPolicyRequest(StrictModel):
+    command_policy: str
+
+
 class ConversationVersionRequest(StrictModel):
     expected_version: int = Field(ge=1)
     confirm: bool = False
@@ -57,6 +61,10 @@ class TurnCreateRequest(StrictModel):
     idempotency_key: Optional[str] = Field(default=None, max_length=128)
     profile_id: Optional[str] = None
     reasoning_effort: Optional[str] = None
+
+
+class PermissionDecisionRequest(StrictModel):
+    decision: str
 
 
 class WorkspaceValidateRequest(StrictModel):
@@ -73,6 +81,7 @@ class ProfileInput(StrictModel):
     reasoning_mode: Optional[str] = None
     reasoning_effort: Optional[str] = None
     show_reasoning: Optional[bool] = None
+    context_window_tokens: int = Field(default=128_000, ge=16_000, le=4_000_000)
 
 
 class CredentialSetRequest(StrictModel):
@@ -123,6 +132,7 @@ class ProfileDTO(BaseModel):
     reasoning_mode: str = "auto"
     reasoning_effort: Optional[str] = None
     show_reasoning: bool = False
+    context_window_tokens: int = 128_000
     credential: CredentialInfoDTO
 
 
@@ -183,6 +193,7 @@ class ConversationDTO(BaseModel):
     workspace_key: str
     profile_id: Optional[str] = None
     reasoning_effort: Optional[str] = None
+    command_policy: str = "ask"
     state: str
     version: int
     created_at: str
@@ -218,6 +229,21 @@ class AttachmentDTO(BaseModel):
     media_type: str
     kind: str
     size_bytes: int
+
+
+class PermissionRequestDTO(BaseModel):
+    id: str
+    conversation_id: str
+    turn_id: str
+    call_id: str
+    tool_name: str
+    executable: str
+    argv: List[str]
+    cwd: str
+    purpose: str
+    capabilities: List[str]
+    created_at: float
+    decision: Optional[str] = None
 
 
 class InboxEnqueueRequest(StrictModel):

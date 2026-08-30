@@ -23,6 +23,9 @@ DEFAULT_MAX_STEPS = 20
 DEFAULT_CHAR_BUDGET = 258_000
 MIN_MAX_STEPS = 1
 MAX_MAX_STEPS = 50
+DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
+MIN_CONTEXT_WINDOW_TOKENS = 16_000
+MAX_CONTEXT_WINDOW_TOKENS = 4_000_000
 
 
 @dataclass(frozen=True)
@@ -34,6 +37,7 @@ class Config:
     max_steps: int = DEFAULT_MAX_STEPS
     char_budget: int = DEFAULT_CHAR_BUDGET
     wire_api: str = WIRE_API_CHAT_COMPLETIONS
+    context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,7 @@ class ResolvedModelConnection:
     provider_id: str = "openai"
     reasoning_mode: str = "auto"
     reasoning_effort: Optional[str] = None
+    context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS
 
 
 def _profile_connection(
@@ -71,6 +76,7 @@ def _profile_connection(
         provider_id=profile.provider_id,
         reasoning_mode=profile.reasoning_mode,
         reasoning_effort=profile.reasoning_effort,
+        context_window_tokens=profile.context_window_tokens,
     )
 
 
@@ -89,6 +95,9 @@ def _legacy_connection(env: Dict[str, str]) -> ResolvedModelConnection:
         wire_api="openai_chat_completions",
         source="legacy-env",
         provider_id="openai",
+        context_window_tokens=_resolve_context_window(
+            env.get("OPENAI_CONTEXT_WINDOW_TOKENS")
+        ),
     )
 
 
@@ -156,6 +165,22 @@ def _resolve_steps(max_steps: Optional[int]) -> int:
     return steps
 
 
+def _resolve_context_window(value: Optional[str | int]) -> int:
+    if value is None or value == "":
+        return DEFAULT_CONTEXT_WINDOW_TOKENS
+    if isinstance(value, bool):
+        raise ConfigError("context window 必须是整数")
+    try:
+        tokens = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("OPENAI_CONTEXT_WINDOW_TOKENS 必须是整数") from exc
+    if not (MIN_CONTEXT_WINDOW_TOKENS <= tokens <= MAX_CONTEXT_WINDOW_TOKENS):
+        raise ConfigError(
+            f"context window 必须在 {MIN_CONTEXT_WINDOW_TOKENS}-{MAX_CONTEXT_WINDOW_TOKENS} 之间"
+        )
+    return tokens
+
+
 def load_config_from_connection(
     workspace: str | Path,
     connection: ResolvedModelConnection,
@@ -188,6 +213,7 @@ def load_config_from_connection(
         max_steps=_resolve_steps(max_steps),
         char_budget=DEFAULT_CHAR_BUDGET,
         wire_api=connection.wire_api,
+        context_window_tokens=connection.context_window_tokens,
     )
 
 
@@ -236,4 +262,7 @@ def load_config(
         base_url=resolved_base_url,
         max_steps=steps,
         char_budget=DEFAULT_CHAR_BUDGET,
+        context_window_tokens=_resolve_context_window(
+            environment.get("OPENAI_CONTEXT_WINDOW_TOKENS")
+        ),
     )

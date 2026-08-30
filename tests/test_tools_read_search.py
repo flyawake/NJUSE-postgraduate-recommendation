@@ -13,6 +13,7 @@ from coding_agent.tools.base import (
     DECODE_ERROR,
     INVALID_ARGUMENT,
     PATH_NOT_ALLOWED,
+    RESOURCE_LIMIT,
 )
 from coding_agent.tools.executor import ToolExecutor
 from coding_agent.tools.observation import FileObservationTracker
@@ -65,7 +66,9 @@ def test_glob_caps_at_100_and_reports_omitted(env):
     outcome = run(executor, "g1", "glob", {"pattern": "*.py"})
     assert outcome.data["count"] == 100
     assert len(outcome.data["matches"]) == 100
-    assert outcome.data["omitted_count"] == 20
+    assert outcome.data["omitted_count"] == 1
+    assert outcome.data["omitted_count_is_lower_bound"] is True
+    assert outcome.data["search_truncated"] is True
     assert outcome.data["hint"]
 
 
@@ -75,6 +78,19 @@ def test_glob_empty_match_is_success(env):
     assert outcome.ok is True
     assert outcome.data["count"] == 0
     assert outcome.data["matches"] == []
+
+
+def test_glob_stops_at_directory_entry_budget(env, monkeypatch):
+    import coding_agent.tools.glob_tool as module
+
+    root, _tracker, executor = env
+    for name in ("a.py", "b.py", "c.py"):
+        (root / name).write_text("", encoding="utf-8")
+    monkeypatch.setattr(module, "MAX_SCANNED_ENTRIES", 2)
+    outcome = run(executor, "g1", "glob", {"pattern": "*.py"})
+    assert outcome.data["scanned_entries"] == 2
+    assert outcome.data["search_truncated"] is True
+    assert len(outcome.data["matches"]) <= 2
 
 
 def test_glob_rejects_absolute_pattern_and_traversal(env):
@@ -143,9 +159,11 @@ def test_grep_caps_matches_at_200(env):
     root, _tracker, executor = env
     (root / "a.py").write_text("needle\n" * 250, encoding="utf-8")
     outcome = run(executor, "g1", "grep", {"pattern": "needle"})
-    assert outcome.data["match_count"] == 250
+    assert outcome.data["match_count"] == 200
     assert len(outcome.data["matches"]) == 200
-    assert outcome.data["omitted_count"] == 50
+    assert outcome.data["omitted_count"] == 1
+    assert outcome.data["omitted_count_is_lower_bound"] is True
+    assert outcome.data["search_truncated"] is True
 
 
 def test_grep_skips_binary_files(env):
@@ -223,6 +241,18 @@ def test_read_file_binary_is_decode_error(env):
     outcome = run(executor, "r1", "read_file", {"path": "bin.dat"})
     assert outcome.ok is False
     assert outcome.error.code == DECODE_ERROR
+
+
+def test_read_file_rejects_oversized_file_before_loading_it(env, monkeypatch):
+    import coding_agent.tools.read_file_tool as module
+
+    root, _tracker, executor = env
+    target = root / "huge.txt"
+    target.write_bytes(b"x")
+    monkeypatch.setattr(module, "MAX_FILE_BYTES", 0)
+    outcome = run(executor, "r1", "read_file", {"path": "huge.txt"})
+    assert outcome.ok is False
+    assert outcome.error.code == RESOURCE_LIMIT
 
 
 def test_read_file_rejects_absolute_and_traversal(env):

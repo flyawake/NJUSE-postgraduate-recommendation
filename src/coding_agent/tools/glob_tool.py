@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Dict, List
 
 from .base import PATH_NOT_ALLOWED, ToolEffect, ToolExecutionError, ToolSpec
 from .paths import existing_directory, is_within_workspace, normalize_rel
-from .search import matches_glob, should_skip_dir, validate_glob_pattern
+from .search import WalkBudget, iter_bounded_files, matches_glob, validate_glob_pattern
 
 MAX_MATCHES = 100
+MAX_SCANNED_ENTRIES = 50_000
 
 DESCRIPTION = (
     "Find files under a workspace directory using a glob pattern. Returns at "
     "most 100 relative paths, skips .git/.venv/node_modules and common "
-    "cache/build directories, and reports omitted counts."
+    "cache/build directories, and stops after 101 matches or 50,000 entries."
 )
 
 SCHEMA = {
@@ -53,17 +53,22 @@ def _handle(args: Dict, workspace_root) -> Dict[str, object]:
     rel_base = normalize_rel(args["path"])
     base = existing_directory(workspace_root, args["path"])
     matches: List[str] = []
-    for root, dirs, files in os.walk(base):
-        dirs[:] = sorted(d for d in dirs if not should_skip_dir(d))
-        for filename in sorted(files):
-            full = os.path.join(root, filename)
-            if not is_within_workspace(workspace_root, Path(full)):
-                continue
-            rel = os.path.relpath(full, base).replace(os.sep, "/")
-            if matches_glob(rel, filename, pattern):
-                matches.append(rel if rel_base == "." else f"{rel_base}/{rel}")
+    search_truncated = False
+    walk_budget = WalkBudget()
+    for full_path in iter_bounded_files(
+        Path(base), max_entries=MAX_SCANNED_ENTRIES, budget=walk_budget
+    ):
+        if not is_within_workspace(workspace_root, full_path):
+            continue
+        rel = full_path.relative_to(base).as_posix()
+        if matches_glob(rel, full_path.name, pattern):
+            matches.append(rel if rel_base == "." else f"{rel_base}/{rel}")
+            if len(matches) > MAX_MATCHES:
+                search_truncated = True
+                break
+    search_truncated = search_truncated or walk_budget.truncated
     matches.sort()
-    omitted = max(0, len(matches) - MAX_MATCHES)
+    omitted = 1 if search_truncated else 0
     kept = matches[:MAX_MATCHES]
     return {
         "path": rel_base,
@@ -71,6 +76,9 @@ def _handle(args: Dict, workspace_root) -> Dict[str, object]:
         "count": len(kept),
         "matches": kept,
         "omitted_count": omitted,
+        "omitted_count_is_lower_bound": search_truncated,
+        "search_truncated": search_truncated,
+        "scanned_entries": walk_budget.entries,
         "hint": "narrow pattern or path to see omitted matches" if omitted else None,
     }
 
