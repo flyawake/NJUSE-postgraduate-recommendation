@@ -1,8 +1,28 @@
-# coding-agent
+# Coding Agent
 
-一个完全本地实现核心循环的编程智能体（coding agent）MVP：模型只负责决策，项目代码负责对话历史、工具定义与执行、输出解析、循环终止和错误处理。它使用普通 `openai` Python 客户端，支持 OpenAI-compatible Chat Completions 与 OpenAI Responses，不依赖任何 agent 框架或 Agent SDK。
+一个核心逻辑完全在本地实现的编程智能体：模型负责决策，项目代码负责对话历史、上下文投影、工具定义与执行、模型输出解析、循环终止、持久化和错误处理。项目使用普通 `openai` Python 客户端接入 OpenAI-compatible Chat Completions 与 OpenAI Responses，不依赖任何 agent 框架或 Agent SDK。
 
 > 本实现是可审计的教学/原型内核。GUI 为每个对话持久保存 `run_command` 策略：每次询问、默认允许或默认拒绝；选择“每次询问”时会在启动进程前弹出一次性权限确认。允许后仍是在宿主机直接执行，**不是操作系统安全沙箱**。CLI/直接库调用属于显式可信模式，只应在可信或一次性工作区运行。
+
+## 功能亮点
+
+- **自研 Agent 内核**：显式状态机驱动模型请求、tool call、工具结果和完成判断，具备最大步数、重复调用、连续失败、协议错误和取消等独立终止条件。
+- **本地编程工具**：支持 `glob`、`grep`、`read_file`、`write_file`、`edit_file`、`run_command`、`web_search` 和 `web_fetch`；文件工具限制在工作区内，读写、搜索和命令输出均有资源上限。
+- **可靠上下文管理**：canonical history 只追加保存事实，每轮生成独立 request view，并同时检查字符、估算 token 与实际请求字节预算。
+- **持久多轮对话**：Conversation、Turn、消息、事件、Inbox、Memory、权限策略和文件变更写入 SQLite；刷新或重启后可恢复，未完成操作不会自动重放。
+- **流式与多协议模型适配**：统一处理 Chat Completions 与 Responses 的文本、reasoning、工具参数、usage、拒绝和失败事件；半截流不会污染下一轮历史。
+- **运行中控制**：支持取消、后台运行、严格 FIFO Queue，以及只在 AgentLoop 安全边界注入的 Steer。
+- **可控长期记忆**：Memory 支持 global/workspace/conversation 作用域、候选审批、来源追踪、版本替代、检索、删除和作用域清空，未经批准的候选不会进入模型上下文。
+- **完整本地 GUI**：支持附件、联网检索、文件 Diff、历史快照、主题与中英文切换；每个对话独立保存“每次询问/默认允许/默认拒绝”的命令权限。
+
+## 技术栈
+
+| 层次 | 技术 |
+| --- | --- |
+| Agent 与后端 | Python 3.10+、FastAPI、Uvicorn、OpenAI Python SDK、Python 标准库 |
+| 前端 | React 18、TypeScript、Vite、Tailwind CSS、Radix UI、TanStack Query、Lucide |
+| 数据与通信 | SQLite、REST/JSON、SSE、OpenAPI、本地内容寻址存储 |
+| 工程与测试 | uv、Hatchling、Ruff、pytest、Vitest、Testing Library、ESLint、Playwright |
 
 ## 安装
 
@@ -148,7 +168,7 @@ assistant ToolCall
 
 文件安全机制：拒绝绝对路径、`..` 越界和符号链接逃逸；搜索工具对 `os.walk` 的每个候选文件做逐候选 canonical containment 检查，`grep` 不读取、`glob` 不返回解析后位于 workspace 外的符号链接文件，也不跟随目录链接。只有成功 `read_file` 才建立观察（路径键统一规范化，`./a.txt` 与 `a.txt` 视为同一文件），覆盖/编辑前重新计算 SHA-256，未观察返回 `FILE_NOT_OBSERVED`、版本变化返回 `FILE_STALE`；写入走同目录临时文件 + flush/close + `os.replace`，成功后刷新观察。该机制是单进程下的尽力新鲜度防护，**不是跨进程 CAS 或沙箱**。
 
-### 持久多轮 GUI 服务（task_004）
+### 持久化多轮 Web 应用
 
 GUI 是 AgentLoop 的展示与控制适配层，不复制或重写内核：
 
@@ -174,6 +194,9 @@ FastAPI local app server (loopback only)
 - 凭据：`credentials.json` 与 config 分离，只有 `ref -> secret`，读取接口只返回 `configured/source/writable`；写入用同目录临时文件 + flush/fsync + `os.replace`（POSIX 目录 0700 / 文件 0600，尽力而为）；损坏文件拒绝写入并保留原文件。
 - 安全：仅监听 loopback；Host 必须为语法合法的 loopback 主机（IPv4/IPv6 字面量或 localhost，端口必须为数字，畸形 Host 直接 403）；Origin 必须与当前请求的 scheme/host/effective port **精确一致**；状态变更必须携带随机会话令牌；CSP 禁止外部脚本与 CDN。Composer 的命令权限选择写入 SQLite，按 conversation 隔离并在刷新/重启后恢复。切换到 `allow` 前必须在风险警告框中二次确认，取消不会修改持久设置；`ask` 在 `Popen` 前由内存权限 broker 暂停并展示完整 argv/cwd，`deny` 在进程创建前拒绝，`allow` 保留直接执行能力。挂起时改为允许/拒绝会立即处理当前申请。允许后进程仍可能访问工作区外文件、网络和继承环境，因此界面明确不把它表述为沙箱。
 - 前端：TypeScript + React + Vite + Tailwind（全部视觉值来自 design tokens）+ Radix Primitives（Dialog/Select/Tabs/Collapsible/AlertDialog）+ Lucide；TanStack Query 负责持久 snapshot 与按 cursor 拉取事件，投影器只增量处理新 event；legacy `/api/runs` 继续保留 SSE 兼容；i18n 资源完整 zh-CN/en-US，侧栏和文件审查在窄屏分别进入可访问 drawer。
+- 流式模型：Chat Completions 与 Responses adapter 向 AgentLoop 输出统一事件；reasoning 可按 profile 关闭、自动处理或在 provider 支持时展示，思考强度可按对话独立保存。失败的半截流会冻结为 abandoned attempt，使用同一 request view 重试，不追加 canonical history。
+- 运行中输入：持久 Inbox 区分 Queue 与 Steer；Queue 严格 FIFO，在当前 turn 结束后创建新 turn，Steer 只会在模型请求前或最终完成前的安全边界注入当前 turn。用户可编辑、排序、删除或重试队列项。
+- 可控记忆：MemoryService 提供 global/workspace/conversation 三种作用域、confirmed/candidate/superseded/rejected 生命周期、来源与采用审计、FTS5/词项回退索引，以及审批、编辑、拒绝、删除和 scope reset。候选提取独立于主 turn，失败不会改变主任务结果。
 - 聊天附件：Composer 支持选择、拖放与粘贴 PNG/JPEG/GIF/WebP，以及 PDF、UTF-8 文本/代码和常见 Office 文件。单文件≤10 MiB、每轮≤4 个且合计≤20 MiB；二进制保存在 `CODING_AGENT_HOME/attachments/`，SQLite/canonical history 只保存引用与元数据。turn 创建事务原子认领附件；ContextManager 在 detached request view 中将图片/文件映射到 Chat Completions 或 Responses 的对应输入格式，文本附件最多内联 50,000 字符。
 
 本机数据边界：`state.db` 保存对话、模型消息和运行事件，`artifacts/sha256/` 保存历史文件审查所需的有界快照，`attachments/sha256/` 保存聊天附件；它们均为本地明文，不由应用主动同步。模型上下文与用户选择的附件仍会发送给用户选择的 provider。归档只是可恢复隐藏；永久删除会清理该对话及不再被其他 turn 引用的快照/附件，绝不删除 workspace 项目文件。
@@ -202,6 +225,8 @@ FastAPI local app server (loopback only)
 
 ## 测试
 
+当前验收基线：Python `414 passed / 4 skipped`，前端单元测试 `70 passed`，Playwright 生产端到端测试 `13 passed`；同时通过 Ruff、TypeScript、ESLint、OpenAPI 一致性、Vite production build 与 Python wheel 构建。
+
 全部 Python 测试离线运行，使用 fake/scripted model 与真实临时工作区工具，不访问网络、不依赖真实 API 或开发者机器路径：
 
 ```powershell
@@ -225,17 +250,4 @@ npm run build        # 输出到 src/coding_agent/web/static（随 wheel 分发�
 npm run test:e2e     # Playwright + Fake Model：多轮、后台切换、文件审查、生命周期、窄屏生产闭环
 ```
 
-覆盖：配置与 CLI、模型响应标准化与重试分类、上下文投影与 canonical 不变性、六工具契约与边界、AgentLoop 全部终止分支，以及“glob → grep → read → edit → purpose=verify run → 最终答复”的离线闭环；GUI 另覆盖 profile/凭据/URL、安全边界、Conversation CRUD、多轮隔离、原子 turn、崩溃恢复、并发幂等/workspace lock、201 条分页、ChangeSet、command probe、artifact 完整性与精确 GC、前端组件/i18n，以及 production Fake Model 下的三轮对话、后台切换、归档恢复删除、历史 diff 和 320px drawer。
-
-## 已知限制
-
-- token 预算是 provider-neutral 保守估算，不等同于 provider 的精确 tokenizer；profile 必须填写模型实际 context window，另有独立请求字节上限兜底。
-- `glob`/`grep` 使用标准库，性能不与 ripgrep 等同；ripgrep 后端属于后续路线。
-- SHA-256 观察是单进程尽力新鲜度防护，存在跨进程 TOCTOU 窗口；不宣称事务或 CAS。
-- `run_command` 仍无操作系统级沙箱：GUI 的“每次询问/默认拒绝”可防止静默执行，但用户选择“默认允许”或批准单次命令后，任意可执行文件仍可能访问工作区外资源。CLI/库调用是可信模式。
-- 本地 GUI 服务只监听 `127.0.0.1`：任何本机进程/网页仍可能发起请求，因此状态变更要求随机会话令牌、Host/Origin 精确同源校验且页面使用 CSP；普通网页无法可靠返回本机目录绝对路径，工作区使用路径输入加后端校验。
-- 凭据文件是用户目录内的本地明文 JSON（Windows 上没有 OS 密钥串级别的加密），推荐使用环境变量；不宣称加密存储。
-- GUI 支持 `openai_chat_completions` 与 `openai_responses`；尚不支持 Anthropic Messages 或 OAuth，DeepSeek profile 只允许其 Chat Completions 兼容协议。
-- Queue/Steer 只在工具组已完整提交且没有工具执行的安全边界送入模型上下文，不会中断正在进行的模型请求或工具调用；跨会话 Memory 使用本地词项/FTS 检索，不提供 embedding 语义检索。
-- 默认允许最多 2 个不同 workspace 的后台 turn；相同 workspace 采用保守整轮互斥，不区分只读与写入任务。
-- 完成验证证据是“agent 声明的 verify 命令 + 退出码”，不是测试充分性证明。
+覆盖：配置与 CLI、两种模型协议、流式响应与重试分类、上下文投影与 canonical 不变性、工作区及联网工具契约、命令权限、AgentLoop 全部终止分支，以及“glob → grep → read → edit → purpose=verify run → 最终答复”的离线闭环；GUI 另覆盖 profile/凭据/URL、安全边界、Conversation CRUD、多轮隔离、原子 turn、崩溃恢复、Queue/Steer、Memory、附件、并发幂等/workspace lock、ChangeSet、artifact 完整性、前端组件与 i18n，以及 production Fake Model 下的多轮对话、后台切换、归档恢复删除、历史 Diff 和窄屏布局。
