@@ -152,6 +152,23 @@ class RuntimeRegistry:
     def workspace_owner(self, workspace_key: str) -> Optional[str]:
         return self._leases.owner(workspace_key)
 
+    def acquire_workspace_lease(
+        self, workspace_key: str, owner_id: str
+    ) -> Optional[str]:
+        """Acquire the same exclusive lease used by turn workers.
+
+        Synchronous workspace mutations such as checkpoint restore use this
+        seam so they cannot race a worker in another conversation.
+        Returns the current owner when busy, otherwise ``None``.
+        """
+
+        if self._leases.acquire(workspace_key, owner_id):
+            return None
+        return self._leases.owner(workspace_key)
+
+    def release_workspace_lease(self, workspace_key: str, owner_id: str) -> None:
+        self._leases.release(workspace_key, owner_id)
+
     def shutdown(self, timeout: float = 5.0) -> None:
         with self._lock:
             runtimes = list(self._runtimes.values())

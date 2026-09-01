@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import * as Dialog from "@radix-ui/react-dialog";
-import { ArrowUp, BookOpen, CircleStop, FileText, Folder, Globe2, ListPlus, Paperclip, ShieldAlert, SquareTerminal, TriangleAlert, X, Zap } from "lucide-react";
-import { api } from "@/api/client";
+import { ArrowUp, BookOpen, CircleStop, FileText, Folder, Globe2, ListPlus, Paperclip, RotateCcw, ShieldAlert, SquareTerminal, TriangleAlert, X, Zap } from "lucide-react";
+import { ApiError, api } from "@/api/client";
 import type { Attachment, ChangeSet, FileChange, ToolEvent, Turn } from "@/api/client";
 import { useI18n } from "@/lib/i18n";
 import { useGestureSwap } from "@/lib/gesturePreference";
@@ -14,6 +14,7 @@ import { QueueDock } from "./QueueDock";
 import { TurnChangeSummary } from "./TurnChangeSummary";
 import { TurnNavigator } from "./TurnNavigator";
 import { subscribeToConversationEvents, subscribeToInbox } from "@/lib/sse";
+import { apiErrorText, errorCodeText } from "@/lib/errorText";
 
 type CommandPolicy = "ask" | "allow" | "deny";
 
@@ -96,6 +97,8 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
   const [composerError, setComposerError] = useState<string | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
   const [uploadingCount, setUploadingCount] = useState(0);
+  const [restoreTarget, setRestoreTarget] = useState<Turn | null>(null);
+  const restoreIdempotencyKeyRef = useRef<string | null>(null);
   const previousConversationRef = useRef(conversationId);
 
   useEffect(() => {
@@ -242,6 +245,44 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
     enabled: turns.length > 0,
   });
   const activeTurn = turns.find((turn) => turn.active) ?? null;
+  const checkpointPreview = useQuery({
+    queryKey: ["checkpoint-preview", conversationId, restoreTarget?.id ?? null],
+    queryFn: () => restoreTarget
+      ? api.previewCheckpoint(conversationId, restoreTarget.id)
+      : Promise.reject(new Error("missing checkpoint target")),
+    enabled: Boolean(restoreTarget),
+    retry: false,
+  });
+  const restoreMutation = useMutation({
+    mutationFn: (turn: Turn) => api.restoreCheckpoint(conversationId, turn.id, {
+      confirm: true,
+      // Preserve the key across a manual retry.  The server may already have
+      // completed a request whose response was lost on the network.
+      idempotency_key: restoreIdempotencyKeyRef.current ??= newIdempotencyKey(),
+    }),
+    onSuccess: async (result) => {
+      setRestoreTarget(null);
+      restoreIdempotencyKeyRef.current = null;
+      setCurrentTurnId(result.target_turn_id);
+      followingRef.current = true;
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["turns", conversationId] }),
+        queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] }),
+        queryClient.invalidateQueries({ queryKey: ["conversations"] }),
+        queryClient.invalidateQueries({ queryKey: ["turn-change-sets", conversationId] }),
+        queryClient.invalidateQueries({ queryKey: ["inbox", conversationId] }),
+        queryClient.invalidateQueries({ queryKey: ["memories"] }),
+      ]);
+    },
+    onError: (error) => {
+      // A received HTTP error is a definitive response, so a deliberate
+      // retry is a new operation. Transport errors remain uncertain and keep
+      // the same key so the server can replay an already-completed result.
+      if (error instanceof ApiError && error.status > 0) {
+        restoreIdempotencyKeyRef.current = newIdempotencyKey();
+      }
+    },
+  });
   const permissionsQuery = useQuery({
     queryKey: ["turn-permissions", conversationId, activeTurn?.id ?? null],
     queryFn: () => activeTurn
@@ -584,6 +625,12 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
                 defaultThinkOpen={defaultThinkOpen}
                 onOpenArtifact={onOpenArtifact}
                 onOpenMemorySource={onOpenMemorySource}
+                onRestore={() => {
+                  restoreMutation.reset();
+                  restoreIdempotencyKeyRef.current = newIdempotencyKey();
+                  setRestoreTarget(turn);
+                }}
+                restoreDisabled={Boolean(activeTurn) || turn.id === turns[0]?.id}
               />
             ))}
           </div>
@@ -800,6 +847,92 @@ export function ConversationView({ conversationId, onOpenArtifact, onOpenMemoryS
           </div>
         </div>
       </div>
+      <AlertDialog.Root
+        open={restoreTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !restoreMutation.isPending) {
+            setRestoreTarget(null);
+            restoreIdempotencyKeyRef.current = null;
+          }
+        }}
+      >
+        <AlertDialog.Portal>
+          <AlertDialog.Overlay className="fixed inset-0 z-[85] bg-overlay" />
+          <AlertDialog.Content className="fixed left-1/2 top-1/2 z-[86] w-[min(34rem,94vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-surface p-5 shadow-md outline-none">
+            <AlertDialog.Title className="flex items-center gap-2 text-lg font-semibold">
+              <RotateCcw aria-hidden size={18} className="text-accent" />
+              {t("checkpoint.title", { index: restoreTarget?.ordinal ?? 0 })}
+            </AlertDialog.Title>
+            <AlertDialog.Description className="mt-3 text-sm leading-6 text-muted">
+              {t("checkpoint.description")}
+            </AlertDialog.Description>
+            {checkpointPreview.isLoading ? (
+              <p className="mt-4 text-sm text-muted" role="status">{t("common.loading")}</p>
+            ) : checkpointPreview.isError ? (
+              <InlineError message={apiErrorText(checkpointPreview.error, t)} kind="validation" />
+            ) : checkpointPreview.data ? (
+              <div className="mt-4 space-y-3">
+                <div className="rounded-md border border-border bg-surface-2 p-3 text-sm">
+                  <p>{t("checkpoint.summary", {
+                    turns: checkpointPreview.data.future_turn_count,
+                    files: checkpointPreview.data.file_count,
+                  })}</p>
+                  <p className="mt-1 text-xs text-muted">
+                    {t("checkpoint.actions", {
+                      create: checkpointPreview.data.create_count,
+                      modify: checkpointPreview.data.modify_count,
+                      delete: checkpointPreview.data.delete_count,
+                    })}
+                  </p>
+                </div>
+                {(checkpointPreview.data.affected_files ?? []).length > 0 ? (
+                  <ul className="max-h-32 overflow-y-auto rounded-md border border-border px-3 py-2 font-mono text-xs text-muted">
+                    {(checkpointPreview.data.affected_files ?? []).slice(0, 20).map((path) => (
+                      <li key={path} className="truncate py-0.5" title={path}>{path}</li>
+                    ))}
+                  </ul>
+                ) : null}
+                {(checkpointPreview.data.blockers ?? []).length > 0 ? (
+                  <div className="rounded-md border border-danger/40 bg-danger-muted p-3 text-sm text-danger" role="alert">
+                    <p className="font-medium">{t("checkpoint.blocked")}</p>
+                    <ul className="mt-1 list-disc space-y-1 pl-5 text-xs">
+                      {(checkpointPreview.data.blockers ?? []).map((blocker, index) => (
+                        <li key={`${blocker.code}-${blocker.path ?? index}`}>
+                          {errorCodeText(blocker.code, t)}{blocker.path ? ` · ${blocker.path}` : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <p className="text-xs leading-5 text-warning">{t("checkpoint.scopeWarning")}</p>
+                )}
+              </div>
+            ) : null}
+            {restoreMutation.isError ? (
+              <div className="mt-3"><InlineError message={apiErrorText(restoreMutation.error, t)} kind="run_failure" /></div>
+            ) : null}
+            <div className="mt-5 flex justify-end gap-2">
+              <AlertDialog.Cancel asChild>
+                <button type="button" className="btn-secondary" disabled={restoreMutation.isPending}>{t("common.cancel")}</button>
+              </AlertDialog.Cancel>
+              <AlertDialog.Action asChild>
+                <button
+                  type="button"
+                  className="btn-danger"
+                  disabled={!checkpointPreview.data?.restorable || restoreMutation.isPending}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    if (restoreTarget) restoreMutation.mutate(restoreTarget);
+                  }}
+                  data-testid="checkpoint-confirm"
+                >
+                  {restoreMutation.isPending ? t("checkpoint.restoring") : t("checkpoint.confirm")}
+                </button>
+              </AlertDialog.Action>
+            </div>
+          </AlertDialog.Content>
+        </AlertDialog.Portal>
+      </AlertDialog.Root>
       <AlertDialog.Root open={allowWarningOpen} onOpenChange={setAllowWarningOpen}>
         <AlertDialog.Portal>
           <AlertDialog.Overlay className="fixed inset-0 z-[80] bg-overlay" />
@@ -1040,6 +1173,8 @@ function ConversationTurn({
   defaultThinkOpen,
   onOpenArtifact,
   onOpenMemorySource,
+  onRestore,
+  restoreDisabled,
 }: {
   conversationId: string;
   turn: Turn;
@@ -1047,6 +1182,8 @@ function ConversationTurn({
   defaultThinkOpen: boolean;
   onOpenArtifact?: (turn: Turn, file: FileChange, files: FileChange[]) => void;
   onOpenMemorySource?: (conversationId: string, turnId?: string | null) => void;
+  onRestore?: () => void;
+  restoreDisabled?: boolean;
 }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -1159,7 +1296,22 @@ function ConversationTurn({
         <p className="mb-2 px-1 text-xs text-danger" role="status">{t("conversation.turnRejected")}</p>
       ) : null}
       {!turn.active && turn.state !== "rejected" ? (
-        <TurnChangeSummary changeSet={changeSet} onOpenFile={(file) => onOpenArtifact?.(turn, file, changeSet?.files ?? [])} />
+        <>
+          <TurnChangeSummary changeSet={changeSet} onOpenFile={(file) => onOpenArtifact?.(turn, file, changeSet?.files ?? [])} />
+          <div className="mt-2 flex justify-end">
+            <button
+              type="button"
+              className="btn-ghost inline-flex items-center gap-1.5 text-xs"
+              onClick={onRestore}
+              disabled={restoreDisabled}
+              title={restoreDisabled ? t("checkpoint.currentHint") : t("checkpoint.buttonHint")}
+              data-testid={`checkpoint-restore-${turn.id}`}
+            >
+              <RotateCcw aria-hidden size={13} />
+              {t("checkpoint.button")}
+            </button>
+          </div>
+        </>
       ) : null}
     </article>
   );

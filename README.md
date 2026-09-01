@@ -10,6 +10,7 @@
 - **本地编程工具**：支持 `glob`、`grep`、`read_file`、`write_file`、`edit_file`、`run_command`、`web_search` 和 `web_fetch`；文件工具限制在工作区内，读写、搜索和命令输出均有资源上限。
 - **可靠上下文管理**：canonical history 只追加保存事实，每轮生成独立 request view，并同时检查字符、估算 token 与实际请求字节预算。
 - **持久多轮对话**：Conversation、Turn、消息、事件、Inbox、Memory、权限策略和文件变更写入 SQLite；刷新或重启后可恢复，未完成操作不会自动重放。
+- **对话与工作区检查点**：每个已结束轮次可预检并返回；后续对话退出当前时间线，已完整捕获的工作区文件按内容指纹原子回溯，冲突时拒绝覆盖，中断后自动回滚或在重启时恢复。
 - **流式与多协议模型适配**：统一处理 Chat Completions 与 Responses 的文本、reasoning、工具参数、usage、拒绝和失败事件；半截流不会污染下一轮历史。
 - **运行中控制**：支持取消、后台运行、严格 FIFO Queue，以及只在 AgentLoop 安全边界注入的 Steer。
 - **可控长期记忆**：Memory 支持 global/workspace/conversation 作用域、候选审批、来源追踪、版本替代、检索、删除和作用域清空，未经批准的候选不会进入模型上下文。
@@ -76,7 +77,8 @@ uv run coding-agent ui --no-browser    # 仅打印地址（自动化测试用）
 3. 在底部 Composer 输入编程任务并点击右侧“开始运行”。同一对话可连续追问，模型上下文来自持久化 canonical history；切换到其他对话不会取消后台 turn。
 4. 中栏以连续平面展示工具活动、验证状态和最终答复。运行中同一按钮槽切换为“取消运行”；左栏用状态点显示后台运行。
 5. 每个 terminal turn 的末尾显示本轮净文件变化。点击文件才会打开右侧只读审查栏，可切换 Diff/修改前/修改后/当前文件；历史内容来自不可变快照，当前文件继续变化时会提示 divergence。关闭审查栏后中栏自动恢复宽度。
-6. 对话、turn、canonical message、公开事件和文件快照跨页面刷新及服务重启保持；崩溃时未完成 turn 只恢复为 `INTERRUPTED`，不会自动重放命令或文件写入。
+6. 已结束轮次末尾提供“回到此检查点”。确认框会先列出将退出当前时间线的后续轮次数、文件数和创建/修改/删除统计；存在运行中任务、待发送消息、不完整 ChangeSet、缺失快照或检查点外文件改动时会拒绝恢复。
+7. 对话、turn、canonical message、公开事件、检查点恢复日志和文件快照跨页面刷新及服务重启保持；崩溃时未完成 turn 只恢复为 `INTERRUPTED`，不会自动重放命令或文件写入。检查点恢复若在中途崩溃，下一次启动会依据持久日志把工作区回滚到恢复前状态。
 
 页面默认简体中文，可在右上角切换完整英文；主题支持跟随系统/浅色/深色。
 
@@ -189,6 +191,7 @@ FastAPI local app server (loopback only)
 - 每个 conversation 同时最多一个 active turn；相同 canonical workspace 整轮互斥，不同 workspace 进入默认上限为 2 的 `ThreadPoolExecutor`。页面 selection 与 runtime 解耦。
 - 文件变化按 turn 的首个 before 与最终 after 合并，成功 write/edit 是 confirmed 证据，`run_command` 使用有文件数/字节/时间预算的 workspace probe 补充副作用；超预算 fail-closed 为 incomplete，但不阻止主 turn 完成。
 - 文本 artifact 单个最多 1 MiB、单 turn 新增快照默认最多 20 MiB，CAS 按 SHA-256 去重并校验读取完整性；delete 事务清理引用，启动时可重试物理 GC。preview 只接受 conversation→turn→change 的层级 ID，不接受任意路径读取。
+- 检查点采用“预检计划 → 持久 prepared/applying 日志 → compare-before-write 原子文件替换 → SQLite 时间线提交”的顺序。恢复只覆盖目标轮次之后、`coverage=complete` 且 before/after CAS 快照完整的 ChangeSet；符号链接、路径碰撞、当前 SHA 不匹配、同工作区其他会话继续活动、Queue/Steer 未清空或运行中 turn 都会 fail-closed。文件阶段失败会反向补偿；进程退出后启动恢复器会回滚未提交操作。被回退的 turn 标为 `superseded` 并保留审计事实，active canonical/history/memory 投影不再读取它们。
 - API 错误使用稳定 `code` + 用户可读 `message` + 不含 secret 的 `field`；前端从不解析 message 判断逻辑。
 - Profile 存取：`config.json` 顶层固定 `version:1/active_profile/profiles`；profile ID 创建后不可改名；`wire_api` 支持 `openai_chat_completions` 与 `openai_responses`；ModelClientFactory 按 wire API 分派，AgentLoop 中不存在 provider 名称分支。
 - 凭据：`credentials.json` 与 config 分离，只有 `ref -> secret`，读取接口只返回 `configured/source/writable`；写入用同目录临时文件 + flush/fsync + `os.replace`（POSIX 目录 0700 / 文件 0600，尽力而为）；损坏文件拒绝写入并保留原文件。
@@ -199,7 +202,7 @@ FastAPI local app server (loopback only)
 - 可控记忆：MemoryService 提供 global/workspace/conversation 三种作用域、confirmed/candidate/superseded/rejected 生命周期、来源与采用审计、FTS5/词项回退索引，以及审批、编辑、拒绝、删除和 scope reset。候选提取独立于主 turn，失败不会改变主任务结果。
 - 聊天附件：Composer 支持选择、拖放与粘贴 PNG/JPEG/GIF/WebP，以及 PDF、UTF-8 文本/代码和常见 Office 文件。单文件≤10 MiB、每轮≤4 个且合计≤20 MiB；二进制保存在 `CODING_AGENT_HOME/attachments/`，SQLite/canonical history 只保存引用与元数据。turn 创建事务原子认领附件；ContextManager 在 detached request view 中将图片/文件映射到 Chat Completions 或 Responses 的对应输入格式，文本附件最多内联 50,000 字符。
 
-本机数据边界：`state.db` 保存对话、模型消息和运行事件，`artifacts/sha256/` 保存历史文件审查所需的有界快照，`attachments/sha256/` 保存聊天附件；它们均为本地明文，不由应用主动同步。模型上下文与用户选择的附件仍会发送给用户选择的 provider。归档只是可恢复隐藏；永久删除会清理该对话及不再被其他 turn 引用的快照/附件，绝不删除 workspace 项目文件。
+本机数据边界：`state.db` 保存对话、模型消息、运行事件和检查点恢复日志，`artifacts/sha256/` 保存历史文件审查及检查点回溯所需的有界快照，`attachments/sha256/` 保存聊天附件；它们均为本地明文，不由应用主动同步。模型上下文与用户选择的附件仍会发送给用户选择的 provider。归档只是可恢复隐藏；永久删除会清理该对话及不再被其他 turn 引用的快照/附件，绝不删除 workspace 项目文件。检查点也不会触碰未被 Agent ChangeSet 完整捕获的缓存、依赖目录或其他带外文件。
 
 ### 上下文投影
 
@@ -225,7 +228,7 @@ FastAPI local app server (loopback only)
 
 ## 测试
 
-当前验收基线：Python `414 passed / 4 skipped`，前端单元测试 `70 passed`，Playwright 生产端到端测试 `13 passed`；同时通过 Ruff、TypeScript、ESLint、OpenAPI 一致性、Vite production build 与 Python wheel 构建。
+当前验收基线：Python `421 passed / 4 skipped`，前端单元测试 `71 passed`，Playwright 生产端到端测试 `13 passed`；同时通过 Ruff、TypeScript、ESLint、OpenAPI 一致性、Vite production build 与 Python wheel 构建。
 
 全部 Python 测试离线运行，使用 fake/scripted model 与真实临时工作区工具，不访问网络、不依赖真实 API 或开发者机器路径：
 

@@ -35,7 +35,7 @@ from .domain import (
     payload_to_canonical_message,
 )
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 DEFAULT_BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA_SQL = """
@@ -87,6 +87,8 @@ CREATE TABLE IF NOT EXISTS turns (
     result_json TEXT,
     error_code TEXT,
     idempotency_key TEXT,
+    timeline_state TEXT NOT NULL DEFAULT 'active'
+        CHECK (timeline_state IN ('active', 'superseded')),
     UNIQUE (conversation_id, ordinal)
 );
 
@@ -276,6 +278,33 @@ CREATE TABLE IF NOT EXISTS artifact_refs (
     blob_id TEXT NOT NULL REFERENCES artifact_blobs(sha256) ON DELETE CASCADE,
     UNIQUE (blob_id, change_id, side)
 );
+
+CREATE TABLE IF NOT EXISTS restore_operations (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    target_turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+    workspace_key TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (
+        state IN ('prepared', 'applying', 'completed', 'rolled_back',
+                  'recovery_required')
+    ),
+    plan_json TEXT NOT NULL,
+    applied_steps INTEGER NOT NULL DEFAULT 0,
+    superseded_turn_count INTEGER NOT NULL DEFAULT 0,
+    restored_file_count INTEGER NOT NULL DEFAULT 0,
+    idempotency_key TEXT NOT NULL,
+    error_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE (conversation_id, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_restore_operations_recovery
+    ON restore_operations(state, updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_restore_operations_workspace_active
+    ON restore_operations(workspace_key)
+    WHERE state IN ('prepared', 'applying', 'recovery_required');
 """
 
 _MEMORY_SCHEMA_STATEMENTS = (
@@ -835,6 +864,67 @@ class SQLiteConversationRepository:
                                     "CHECK (command_policy IN "
                                     "('ask', 'allow', 'deny'))"
                                 )
+                    if current_version <= 16:
+                        has_turns = conn.execute(
+                            "SELECT name FROM sqlite_master "
+                            "WHERE type='table' AND name='turns'"
+                        ).fetchone()
+                        has_conversations = conn.execute(
+                            "SELECT name FROM sqlite_master "
+                            "WHERE type='table' AND name='conversations'"
+                        ).fetchone()
+                        if has_turns is not None:
+                            turn_columns = {
+                                str(row["name"])
+                                for row in conn.execute(
+                                    "PRAGMA table_info(turns)"
+                                ).fetchall()
+                            }
+                            if "timeline_state" not in turn_columns:
+                                conn.execute(
+                                    "ALTER TABLE turns ADD COLUMN timeline_state "
+                                    "TEXT NOT NULL DEFAULT 'active' CHECK "
+                                    "(timeline_state IN ('active', 'superseded'))"
+                                )
+                        if has_turns is not None and has_conversations is not None:
+                            conn.execute(
+                                """
+                            CREATE TABLE IF NOT EXISTS restore_operations (
+                                id TEXT PRIMARY KEY,
+                                conversation_id TEXT NOT NULL
+                                    REFERENCES conversations(id) ON DELETE CASCADE,
+                                target_turn_id TEXT NOT NULL
+                                    REFERENCES turns(id) ON DELETE CASCADE,
+                                workspace_key TEXT NOT NULL,
+                                state TEXT NOT NULL CHECK (
+                                    state IN ('prepared', 'applying', 'completed',
+                                              'rolled_back', 'recovery_required')
+                                ),
+                                plan_json TEXT NOT NULL,
+                                applied_steps INTEGER NOT NULL DEFAULT 0,
+                                superseded_turn_count INTEGER NOT NULL DEFAULT 0,
+                                restored_file_count INTEGER NOT NULL DEFAULT 0,
+                                idempotency_key TEXT NOT NULL,
+                                error_code TEXT,
+                                created_at TEXT NOT NULL,
+                                updated_at TEXT NOT NULL,
+                                completed_at TEXT,
+                                UNIQUE (conversation_id, idempotency_key)
+                            )
+                            """
+                            )
+                            conn.execute(
+                                "CREATE INDEX IF NOT EXISTS "
+                                "idx_restore_operations_recovery "
+                                "ON restore_operations(state, updated_at)"
+                            )
+                            conn.execute(
+                                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                                "idx_restore_operations_workspace_active "
+                                "ON restore_operations(workspace_key) "
+                                "WHERE state IN "
+                                "('prepared', 'applying', 'recovery_required')"
+                            )
                     conn.execute("DELETE FROM schema_meta")
                     conn.execute(
                         "INSERT INTO schema_meta(version, applied_at) VALUES (?, ?)",
@@ -1161,6 +1251,17 @@ class SQLiteConversationRepository:
                 raise KeyError("conversation_not_found")
             if int(current["version"]) != expected_version:
                 raise ValueError("version_conflict")
+            restoring = conn.execute(
+                """
+                SELECT 1 FROM restore_operations
+                WHERE conversation_id=?
+                  AND state IN ('prepared', 'applying', 'recovery_required')
+                LIMIT 1
+                """,
+                (conversation_id,),
+            ).fetchone()
+            if restoring is not None:
+                raise ValueError("checkpoint_restore_busy")
             archived_at = _utcnow() if state == "archived" else None
             next_version = int(current["version"]) + 1
             try:
@@ -1199,6 +1300,17 @@ class SQLiteConversationRepository:
                 raise KeyError("conversation_not_found")
             if int(current["version"]) != expected_version:
                 raise ValueError("version_conflict")
+            restoring = conn.execute(
+                """
+                SELECT 1 FROM restore_operations
+                WHERE conversation_id=?
+                  AND state IN ('prepared', 'applying', 'recovery_required')
+                LIMIT 1
+                """,
+                (conversation_id,),
+            ).fetchone()
+            if restoring is not None:
+                raise ValueError("checkpoint_restore_busy")
             candidates = [
                 str(row["blob_id"])
                 for row in conn.execute(
@@ -1712,6 +1824,9 @@ class SQLiteConversationRepository:
                     projected["version"] = payload["version"]
                 elif kind == "turn_started":
                     projected["last_activity_at"] = payload["last_activity_at"]
+                elif kind == "checkpoint_restored":
+                    projected["last_activity_at"] = payload["last_activity_at"]
+                    projected["version"] = payload["version"]
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             return False
         return all(
@@ -1754,6 +1869,7 @@ class SQLiteConversationRepository:
                 .execute(
                     """
                 SELECT * FROM turns WHERE conversation_id=?
+                  AND timeline_state='active'
                 ORDER BY ordinal DESC LIMIT 1
                 """,
                     (conversation_id,),
@@ -1771,7 +1887,7 @@ class SQLiteConversationRepository:
     ) -> Tuple[List[TurnRecord], Optional[str]]:
         if limit < 1 or limit > 100:
             raise ValueError("invalid_limit")
-        clauses = ["conversation_id=?"]
+        clauses = ["conversation_id=?", "timeline_state='active'"]
         params: List[Any] = [conversation_id]
         if cursor:
             try:
@@ -1798,6 +1914,375 @@ class SQLiteConversationRepository:
                 str(records[-1].ordinal).encode("ascii")
             ).decode("ascii")
         return records, next_cursor
+
+    def list_active_turns_after(
+        self, conversation_id: str, target_turn_id: str
+    ) -> Tuple[TurnRecord, List[TurnRecord]]:
+        """Return an active-lineage target and its later turns, newest first."""
+
+        with self._lock:
+            conn = self._connect()
+            target = conn.execute(
+                """
+                SELECT * FROM turns
+                WHERE id=? AND conversation_id=? AND timeline_state='active'
+                """,
+                (target_turn_id, conversation_id),
+            ).fetchone()
+            if target is None:
+                raise KeyError("checkpoint_not_on_active_timeline")
+            rows = conn.execute(
+                """
+                SELECT * FROM turns
+                WHERE conversation_id=? AND timeline_state='active' AND ordinal>?
+                ORDER BY ordinal DESC
+                """,
+                (conversation_id, int(target["ordinal"])),
+            ).fetchall()
+        return self._row_to_turn(target), [self._row_to_turn(row) for row in rows]
+
+    def is_turn_on_active_timeline(self, conversation_id: str, turn_id: str) -> bool:
+        with self._lock:
+            row = (
+                self._connect()
+                .execute(
+                    """
+                SELECT 1 FROM turns
+                WHERE id=? AND conversation_id=? AND timeline_state='active'
+                """,
+                    (turn_id, conversation_id),
+                )
+                .fetchone()
+            )
+        return row is not None
+
+    def has_pending_inbox_items(self, conversation_id: str) -> bool:
+        with self._lock:
+            row = (
+                self._connect()
+                .execute(
+                    """
+                SELECT 1 FROM inbox_items
+                WHERE conversation_id=?
+                  AND state IN ('queued', 'steer_pending', 'claimed', 'blocked')
+                LIMIT 1
+                """,
+                    (conversation_id,),
+                )
+                .fetchone()
+            )
+        return row is not None
+
+    def has_other_workspace_activity_after(
+        self,
+        workspace_key: str,
+        conversation_id: str,
+        finished_at: Optional[str],
+    ) -> bool:
+        """Detect known sequential edits from another conversation lineage."""
+
+        if not finished_at:
+            return True
+        with self._lock:
+            row = (
+                self._connect()
+                .execute(
+                    """
+                SELECT 1
+                FROM turns t
+                JOIN conversations c ON c.id=t.conversation_id
+                WHERE c.workspace_key=? AND c.id<>?
+                  AND t.timeline_state='active'
+                  AND COALESCE(t.finished_at, t.created_at)>?
+                  AND t.state<>'rejected'
+                LIMIT 1
+                """,
+                    (workspace_key, conversation_id, finished_at),
+                )
+                .fetchone()
+            )
+        return row is not None
+
+    # ------------------------------------------------------------ checkpoints
+
+    def create_restore_operation(
+        self,
+        *,
+        operation_id: str,
+        conversation_id: str,
+        target_turn_id: str,
+        workspace_key: str,
+        plan: Dict[str, Any],
+        idempotency_key: str,
+    ) -> Tuple[Dict[str, Any], bool]:
+        now = _utcnow()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                existing = conn.execute(
+                    """
+                    SELECT * FROM restore_operations
+                    WHERE conversation_id=? AND idempotency_key=?
+                    """,
+                    (conversation_id, idempotency_key),
+                ).fetchone()
+                if existing is not None:
+                    if str(existing["target_turn_id"]) != target_turn_id:
+                        raise ValueError("idempotency_conflict")
+                    conn.commit()
+                    return self._restore_row(existing), False
+                conn.execute(
+                    """
+                    INSERT INTO restore_operations(
+                        id, conversation_id, target_turn_id, workspace_key,
+                        state, plan_json, idempotency_key, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, 'prepared', ?, ?, ?, ?)
+                    """,
+                    (
+                        operation_id,
+                        conversation_id,
+                        target_turn_id,
+                        workspace_key,
+                        json.dumps(plan, ensure_ascii=False, sort_keys=True),
+                        idempotency_key,
+                        now,
+                        now,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM restore_operations WHERE id=?", (operation_id,)
+                ).fetchone()
+                conn.commit()
+            except sqlite3.IntegrityError as exc:
+                conn.rollback()
+                if self.has_unfinished_restore_for_workspace(workspace_key):
+                    raise ValueError("checkpoint_restore_busy") from exc
+                raise
+            except Exception:
+                conn.rollback()
+                raise
+        assert row is not None
+        return self._restore_row(row), True
+
+    def get_restore_operation(self, operation_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = (
+                self._connect()
+                .execute("SELECT * FROM restore_operations WHERE id=?", (operation_id,))
+                .fetchone()
+            )
+        return self._restore_row(row) if row is not None else None
+
+    def get_restore_operation_by_idempotency(
+        self, conversation_id: str, idempotency_key: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return an earlier request before rebuilding its now-stale plan.
+
+        A completed restore deliberately changes the active timeline, so a
+        repeated HTTP request can no longer pass normal checkpoint preflight.
+        Looking up the durable idempotency record first makes retries safe
+        after client timeouts and lost responses.
+        """
+
+        with self._lock:
+            row = (
+                self._connect()
+                .execute(
+                    """
+                SELECT * FROM restore_operations
+                WHERE conversation_id=? AND idempotency_key=?
+                """,
+                    (conversation_id, idempotency_key),
+                )
+                .fetchone()
+            )
+        return self._restore_row(row) if row is not None else None
+
+    def list_unfinished_restore_operations(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = (
+                self._connect()
+                .execute(
+                    """
+                SELECT * FROM restore_operations
+                WHERE state IN ('prepared', 'applying', 'recovery_required')
+                ORDER BY created_at, id
+                """
+                )
+                .fetchall()
+            )
+        return [self._restore_row(row) for row in rows]
+
+    def has_unfinished_restore_for_workspace(self, workspace_key: str) -> bool:
+        with self._lock:
+            row = (
+                self._connect()
+                .execute(
+                    """
+                SELECT 1 FROM restore_operations
+                WHERE workspace_key=?
+                  AND state IN ('prepared', 'applying', 'recovery_required')
+                LIMIT 1
+                """,
+                    (workspace_key,),
+                )
+                .fetchone()
+            )
+        return row is not None
+
+    def update_restore_operation(
+        self,
+        operation_id: str,
+        *,
+        state: Optional[str] = None,
+        applied_steps: Optional[int] = None,
+        error_code: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        assignments = ["updated_at=?"]
+        params: List[Any] = [_utcnow()]
+        if state is not None:
+            assignments.append("state=?")
+            params.append(state)
+        if applied_steps is not None:
+            assignments.append("applied_steps=?")
+            params.append(max(0, int(applied_steps)))
+        if error_code is not None:
+            assignments.append("error_code=?")
+            params.append(error_code)
+        params.append(operation_id)
+        with self._lock:
+            conn = self._connect()
+            cursor = conn.execute(
+                f"UPDATE restore_operations SET {', '.join(assignments)} WHERE id=?",
+                params,
+            )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                raise KeyError("restore_operation_not_found")
+            conn.commit()
+        row = self.get_restore_operation(operation_id)
+        assert row is not None
+        return row
+
+    def complete_restore_operation(
+        self,
+        operation_id: str,
+        *,
+        restored_file_count: int,
+    ) -> Dict[str, Any]:
+        """Atomically move the conversation head after files are restored."""
+
+        now = _utcnow()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                operation = conn.execute(
+                    "SELECT * FROM restore_operations WHERE id=?", (operation_id,)
+                ).fetchone()
+                if operation is None:
+                    raise KeyError("restore_operation_not_found")
+                if str(operation["state"]) == "completed":
+                    conn.commit()
+                    return self._restore_row(operation)
+                if str(operation["state"]) != "applying":
+                    raise ValueError("restore_operation_not_applying")
+                plan = json.loads(str(operation["plan_json"]))
+                conversation_id = str(operation["conversation_id"])
+                target = conn.execute(
+                    """
+                    SELECT * FROM turns
+                    WHERE id=? AND conversation_id=? AND timeline_state='active'
+                    """,
+                    (str(operation["target_turn_id"]), conversation_id),
+                ).fetchone()
+                if target is None:
+                    raise ValueError("checkpoint_not_on_active_timeline")
+                active = conn.execute(
+                    """
+                    SELECT 1 FROM turns WHERE conversation_id=?
+                      AND state IN ('pending', 'starting', 'running') LIMIT 1
+                    """,
+                    (conversation_id,),
+                ).fetchone()
+                if active is not None:
+                    raise ValueError("conversation_busy")
+                future_rows = conn.execute(
+                    """
+                    SELECT id FROM turns
+                    WHERE conversation_id=? AND timeline_state='active' AND ordinal>?
+                    """,
+                    (conversation_id, int(target["ordinal"])),
+                ).fetchall()
+                future_ids = [str(row["id"]) for row in future_rows]
+                expected_future_ids = [
+                    str(value) for value in plan.get("future_turn_ids", [])
+                ]
+                if sorted(future_ids) != sorted(expected_future_ids):
+                    raise ValueError("checkpoint_timeline_changed")
+                if future_ids:
+                    placeholders = ",".join("?" for _ in future_ids)
+                    conn.execute(
+                        f"UPDATE turns SET timeline_state='superseded' "
+                        f"WHERE id IN ({placeholders})",
+                        future_ids,
+                    )
+                current = conn.execute(
+                    "SELECT version FROM conversations WHERE id=?",
+                    (conversation_id,),
+                ).fetchone()
+                if current is None:
+                    raise KeyError("conversation_not_found")
+                version = int(current["version"]) + 1
+                conn.execute(
+                    """
+                    UPDATE conversations
+                    SET last_activity_at=?, version=? WHERE id=?
+                    """,
+                    (now, version, conversation_id),
+                )
+                conn.execute(
+                    """
+                    UPDATE restore_operations
+                    SET state='completed', applied_steps=?,
+                        superseded_turn_count=?, restored_file_count=?,
+                        updated_at=?, completed_at=?, error_code=NULL
+                    WHERE id=?
+                    """,
+                    (
+                        len(plan.get("steps", [])),
+                        len(future_ids),
+                        max(0, int(restored_file_count)),
+                        now,
+                        now,
+                        operation_id,
+                    ),
+                )
+                self._append_conversation_event(
+                    conn,
+                    conversation_id,
+                    "checkpoint_restored",
+                    {
+                        "operation_id": operation_id,
+                        "target_turn_id": str(target["id"]),
+                        "target_ordinal": int(target["ordinal"]),
+                        "superseded_turn_count": len(future_ids),
+                        "restored_file_count": max(0, int(restored_file_count)),
+                        "version": version,
+                        "last_activity_at": now,
+                    },
+                    now,
+                )
+                row = conn.execute(
+                    "SELECT * FROM restore_operations WHERE id=?", (operation_id,)
+                ).fetchone()
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        assert row is not None
+        return self._restore_row(row)
 
     def update_turn_state(
         self,
@@ -2041,7 +2526,10 @@ class SQLiteConversationRepository:
                 SELECT ci.canonical_seq, ci.payload_json
                 FROM canonical_items ci
                 JOIN canonical_groups cg ON cg.id = ci.group_id
-                WHERE ci.conversation_id=? AND cg.state IN ('committed', 'recovered')
+                JOIN turns t ON t.id = ci.turn_id
+                WHERE ci.conversation_id=?
+                  AND t.timeline_state='active'
+                  AND cg.state IN ('committed', 'recovered')
                 ORDER BY ci.canonical_seq
                 """,
                 (conversation_id,),
@@ -4238,6 +4726,23 @@ class SQLiteConversationRepository:
     # ------------------------------------------------------------ helpers
 
     @staticmethod
+    def _restore_row(row: sqlite3.Row) -> Dict[str, Any]:
+        result = dict(row)
+        try:
+            plan = json.loads(str(result.pop("plan_json")))
+            if not isinstance(plan, dict):
+                raise ValueError("restore plan must be an object")
+            result["plan"] = plan
+            result["plan_corrupt"] = False
+        except (TypeError, ValueError, json.JSONDecodeError):
+            # A damaged recovery journal must not prevent the application from
+            # starting.  The recovery worker will fail closed, retain the
+            # workspace-wide recovery lock, and expose recovery_required.
+            result["plan"] = {"version": 0, "steps": []}
+            result["plan_corrupt"] = True
+        return result
+
+    @staticmethod
     def _row_to_conversation(row: sqlite3.Row) -> ConversationRecord:
         return ConversationRecord(
             id=str(row["id"]),
@@ -4269,6 +4774,11 @@ class SQLiteConversationRepository:
             finished_at=row["finished_at"],
             result_json=row["result_json"],
             error_code=row["error_code"],
+            timeline_state=(
+                str(row["timeline_state"])
+                if "timeline_state" in row.keys()
+                else "active"
+            ),
         )
 
     @staticmethod

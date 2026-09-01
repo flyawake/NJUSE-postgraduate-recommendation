@@ -63,6 +63,11 @@ class TurnCreateRequest(StrictModel):
     reasoning_effort: Optional[str] = None
 
 
+class CheckpointRestoreRequest(StrictModel):
+    confirm: bool = False
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
 class PermissionDecisionRequest(StrictModel):
     decision: str
 
@@ -219,6 +224,7 @@ class TurnDTO(BaseModel):
     finished_at: Optional[str] = None
     result: Optional[Dict[str, Any]] = None
     error_code: Optional[str] = None
+    timeline_state: str = "active"
     active: bool = False
     attachments: List["AttachmentDTO"] = Field(default_factory=list)
 
@@ -402,6 +408,39 @@ class StreamSnapshotDTO(BaseModel):
 class TurnPageDTO(BaseModel):
     items: List[TurnDTO]
     next_cursor: Optional[str] = None
+
+
+class CheckpointBlockerDTO(BaseModel):
+    code: str
+    message: str
+    path: Optional[str] = None
+    turn_id: Optional[str] = None
+
+
+class CheckpointPreviewDTO(BaseModel):
+    conversation_id: str
+    target_turn_id: str
+    target_ordinal: int
+    future_turn_count: int
+    file_count: int
+    create_count: int
+    modify_count: int
+    delete_count: int
+    restorable: bool
+    coverage: str
+    affected_files: List[str] = Field(default_factory=list)
+    blockers: List[CheckpointBlockerDTO] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class CheckpointRestoreDTO(BaseModel):
+    operation_id: str
+    conversation_id: str
+    target_turn_id: str
+    state: str
+    superseded_turn_count: int
+    restored_file_count: int
+    completed_at: Optional[str] = None
 
 
 class FileChangeDTO(BaseModel):

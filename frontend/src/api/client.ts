@@ -17,6 +17,9 @@ export type ConversationPage = components["schemas"]["ConversationPageDTO"];
 export type Turn = components["schemas"]["TurnDTO"];
 export type Attachment = components["schemas"]["AttachmentDTO"];
 export type TurnPage = components["schemas"]["TurnPageDTO"];
+export type CheckpointPreview = components["schemas"]["CheckpointPreviewDTO"];
+export type CheckpointRestore = components["schemas"]["CheckpointRestoreDTO"];
+export type CheckpointRestoreRequest = components["schemas"]["CheckpointRestoreRequest"];
 export type StreamCheckpoint = components["schemas"]["StreamCheckpointDTO"];
 export type StreamSnapshot = components["schemas"]["StreamSnapshotDTO"];
 export type ChangeSet = components["schemas"]["ChangeSetDTO"];
@@ -269,6 +272,17 @@ export const api = {
 
   getTurn: (id: string, turnId: string) =>
     apiFetch<Turn>(`/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}`),
+
+  previewCheckpoint: (id: string, turnId: string) =>
+    apiFetch<CheckpointPreview>(
+      `/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/checkpoint`
+    ),
+
+  restoreCheckpoint: (id: string, turnId: string, input: CheckpointRestoreRequest) =>
+    apiFetch<CheckpointRestore>(
+      `/api/conversations/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/checkpoint/restore`,
+      { method: "POST", body: JSON.stringify(input) }
+    ),
 
   getTurnEvents: (id: string, turnId: string, params?: { afterSeq?: number; limit?: number }) => {
     const query = new URLSearchParams();

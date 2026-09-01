@@ -422,6 +422,21 @@ class MemoryService:
             limit=max(64, MEMORY_DEFAULT_TOP_K * 8),
         )
         raw_rows = self._repo.get_memory_entries_by_ids(candidate_ids)
+        # A checkpoint restore removes later turns from the active dialogue
+        # lineage.  Memories sourced from those superseded turns must not leak
+        # "future" facts back into the restored conversation.  Shared memories
+        # from other conversations remain independent, user-controlled facts.
+        raw_rows = [
+            row
+            for row in raw_rows
+            if not (
+                row.get("source_conversation_id") == conversation_id
+                and row.get("source_turn_id")
+                and not self._repo.is_turn_on_active_timeline(
+                    conversation_id, str(row["source_turn_id"])
+                )
+            )
+        ]
         ranked = self._rank_rows(raw_rows, set(terms_for_query(user_text)))[
             :MEMORY_DEFAULT_TOP_K
         ]

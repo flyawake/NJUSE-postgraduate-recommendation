@@ -30,6 +30,11 @@ from ..attachments import (
 )
 from ..changes.collector import ToolChangeCollector
 from ..changes.diff import MAX_DIFF_LINES, MAX_FILE_BYTES, build_diff
+from ..checkpoints import (
+    CheckpointError,
+    WorkspaceCheckpointRestorer,
+    summarize_actions,
+)
 from ..completion import CompletionPolicy
 from ..config import (
     DEFAULT_CHAR_BUDGET,
@@ -309,6 +314,9 @@ class ConversationService:
         self.runtime = RuntimeRegistry(max_workers=max_workers)
         self._artifact_store = ArtifactStore(resolved_home / "artifacts")
         self._attachment_store = AttachmentStore(resolved_home / "attachments")
+        self._restore_locks: Dict[str, threading.Lock] = {}
+        self._restore_locks_lock = threading.RLock()
+        self._recover_restore_operations()
         # A crash can occur after an atomic CAS rename but before the DB ref
         # transaction, or after DB GC but before physical unlink. Startup
         # reconciliation is idempotent and never removes a referenced blob.
@@ -819,6 +827,10 @@ class ConversationService:
                 "conversation_not_found", "会话不存在"
             ) from exc
         except ValueError as exc:
+            if str(exc) == "checkpoint_restore_busy":
+                raise ConversationServiceError(
+                    "checkpoint_restore_busy", "检查点恢复期间不能删除会话"
+                ) from exc
             raise ConversationServiceError(
                 "version_conflict", "会话已被其他端修改", field="version"
             ) from exc
@@ -911,6 +923,306 @@ class ConversationService:
         record = self._require_turn(conversation_id, turn_id)
         return self._turn_to_dict(record)
 
+    def preview_checkpoint_restore(
+        self, conversation_id: str, turn_id: str
+    ) -> Dict[str, Any]:
+        """Return a compare-before-write restore plan without changing state."""
+
+        conversation = self._require_conversation(conversation_id)
+        if conversation.state != ConversationState.ACTIVE.value:
+            raise ConversationServiceError(
+                "conversation_archived", "已归档会话不能恢复检查点"
+            )
+        try:
+            target, future_turns = self._repository.list_active_turns_after(
+                conversation_id, turn_id
+            )
+        except KeyError as exc:
+            raise ConversationServiceError(
+                "checkpoint_not_on_active_timeline", "检查点不在当前对话时间线"
+            ) from exc
+        blockers: List[Dict[str, Any]] = []
+        if not target.is_terminal:
+            blockers.append(
+                {
+                    "code": "checkpoint_turn_not_terminal",
+                    "message": "只能恢复到已完成的对话轮次",
+                }
+            )
+        if not future_turns:
+            blockers.append(
+                {
+                    "code": "checkpoint_is_current",
+                    "message": "当前已经位于该检查点",
+                }
+            )
+        if self.runtime.is_active(conversation_id) or self._repository.get_active_turn(
+            conversation_id
+        ):
+            blockers.append(
+                {
+                    "code": "conversation_busy",
+                    "message": "会话运行中，不能恢复检查点",
+                }
+            )
+        if self._repository.has_pending_inbox_items(conversation_id):
+            blockers.append(
+                {
+                    "code": "checkpoint_inbox_not_empty",
+                    "message": "请先处理或删除待发送消息",
+                }
+            )
+        if self._repository.has_other_workspace_activity_after(
+            conversation.workspace_key, conversation_id, target.finished_at
+        ):
+            blockers.append(
+                {
+                    "code": "checkpoint_workspace_diverged",
+                    "message": "同一工作区已被其他会话继续修改",
+                }
+            )
+        if self._repository.has_unfinished_restore_for_workspace(
+            conversation.workspace_key
+        ):
+            blockers.append(
+                {
+                    "code": "checkpoint_recovery_required",
+                    "message": "工作区存在尚未完成恢复的检查点操作",
+                }
+            )
+
+        change_sets: List[Dict[str, Any]] = []
+        for future in future_turns:
+            if future.state == TurnState.REJECTED.value:
+                continue
+            change_set = self._repository.get_change_set(conversation_id, future.id)
+            if change_set is None:
+                blockers.append(
+                    {
+                        "code": "checkpoint_change_set_missing",
+                        "message": "后续轮次没有完整的文件变更记录",
+                        "turn_id": future.id,
+                    }
+                )
+                continue
+            change_sets.append(change_set)
+
+        workspace = Path(conversation.workspace_path)
+        if not workspace.is_dir():
+            blockers.append(
+                {
+                    "code": "invalid_workspace",
+                    "message": "会话工作区已不可用",
+                }
+            )
+            plan = {
+                "version": 1,
+                "target_turn_id": turn_id,
+                "future_turn_ids": [item.id for item in future_turns],
+                "steps": [],
+                "affected_files": [],
+                "blockers": [],
+            }
+        else:
+            try:
+                restorer = WorkspaceCheckpointRestorer(workspace, self._artifact_store)
+                plan = restorer.build_plan(
+                    change_sets,
+                    target_turn_id=turn_id,
+                    future_turn_ids=[item.id for item in future_turns],
+                )
+            except (OSError, RuntimeError):
+                blockers.append(
+                    {
+                        "code": "invalid_workspace",
+                        "message": "会话工作区无法安全解析",
+                    }
+                )
+                plan = {
+                    "version": 1,
+                    "target_turn_id": turn_id,
+                    "future_turn_ids": [item.id for item in future_turns],
+                    "steps": [],
+                    "affected_files": [],
+                    "blockers": [],
+                }
+        blockers.extend(plan.get("blockers", []))
+        plan["blockers"] = blockers
+        counts = summarize_actions(plan)
+        return {
+            "conversation_id": conversation_id,
+            "target_turn_id": turn_id,
+            "target_ordinal": target.ordinal,
+            "future_turn_count": len(future_turns),
+            "file_count": len(plan.get("affected_files", [])),
+            "create_count": counts["create"],
+            "modify_count": counts["modify"],
+            "delete_count": counts["delete"],
+            "restorable": not blockers,
+            "coverage": "complete" if not blockers else "blocked",
+            "affected_files": list(plan.get("affected_files", [])),
+            "blockers": blockers,
+            "warnings": ["checkpoint_restores_captured_workspace_files_only"],
+            "_plan": plan,
+        }
+
+    def restore_checkpoint(
+        self,
+        conversation_id: str,
+        turn_id: str,
+        *,
+        idempotency_key: str,
+        confirm: bool,
+    ) -> Dict[str, Any]:
+        if not confirm:
+            raise ConversationServiceError(
+                "confirmation_required", "恢复检查点需要显式确认", field="confirm"
+            )
+        if not idempotency_key or len(idempotency_key) > 128:
+            raise ConversationServiceError(
+                "invalid_request", "恢复请求缺少有效的幂等键", field="idempotency_key"
+            )
+        conversation = self._require_conversation(conversation_id)
+        with self._restore_locks_lock:
+            restore_lock = self._restore_locks.setdefault(
+                conversation_id, threading.Lock()
+            )
+        if not restore_lock.acquire(blocking=False):
+            raise ConversationServiceError(
+                "checkpoint_restore_busy", "该会话已有恢复操作正在进行"
+            )
+        owner_id = f"restore:{conversation_id}:{uuid.uuid4().hex}"
+        lease_acquired = False
+        try:
+            prior = self._repository.get_restore_operation_by_idempotency(
+                conversation_id, idempotency_key
+            )
+            if prior is not None:
+                if str(prior["target_turn_id"]) != turn_id:
+                    raise ConversationServiceError(
+                        "idempotency_conflict",
+                        "该幂等键已用于另一个检查点恢复请求",
+                        field="idempotency_key",
+                    )
+                if prior["state"] == "completed":
+                    return self._restore_result(prior)
+                if prior["state"] in {"prepared", "applying"}:
+                    raise ConversationServiceError(
+                        "checkpoint_restore_busy",
+                        "此前的同一恢复请求仍在处理中",
+                    )
+                if prior["state"] in {"rolled_back", "recovery_required"}:
+                    raise ConversationServiceError(
+                        "checkpoint_restore_failed",
+                        "此前的同一恢复请求未完成，请使用新的请求重试",
+                    )
+            owner = self.runtime.acquire_workspace_lease(
+                conversation.workspace_key, owner_id
+            )
+            if owner is not None:
+                raise ConversationServiceError(
+                    "workspace_busy", "同一工作区已有其他操作运行", field="workspace"
+                )
+            lease_acquired = True
+            preview = self.preview_checkpoint_restore(conversation_id, turn_id)
+            if not preview["restorable"]:
+                first = preview["blockers"][0]
+                raise ConversationServiceError(
+                    str(first.get("code", "checkpoint_not_restorable")),
+                    str(first.get("message", "该检查点当前无法安全恢复")),
+                    field=first.get("path"),
+                )
+            plan = dict(preview.pop("_plan"))
+            try:
+                operation, created = self._repository.create_restore_operation(
+                    operation_id=uuid.uuid4().hex,
+                    conversation_id=conversation_id,
+                    target_turn_id=turn_id,
+                    workspace_key=conversation.workspace_key,
+                    plan=plan,
+                    idempotency_key=idempotency_key,
+                )
+            except ValueError as exc:
+                code = str(exc)
+                if code == "idempotency_conflict":
+                    raise ConversationServiceError(
+                        code,
+                        "该幂等键已用于另一个检查点恢复请求",
+                        field="idempotency_key",
+                    ) from exc
+                if code == "checkpoint_restore_busy":
+                    raise ConversationServiceError(
+                        code, "同一工作区已有检查点恢复操作"
+                    ) from exc
+                raise
+            if not created:
+                if operation["state"] == "completed":
+                    return self._restore_result(operation)
+                if operation["state"] in {"rolled_back", "recovery_required"}:
+                    raise ConversationServiceError(
+                        "checkpoint_restore_failed",
+                        "此前的同一恢复请求未完成，请使用新的请求重试",
+                    )
+            operation_id = str(operation["id"])
+            self._repository.update_restore_operation(
+                operation_id, state="applying", applied_steps=0
+            )
+            restorer = WorkspaceCheckpointRestorer(
+                Path(conversation.workspace_path), self._artifact_store
+            )
+            try:
+                restored_files = restorer.apply(
+                    plan,
+                    on_progress=lambda count: self._repository.update_restore_operation(
+                        operation_id, applied_steps=count
+                    ),
+                )
+                restorer.verify_applied(plan)
+                completed = self._repository.complete_restore_operation(
+                    operation_id, restored_file_count=restored_files
+                )
+                return self._restore_result(completed)
+            except Exception as exc:
+                logger.exception("checkpoint restore failed: %s", operation_id)
+                error_code = (
+                    exc.code
+                    if isinstance(exc, CheckpointError)
+                    else "checkpoint_timeline_changed"
+                    if isinstance(exc, ValueError)
+                    and str(exc) == "checkpoint_timeline_changed"
+                    else "checkpoint_restore_failed"
+                )
+                try:
+                    restorer.rollback(plan)
+                    self._repository.update_restore_operation(
+                        operation_id,
+                        state="rolled_back",
+                        error_code=error_code,
+                    )
+                except Exception:
+                    logger.exception(
+                        "checkpoint restore rollback requires recovery: %s",
+                        operation_id,
+                    )
+                    self._repository.update_restore_operation(
+                        operation_id,
+                        state="recovery_required",
+                        error_code="checkpoint_recovery_required",
+                    )
+                    raise ConversationServiceError(
+                        "checkpoint_recovery_required",
+                        "恢复中断且自动回滚未完成；请停止修改工作区并重启应用",
+                    ) from exc
+                raise ConversationServiceError(
+                    error_code, "检查点恢复失败，工作区已自动回滚"
+                ) from exc
+        finally:
+            if lease_acquired:
+                self.runtime.release_workspace_lease(
+                    conversation.workspace_key, owner_id
+                )
+            restore_lock.release()
+
     def start_turn(
         self,
         conversation_id: str,
@@ -933,6 +1245,11 @@ class ConversationService:
             )
             if stored_turn is not None:
                 return self._turn_to_dict(stored_turn)
+        if self._repository.has_unfinished_restore_for_workspace(record.workspace_key):
+            raise ConversationServiceError(
+                "checkpoint_recovery_required",
+                "工作区存在尚未安全结束的检查点恢复；请重启应用完成恢复",
+            )
         if self._repository.get_active_turn(conversation_id) is not None:
             raise ConversationServiceError(
                 "conversation_busy", "该会话已有正在运行的 turn"
@@ -1544,6 +1861,10 @@ class ConversationService:
                 "conversation_not_found", "会话不存在"
             ) from exc
         except ValueError as exc:
+            if str(exc) == "checkpoint_restore_busy":
+                raise ConversationServiceError(
+                    "checkpoint_restore_busy", "检查点恢复期间不能归档或取消归档"
+                ) from exc
             raise ConversationServiceError(
                 "version_conflict", "会话已被其他端修改", field="version"
             ) from exc
@@ -1837,6 +2158,57 @@ class ConversationService:
         # Kept as a convenience seam for custom loop builders.
         return loop.run_turn(task, history=history)
 
+    def _recover_restore_operations(self) -> None:
+        """Roll back file mutations whose timeline transaction never committed."""
+
+        for operation in self._repository.list_unfinished_restore_operations():
+            operation_id = str(operation["id"])
+            if operation["state"] == "prepared":
+                self._repository.update_restore_operation(
+                    operation_id,
+                    state="rolled_back",
+                    error_code="checkpoint_process_restarted",
+                )
+                continue
+            conversation = self._repository.get_conversation(
+                str(operation["conversation_id"])
+            )
+            if conversation is None:
+                continue
+            try:
+                workspace = Path(conversation.workspace_path)
+                restorer = WorkspaceCheckpointRestorer(workspace, self._artifact_store)
+                restorer.rollback(dict(operation["plan"]))
+                self._repository.update_restore_operation(
+                    operation_id,
+                    state="rolled_back",
+                    error_code="checkpoint_process_restarted",
+                )
+                logger.warning(
+                    "rolled back interrupted checkpoint restore %s", operation_id
+                )
+            except Exception:
+                logger.exception(
+                    "checkpoint restore requires manual recovery: %s", operation_id
+                )
+                self._repository.update_restore_operation(
+                    operation_id,
+                    state="recovery_required",
+                    error_code="checkpoint_recovery_required",
+                )
+
+    @staticmethod
+    def _restore_result(operation: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "operation_id": str(operation["id"]),
+            "conversation_id": str(operation["conversation_id"]),
+            "target_turn_id": str(operation["target_turn_id"]),
+            "state": str(operation["state"]),
+            "superseded_turn_count": int(operation.get("superseded_turn_count", 0)),
+            "restored_file_count": int(operation.get("restored_file_count", 0)),
+            "completed_at": operation.get("completed_at"),
+        }
+
     def _require_conversation(self, conversation_id: str) -> ConversationRecord:
         record = self._repository.get_conversation(conversation_id)
         if record is None:
@@ -1890,6 +2262,7 @@ class ConversationService:
             "finished_at": record.finished_at,
             "result": result,
             "error_code": record.error_code,
+            "timeline_state": record.timeline_state,
             "active": record.is_active,
             "attachments": [
                 self._attachment_to_dict(item)

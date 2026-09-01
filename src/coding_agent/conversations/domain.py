@@ -35,6 +35,13 @@ class TurnState(str, Enum):
     REJECTED = "rejected"
 
 
+class TimelineState(str, Enum):
+    """Whether a turn belongs to the conversation's current visible lineage."""
+
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
+
+
 class CanonicalGroupState(str, Enum):
     PENDING = "pending"
     COMMITTED = "committed"
@@ -95,6 +102,7 @@ class TurnRecord:
     finished_at: Optional[str] = None
     result_json: Optional[str] = None
     error_code: Optional[str] = None
+    timeline_state: str = TimelineState.ACTIVE.value
 
     @property
     def is_active(self) -> bool:

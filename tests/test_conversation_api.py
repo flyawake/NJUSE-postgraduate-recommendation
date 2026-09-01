@@ -137,6 +137,48 @@ class TestConversationApi:
         assert changes.status_code == 200
         assert changes.json()["file_count"] == 0
 
+    def test_checkpoint_preview_and_restore_routes(self, api):
+        client, headers, _service, _model, ws = api
+        conversation = client.post(
+            "/api/conversations",
+            json={"workspace": str(ws), "profile_id": None},
+            headers=headers,
+        ).json()
+        conversation_id = conversation["id"]
+        first = client.post(
+            f"/api/conversations/{conversation_id}/turns",
+            json={"content": "first", "idempotency_key": "turn-first"},
+            headers=headers,
+        ).json()
+        wait_turn_via_api(client, headers, conversation_id, first["id"])
+        second = client.post(
+            f"/api/conversations/{conversation_id}/turns",
+            json={"content": "second", "idempotency_key": "turn-second"},
+            headers=headers,
+        ).json()
+        wait_turn_via_api(client, headers, conversation_id, second["id"])
+
+        preview = client.get(
+            f"/api/conversations/{conversation_id}/turns/{first['id']}/checkpoint",
+            headers=headers,
+        )
+        assert preview.status_code == 200
+        assert preview.json()["restorable"] is True
+        assert preview.json()["future_turn_count"] == 1
+
+        restored = client.post(
+            f"/api/conversations/{conversation_id}/turns/{first['id']}"
+            "/checkpoint/restore",
+            json={"confirm": True, "idempotency_key": "restore-first"},
+            headers=headers,
+        )
+        assert restored.status_code == 200
+        assert restored.json()["superseded_turn_count"] == 1
+        turns = client.get(
+            f"/api/conversations/{conversation_id}/turns", headers=headers
+        ).json()["items"]
+        assert [turn["id"] for turn in turns] == [first["id"]]
+
     def test_start_turn_accepts_reasoning_effort(self, api):
         client, headers, _service, _model, ws = api
         conv = client.post(

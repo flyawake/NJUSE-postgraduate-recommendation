@@ -334,6 +334,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/conversations/{conversation_id}/turns/{turn_id}/checkpoint": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Preview Checkpoint */
+        get: operations["preview_checkpoint_api_conversations__conversation_id__turns__turn_id__checkpoint_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/conversations/{conversation_id}/turns/{turn_id}/checkpoint/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restore Checkpoint */
+        post: operations["restore_checkpoint_api_conversations__conversation_id__turns__turn_id__checkpoint_restore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/conversations/{conversation_id}/turns/{turn_id}/events": {
         parameters: {
             query?: never;
@@ -822,6 +856,73 @@ export interface components {
             status: string;
             /** Turn Id */
             turn_id: string;
+        };
+        /** CheckpointBlockerDTO */
+        CheckpointBlockerDTO: {
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
+            /** Path */
+            path?: string | null;
+            /** Turn Id */
+            turn_id?: string | null;
+        };
+        /** CheckpointPreviewDTO */
+        CheckpointPreviewDTO: {
+            /** Affected Files */
+            affected_files?: string[];
+            /** Blockers */
+            blockers?: components["schemas"]["CheckpointBlockerDTO"][];
+            /** Conversation Id */
+            conversation_id: string;
+            /** Coverage */
+            coverage: string;
+            /** Create Count */
+            create_count: number;
+            /** Delete Count */
+            delete_count: number;
+            /** File Count */
+            file_count: number;
+            /** Future Turn Count */
+            future_turn_count: number;
+            /** Modify Count */
+            modify_count: number;
+            /** Restorable */
+            restorable: boolean;
+            /** Target Ordinal */
+            target_ordinal: number;
+            /** Target Turn Id */
+            target_turn_id: string;
+            /** Warnings */
+            warnings?: string[];
+        };
+        /** CheckpointRestoreDTO */
+        CheckpointRestoreDTO: {
+            /** Completed At */
+            completed_at?: string | null;
+            /** Conversation Id */
+            conversation_id: string;
+            /** Operation Id */
+            operation_id: string;
+            /** Restored File Count */
+            restored_file_count: number;
+            /** State */
+            state: string;
+            /** Superseded Turn Count */
+            superseded_turn_count: number;
+            /** Target Turn Id */
+            target_turn_id: string;
+        };
+        /** CheckpointRestoreRequest */
+        CheckpointRestoreRequest: {
+            /**
+             * Confirm
+             * @default false
+             */
+            confirm: boolean;
+            /** Idempotency Key */
+            idempotency_key: string;
         };
         /** ConversationCommandPolicyRequest */
         ConversationCommandPolicyRequest: {
@@ -1544,6 +1645,11 @@ export interface components {
             started_at?: string | null;
             /** State */
             state: string;
+            /**
+             * Timeline State
+             * @default active
+             */
+            timeline_state: string;
             /** User Text */
             user_text: string;
         };
@@ -2466,6 +2572,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PreviewDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_checkpoint_api_conversations__conversation_id__turns__turn_id__checkpoint_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckpointPreviewDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_checkpoint_api_conversations__conversation_id__turns__turn_id__checkpoint_restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CheckpointRestoreRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckpointRestoreDTO"];
                 };
             };
             /** @description Validation Error */

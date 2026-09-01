@@ -49,6 +49,9 @@ from .schemas import (
     BootstrapDTO,
     CapabilitiesDTO,
     ChangeSetDTO,
+    CheckpointPreviewDTO,
+    CheckpointRestoreDTO,
+    CheckpointRestoreRequest,
     ConversationCommandPolicyRequest,
     ConversationCreateRequest,
     ConversationDTO,
@@ -224,6 +227,33 @@ def create_app(
                 "conversation_busy",
                 "workspace_busy",
                 "conversation_archived",
+                "checkpoint_restore_busy",
+                "checkpoint_file_conflict",
+                "checkpoint_not_on_active_timeline",
+                "checkpoint_turn_not_terminal",
+                "checkpoint_is_current",
+                "checkpoint_inbox_not_empty",
+                "checkpoint_workspace_diverged",
+                "checkpoint_change_set_missing",
+                "checkpoint_incomplete_changes",
+                "checkpoint_artifact_missing",
+                "checkpoint_artifact_mismatch",
+                "checkpoint_artifact_unavailable",
+                "checkpoint_symlink_unsupported",
+                "checkpoint_path_conflict",
+                "checkpoint_path_unsafe",
+                "checkpoint_path_collision",
+                "checkpoint_file_unreadable",
+                "checkpoint_change_unsupported",
+                "checkpoint_timeline_changed",
+            )
+            else 500
+            if exc.code
+            in (
+                "checkpoint_restore_failed",
+                "checkpoint_recovery_required",
+                "checkpoint_write_failed",
+                "checkpoint_write_verify_failed",
             )
             else 400
         )
@@ -623,6 +653,37 @@ def create_app(
         )
         async def get_turn(conversation_id: str, turn_id: str) -> TurnDTO:
             return _turn_dto(conversation_service.get_turn(conversation_id, turn_id))
+
+        @app.get(
+            "/api/conversations/{conversation_id}/turns/{turn_id}/checkpoint",
+            response_model=CheckpointPreviewDTO,
+        )
+        async def preview_checkpoint(
+            conversation_id: str, turn_id: str
+        ) -> CheckpointPreviewDTO:
+            data = conversation_service.preview_checkpoint_restore(
+                conversation_id, turn_id
+            )
+            data.pop("_plan", None)
+            return CheckpointPreviewDTO(**data)
+
+        @app.post(
+            "/api/conversations/{conversation_id}/turns/{turn_id}/checkpoint/restore",
+            response_model=CheckpointRestoreDTO,
+        )
+        async def restore_checkpoint(
+            conversation_id: str,
+            turn_id: str,
+            body: CheckpointRestoreRequest,
+        ) -> CheckpointRestoreDTO:
+            return CheckpointRestoreDTO(
+                **conversation_service.restore_checkpoint(
+                    conversation_id,
+                    turn_id,
+                    idempotency_key=body.idempotency_key,
+                    confirm=body.confirm,
+                )
+            )
 
         @app.get(
             "/api/conversations/{conversation_id}/turns/{turn_id}/permissions",

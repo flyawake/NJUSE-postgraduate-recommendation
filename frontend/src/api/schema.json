@@ -192,6 +192,195 @@
         "title": "ChangeSetDTO",
         "type": "object"
       },
+      "CheckpointBlockerDTO": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn Id"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "CheckpointBlockerDTO",
+        "type": "object"
+      },
+      "CheckpointPreviewDTO": {
+        "properties": {
+          "affected_files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Affected Files",
+            "type": "array"
+          },
+          "blockers": {
+            "items": {
+              "$ref": "#/components/schemas/CheckpointBlockerDTO"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "coverage": {
+            "title": "Coverage",
+            "type": "string"
+          },
+          "create_count": {
+            "title": "Create Count",
+            "type": "integer"
+          },
+          "delete_count": {
+            "title": "Delete Count",
+            "type": "integer"
+          },
+          "file_count": {
+            "title": "File Count",
+            "type": "integer"
+          },
+          "future_turn_count": {
+            "title": "Future Turn Count",
+            "type": "integer"
+          },
+          "modify_count": {
+            "title": "Modify Count",
+            "type": "integer"
+          },
+          "restorable": {
+            "title": "Restorable",
+            "type": "boolean"
+          },
+          "target_ordinal": {
+            "title": "Target Ordinal",
+            "type": "integer"
+          },
+          "target_turn_id": {
+            "title": "Target Turn Id",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "target_turn_id",
+          "target_ordinal",
+          "future_turn_count",
+          "file_count",
+          "create_count",
+          "modify_count",
+          "delete_count",
+          "restorable",
+          "coverage"
+        ],
+        "title": "CheckpointPreviewDTO",
+        "type": "object"
+      },
+      "CheckpointRestoreDTO": {
+        "properties": {
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "restored_file_count": {
+            "title": "Restored File Count",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "superseded_turn_count": {
+            "title": "Superseded Turn Count",
+            "type": "integer"
+          },
+          "target_turn_id": {
+            "title": "Target Turn Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "conversation_id",
+          "target_turn_id",
+          "state",
+          "superseded_turn_count",
+          "restored_file_count"
+        ],
+        "title": "CheckpointRestoreDTO",
+        "type": "object"
+      },
+      "CheckpointRestoreRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "idempotency_key"
+        ],
+        "title": "CheckpointRestoreRequest",
+        "type": "object"
+      },
       "ConversationCommandPolicyRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2401,6 +2590,11 @@
             "title": "State",
             "type": "string"
           },
+          "timeline_state": {
+            "default": "active",
+            "title": "Timeline State",
+            "type": "string"
+          },
           "user_text": {
             "title": "User Text",
             "type": "string"
@@ -3918,6 +4112,112 @@
           }
         },
         "summary": "Get Preview"
+      }
+    },
+    "/api/conversations/{conversation_id}/turns/{turn_id}/checkpoint": {
+      "get": {
+        "operationId": "preview_checkpoint_api_conversations__conversation_id__turns__turn_id__checkpoint_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "turn_id",
+            "required": true,
+            "schema": {
+              "title": "Turn Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckpointPreviewDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Checkpoint"
+      }
+    },
+    "/api/conversations/{conversation_id}/turns/{turn_id}/checkpoint/restore": {
+      "post": {
+        "operationId": "restore_checkpoint_api_conversations__conversation_id__turns__turn_id__checkpoint_restore_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "turn_id",
+            "required": true,
+            "schema": {
+              "title": "Turn Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckpointRestoreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckpointRestoreDTO"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Restore Checkpoint"
       }
     },
     "/api/conversations/{conversation_id}/turns/{turn_id}/events": {
