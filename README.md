@@ -7,7 +7,8 @@
 ## 功能亮点
 
 - **自研 Agent 内核**：显式状态机驱动模型请求、tool call、工具结果和完成判断，具备最大步数、重复调用、连续失败、协议错误和取消等独立终止条件。
-- **本地编程工具**：支持 `glob`、`grep`、`read_file`、`write_file`、`edit_file`、`run_command`、`web_search` 和 `web_fetch`；文件工具限制在工作区内，读写、搜索和命令输出均有资源上限。
+- **选择性任务计划**：模型按明确复杂度边界自行判断是否进入 Plan；简单问答和一两步小改动零额外轮次直接执行，复杂任务才创建 2–7 步可视计划并持续更新。
+- **本地编程工具**：支持 `glob`、`grep`、`read_file`、`write_file`、`edit_file`、`run_command`、`web_search`、`web_fetch` 和 `update_plan`；文件工具限制在工作区内，读写、搜索和命令输出均有资源上限。
 - **可靠上下文管理**：canonical history 只追加保存事实，每轮生成独立 request view，并同时检查字符、估算 token 与实际请求字节预算。
 - **持久多轮对话**：Conversation、Turn、消息、事件、Inbox、Memory、权限策略和文件变更写入 SQLite；刷新或重启后可恢复，未完成操作不会自动重放。
 - **对话与工作区检查点**：每个已结束轮次可预检并返回；后续对话退出当前时间线，已完整捕获的工作区文件按内容指纹原子回溯，冲突时拒绝覆盖，中断后自动回滚或在重启时恢复。
@@ -75,7 +76,7 @@ uv run coding-agent ui --no-browser    # 仅打印地址（自动化测试用）
 1. 启动 `coding-agent ui`，如无 profile 会自动出现 onboarding；选择 provider → 填写 URL/model → 写入凭据引用与凭据 → 保存。
 2. 从左栏点击“新对话”，选择工作区与 profile；对话会按 workspace 分组，并可搜索、重命名、归档、恢复或确认后永久删除。
 3. 在底部 Composer 输入编程任务并点击右侧“开始运行”。同一对话可连续追问，模型上下文来自持久化 canonical history；切换到其他对话不会取消后台 turn。
-4. 中栏以连续平面展示工具活动、验证状态和最终答复。运行中同一按钮槽切换为“取消运行”；左栏用状态点显示后台运行。
+4. 中栏以连续平面展示计划、工具活动、验证状态和最终答复。只有复杂任务才出现实时计划卡片；运行中同一按钮槽切换为“取消运行”，左栏用状态点显示后台运行。
 5. 每个 terminal turn 的末尾显示本轮净文件变化。点击文件才会打开右侧只读审查栏，可切换 Diff/修改前/修改后/当前文件；历史内容来自不可变快照，当前文件继续变化时会提示 divergence。关闭审查栏后中栏自动恢复宽度。
 6. 已结束轮次末尾提供“回到此检查点”。确认框会先列出将退出当前时间线的后续轮次数、文件数和创建/修改/删除统计；存在运行中任务、待发送消息、不完整 ChangeSet、缺失快照或检查点外文件改动时会拒绝恢复。
 7. 对话、turn、canonical message、公开事件、检查点恢复日志和文件快照跨页面刷新及服务重启保持；崩溃时未完成 turn 只恢复为 `INTERRUPTED`，不会自动重放命令或文件写入。检查点恢复若在中途崩溃，下一次启动会依据持久日志把工作区回滚到恢复前状态。
@@ -104,7 +105,7 @@ CLI
        -> ToolExecutor
             -> argument decoder + tool validator
             -> ToolPolicy
-            -> ToolRegistry -> 六个 workspace 工具 + web_search/web_fetch
+            -> ToolRegistry -> 六个 workspace 工具 + web_search/web_fetch/update_plan
             -> ToolOutcome normalizer + model renderer
        -> CompletionPolicy
        -> EventSink
@@ -165,6 +166,7 @@ assistant ToolCall
 | `run_command(argv, cwd=".", timeout_seconds=30, purpose="inspect\|verify\|other")` | EXECUTE | `shell=False`；GUI 在进程启动前应用当前对话持久策略（每次询问/默认允许/默认拒绝）；cwd 必须在工作区内；超时 1-120 秒；后台持续排空 stdout/stderr、内存中各只保留 head 4000 + tail 6000 字符；非零退出码仍是成功观察 |
 | `web_search(query, max_results=5)` | READ | 搜索公开互联网；结果数≤10，只返回有界 title/url/snippet；网页结果始终视为不可信观察 |
 | `web_fetch(url, max_chars=12000)` | READ | 仅抓取公开 HTTP(S) 文本页；拒绝凭据、非标准端口、本机/私网/保留地址及重定向 rebinding；不执行脚本，响应≤1 MB、正文≤20,000 字符 |
+| `update_plan(explanation?, plan)` | READ | 仅复杂任务使用；每次提交完整 2–7 步快照，存在未完成项时必须且只能有一个 `in_progress`；状态为 `pending/in_progress/completed/blocked`，更新先持久化再公开 |
 
 所有结果统一为 `{"ok": true, "data": ...}` 或 `{"ok": false, "error": {"code", "message", "retryable", "recovery_hint"?}}`，错误 code 稳定且属于本项目。
 
@@ -188,6 +190,7 @@ FastAPI local app server (loopback only)
 
 - `ConversationService` 是 Web 执行的唯一编排入口；旧 `/api/runs` 在兼容期只把一个持久 turn 投影成旧 DTO，不维护第二套 worker/history/event。CLI 继续直接适配既有 AgentLoop。
 - `CODING_AGENT_HOME/state.db` 使用 SQLite foreign keys、WAL、busy timeout、显式 schema version 与事务。创建 turn、分配 ordinal、持久化首条 user canonical group 和更新 activity 原子提交；idempotency key 有持久 unique constraint。
+- Plan 使用 turn 级最新快照与不可变 revision 日志双写；revision compare-and-swap 防止旧 worker 覆盖新进度。刷新直接读取最新快照，`plan_updated` 事件驱动实时卡片；进程重启会把活动计划与活动 turn 一起标为 `interrupted`，绝不自动重放。
 - 每个 conversation 同时最多一个 active turn；相同 canonical workspace 整轮互斥，不同 workspace 进入默认上限为 2 的 `ThreadPoolExecutor`。页面 selection 与 runtime 解耦。
 - 文件变化按 turn 的首个 before 与最终 after 合并，成功 write/edit 是 confirmed 证据，`run_command` 使用有文件数/字节/时间预算的 workspace probe 补充副作用；超预算 fail-closed 为 incomplete，但不阻止主 turn 完成。
 - 文本 artifact 单个最多 1 MiB、单 turn 新增快照默认最多 20 MiB，CAS 按 SHA-256 去重并校验读取完整性；delete 事务清理引用，启动时可重试物理 GC。preview 只接受 conversation→turn→change 的层级 ID，不接受任意路径读取。
@@ -210,6 +213,8 @@ FastAPI local app server (loopback only)
 
 ### 完成验证与终止
 
+- 每个新任务在首次模型请求中完成“是否需要 Plan”的判断，不增加分类请求。以下任一情况应规划：至少三个有依赖的实质动作、跨文件/组件/层修改、先探索再实现的不确定工作、迁移/破坏性/安全或回滚敏感工作、多个独立验收结果，或很可能需要改路。问答、单个明确局部编辑、一次聚焦只读诊断以及预计一两个工具动作可完成的任务必须跳过 Plan。
+- 一旦模型调用 `update_plan`，AgentLoop 会把后续工具事件关联到当前 `in_progress` 步骤。最终答复前若仍有 `pending/in_progress`，PlanPolicy 最多延迟一次并要求完整更新；仍提前结束时结果如实标记 `incomplete`。持久化失败返回可重试的 `PLAN_PERSIST_FAILED`，不会发布未落盘的虚假计划。
 - 成功的 `write_file`/`edit_file` 记录变更路径并推进内存中的 workspace revision；只有最新 revision 之后、`purpose="verify"` 的 `run_command` 才构成验证尝试：退出码 0 → `VERIFIED`，非零 → `FAILED`，没有尝试 → `NOT_RUN`，没有变更 → `NOT_APPLICABLE`。`purpose` 只是 agent 声明的意图，退出码 0 只证明该命令成功，**不证明测试集合充分**。
 - 有变更但未验证时，CompletionPolicy 最多延迟完成一次：追加 `source=completion_policy`、以 `[completion-policy]` 前缀呈现的内部控制消息并回到 READY；无剩余 step 或提醒后模型再次给出非空最终文本时允许结束，但 `RunResult` 如实保留 `FAILED`/`NOT_RUN`，CLI 醒目标注“完成但未验证/验证失败”。
 - 相同“工具名 + 深度排序后 JSON 参数”签名连续第 3 次：仍执行并追加模型可见换路提醒；连续第 5 次：不再执行，追加 `REPEATED_TOOL_CALL` 错误结果，同组未分派调用追加 `ABORTED_BEFORE_DISPATCH`，随后终止。
@@ -218,7 +223,7 @@ FastAPI local app server (loopback only)
 
 ### 事件
 
-每个事件含 run 内单调递增 `sequence`、`run_id`、类型、step 和字段级脱敏 payload。至少八类：`run_started / step_started / model_retry / assistant_received / tool_started / tool_finished / completion_deferred / run_finished`；`run_finished` 在每个已开始 run 中恰好出现一次且 sequence 最大。写文件内容、编辑字符串与命令敏感参数不会进入事件，worker 异常文本不会进入 API。
+每个事件含 run 内单调递增 `sequence`、`run_id`、类型、step 和字段级脱敏 payload。核心事件包括 `run_started / step_started / model_retry / assistant_received / tool_started / tool_finished / plan_updated / plan_completion_deferred / completion_deferred / run_finished`；`run_finished` 在每个已开始 run 中恰好出现一次且 sequence 最大。写文件内容、编辑字符串与命令敏感参数不会进入事件，worker 异常文本不会进入 API。
 
 ### 消息不变量
 

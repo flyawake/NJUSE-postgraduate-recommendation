@@ -32,6 +32,8 @@ _PUBLIC_RUN_RESULT_FIELDS = {
     "last_verification",
     "final_phase",
     "context_char_count",
+    "plan_state",
+    "plan_revision",
 }
 
 

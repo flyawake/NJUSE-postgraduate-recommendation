@@ -35,7 +35,7 @@ from .domain import (
     payload_to_canonical_message,
 )
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 DEFAULT_BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA_SQL = """
@@ -155,6 +155,37 @@ CREATE TABLE IF NOT EXISTS public_events (
     created_at TEXT NOT NULL,
     UNIQUE (run_id, event_seq)
 );
+
+CREATE TABLE IF NOT EXISTS turn_plans (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    turn_id TEXT NOT NULL UNIQUE REFERENCES turns(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    state TEXT NOT NULL DEFAULT 'active' CHECK (
+        state IN ('active', 'completed', 'blocked', 'incomplete',
+                  'interrupted', 'failed')
+    ),
+    explanation TEXT NOT NULL DEFAULT '',
+    steps_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS turn_plan_revisions (
+    id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL REFERENCES turn_plans(id) ON DELETE CASCADE,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    explanation TEXT NOT NULL DEFAULT '',
+    steps_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (plan_id, revision)
+);
+
+CREATE INDEX IF NOT EXISTS idx_turn_plan_revisions_turn
+    ON turn_plan_revisions(turn_id, revision);
 
 CREATE TABLE IF NOT EXISTS stream_checkpoints (
     id TEXT PRIMARY KEY,
@@ -925,6 +956,50 @@ class SQLiteConversationRepository:
                                 "WHERE state IN "
                                 "('prepared', 'applying', 'recovery_required')"
                             )
+                    if current_version <= 17:
+                        conn.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS turn_plans (
+                                id TEXT PRIMARY KEY,
+                                conversation_id TEXT NOT NULL
+                                    REFERENCES conversations(id) ON DELETE CASCADE,
+                                turn_id TEXT NOT NULL UNIQUE
+                                    REFERENCES turns(id) ON DELETE CASCADE,
+                                revision INTEGER NOT NULL CHECK (revision > 0),
+                                state TEXT NOT NULL DEFAULT 'active' CHECK (
+                                    state IN ('active', 'completed', 'blocked',
+                                              'incomplete', 'interrupted', 'failed')
+                                ),
+                                explanation TEXT NOT NULL DEFAULT '',
+                                steps_json TEXT NOT NULL,
+                                created_at TEXT NOT NULL,
+                                updated_at TEXT NOT NULL,
+                                finished_at TEXT
+                            )
+                            """
+                        )
+                        conn.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS turn_plan_revisions (
+                                id TEXT PRIMARY KEY,
+                                plan_id TEXT NOT NULL
+                                    REFERENCES turn_plans(id) ON DELETE CASCADE,
+                                conversation_id TEXT NOT NULL
+                                    REFERENCES conversations(id) ON DELETE CASCADE,
+                                turn_id TEXT NOT NULL
+                                    REFERENCES turns(id) ON DELETE CASCADE,
+                                revision INTEGER NOT NULL CHECK (revision > 0),
+                                explanation TEXT NOT NULL DEFAULT '',
+                                steps_json TEXT NOT NULL,
+                                created_at TEXT NOT NULL,
+                                UNIQUE (plan_id, revision)
+                            )
+                            """
+                        )
+                        conn.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_turn_plan_revisions_turn "
+                            "ON turn_plan_revisions(turn_id, revision)"
+                        )
                     conn.execute("DELETE FROM schema_meta")
                     conn.execute(
                         "INSERT INTO schema_meta(version, applied_at) VALUES (?, ?)",
@@ -2356,7 +2431,7 @@ class SQLiteConversationRepository:
         return record
 
     def recover_active_turns(self) -> List[TurnRecord]:
-        """Mark every starting/running turn as interrupted after restart."""
+        """Interrupt active turns and reconcile orphaned active plan snapshots."""
         recovered: List[TurnRecord] = []
         with self._lock:
             conn = self._connect()
@@ -2385,6 +2460,14 @@ class SQLiteConversationRepository:
                         turn_id,
                     ),
                 )
+                conn.execute(
+                    """
+                    UPDATE turn_plans
+                    SET state='interrupted', updated_at=?, finished_at=?
+                    WHERE turn_id=? AND state='active'
+                    """,
+                    (now, now, turn_id),
+                )
                 recovered.append(
                     TurnRecord(
                         id=turn_id,
@@ -2405,6 +2488,43 @@ class SQLiteConversationRepository:
                         ),
                         error_code="PROCESS_RESTARTED",
                     )
+                )
+            orphaned_plans = conn.execute(
+                """
+                SELECT p.turn_id, p.steps_json, t.state AS turn_state
+                FROM turn_plans p
+                JOIN turns t ON t.id = p.turn_id
+                WHERE p.state='active'
+                  AND t.state IN ('success', 'error', 'interrupted', 'rejected')
+                """
+            ).fetchall()
+            for plan in orphaned_plans:
+                turn_state = str(plan["turn_state"])
+                if turn_state == "interrupted":
+                    plan_state = "interrupted"
+                elif turn_state in {"error", "rejected"}:
+                    plan_state = "failed"
+                else:
+                    try:
+                        steps = self._decode_plan_steps(plan["steps_json"])
+                    except ValueError:
+                        plan_state = "incomplete"
+                    else:
+                        statuses = {item["status"] for item in steps}
+                        if statuses & {"pending", "in_progress"}:
+                            plan_state = "incomplete"
+                        elif "blocked" in statuses:
+                            plan_state = "blocked"
+                        else:
+                            plan_state = "completed"
+                now = _utcnow()
+                conn.execute(
+                    """
+                    UPDATE turn_plans
+                    SET state=?, updated_at=?, finished_at=?
+                    WHERE turn_id=? AND state='active'
+                    """,
+                    (plan_state, now, now, str(plan["turn_id"])),
                 )
             conn.commit()
         return recovered
@@ -2659,6 +2779,182 @@ class SQLiteConversationRepository:
                 (conversation_id, turn_id),
             )
             conn.commit()
+
+    # ------------------------------------------------------------ turn plans
+
+    def save_turn_plan(
+        self,
+        conversation_id: str,
+        turn_id: str,
+        *,
+        revision: int,
+        state: str,
+        explanation: str,
+        steps: Sequence[Dict[str, str]],
+        expected_revision: int,
+    ) -> Dict[str, Any]:
+        """Append one plan revision and replace its live snapshot atomically."""
+        if revision != expected_revision + 1 or revision < 1:
+            raise ValueError("plan_revision_invalid")
+        if state != "active":
+            raise ValueError("plan_state_invalid")
+        steps_json = json.dumps(
+            list(steps), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        now = _utcnow()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                turn = conn.execute(
+                    "SELECT id FROM turns WHERE id=? AND conversation_id=?",
+                    (turn_id, conversation_id),
+                ).fetchone()
+                if turn is None:
+                    raise KeyError("turn_not_found")
+                current = conn.execute(
+                    "SELECT * FROM turn_plans WHERE turn_id=? AND conversation_id=?",
+                    (turn_id, conversation_id),
+                ).fetchone()
+                if current is None:
+                    if expected_revision != 0:
+                        raise ValueError("plan_revision_conflict")
+                    plan_id = uuid.uuid4().hex
+                    conn.execute(
+                        """
+                        INSERT INTO turn_plans(
+                            id, conversation_id, turn_id, revision, state,
+                            explanation, steps_json, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
+                        """,
+                        (
+                            plan_id,
+                            conversation_id,
+                            turn_id,
+                            revision,
+                            explanation,
+                            steps_json,
+                            now,
+                            now,
+                        ),
+                    )
+                else:
+                    if int(current["revision"]) != expected_revision:
+                        raise ValueError("plan_revision_conflict")
+                    if str(current["state"]) != "active":
+                        raise ValueError("plan_already_terminal")
+                    plan_id = str(current["id"])
+                    cursor = conn.execute(
+                        """
+                        UPDATE turn_plans
+                        SET revision=?, explanation=?, steps_json=?, updated_at=?
+                        WHERE id=? AND revision=? AND state='active'
+                        """,
+                        (
+                            revision,
+                            explanation,
+                            steps_json,
+                            now,
+                            plan_id,
+                            expected_revision,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise ValueError("plan_revision_conflict")
+                conn.execute(
+                    """
+                    INSERT INTO turn_plan_revisions(
+                        id, plan_id, conversation_id, turn_id, revision,
+                        explanation, steps_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        uuid.uuid4().hex,
+                        plan_id,
+                        conversation_id,
+                        turn_id,
+                        revision,
+                        explanation,
+                        steps_json,
+                        now,
+                    ),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        plan = self.get_turn_plan(conversation_id, turn_id)
+        assert plan is not None
+        return plan
+
+    def get_turn_plan(
+        self, conversation_id: str, turn_id: str
+    ) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = (
+                self._connect()
+                .execute(
+                    "SELECT * FROM turn_plans WHERE conversation_id=? AND turn_id=?",
+                    (conversation_id, turn_id),
+                )
+                .fetchone()
+            )
+        return self._plan_row(row) if row is not None else None
+
+    def list_turn_plan_revisions(
+        self, conversation_id: str, turn_id: str
+    ) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = (
+                self._connect()
+                .execute(
+                    """
+                SELECT revision, explanation, steps_json, created_at
+                FROM turn_plan_revisions
+                WHERE conversation_id=? AND turn_id=?
+                ORDER BY revision
+                """,
+                    (conversation_id, turn_id),
+                )
+                .fetchall()
+            )
+        return [self._plan_revision_row(row) for row in rows]
+
+    def finish_turn_plan(
+        self, conversation_id: str, turn_id: str, *, state: str
+    ) -> Optional[Dict[str, Any]]:
+        terminal_states = {
+            "completed",
+            "blocked",
+            "incomplete",
+            "interrupted",
+            "failed",
+        }
+        if state not in terminal_states:
+            raise ValueError("plan_state_invalid")
+        now = _utcnow()
+        with self._lock:
+            conn = self._connect()
+            row = conn.execute(
+                "SELECT state FROM turn_plans WHERE conversation_id=? AND turn_id=?",
+                (conversation_id, turn_id),
+            ).fetchone()
+            if row is None:
+                return None
+            current_state = str(row["state"])
+            if current_state != "active":
+                if current_state != state:
+                    raise ValueError("plan_already_terminal")
+                return self.get_turn_plan(conversation_id, turn_id)
+            conn.execute(
+                """
+                UPDATE turn_plans SET state=?, updated_at=?, finished_at=?
+                WHERE conversation_id=? AND turn_id=? AND state='active'
+                """,
+                (state, now, now, conversation_id, turn_id),
+            )
+            conn.commit()
+        return self.get_turn_plan(conversation_id, turn_id)
 
     # ------------------------------------------------------------ public events
 
@@ -4724,6 +5020,47 @@ class SQLiteConversationRepository:
         # and preserve the audit trail of past turns after a hard delete.
 
     # ------------------------------------------------------------ helpers
+
+    @staticmethod
+    def _decode_plan_steps(raw: Any) -> List[Dict[str, str]]:
+        try:
+            value = json.loads(str(raw))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("data_error") from exc
+        if not isinstance(value, list) or not all(
+            isinstance(item, dict)
+            and isinstance(item.get("step"), str)
+            and isinstance(item.get("status"), str)
+            for item in value
+        ):
+            raise ValueError("data_error")
+        return [
+            {"step": str(item["step"]), "status": str(item["status"])} for item in value
+        ]
+
+    @classmethod
+    def _plan_row(cls, row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "conversation_id": str(row["conversation_id"]),
+            "turn_id": str(row["turn_id"]),
+            "revision": int(row["revision"]),
+            "state": str(row["state"]),
+            "explanation": str(row["explanation"]),
+            "steps": cls._decode_plan_steps(row["steps_json"]),
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+            "finished_at": row["finished_at"],
+        }
+
+    @classmethod
+    def _plan_revision_row(cls, row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "revision": int(row["revision"]),
+            "explanation": str(row["explanation"]),
+            "steps": cls._decode_plan_steps(row["steps_json"]),
+            "created_at": str(row["created_at"]),
+        }
 
     @staticmethod
     def _restore_row(row: sqlite3.Row) -> Dict[str, Any]:

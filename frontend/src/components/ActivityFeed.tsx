@@ -22,6 +22,7 @@ import {
   TranscriptProjector,
   type ToolItem,
   type TranscriptItem,
+  type PlanItem,
 } from "@/lib/toolgroups";
 import { cx } from "@/lib/format";
 
@@ -45,6 +46,7 @@ export interface ActivityFeedProps {
   streamSnapshot?: StreamCheckpoint[];
   defaultThinkOpen?: boolean;
   embedded?: boolean;
+  initialPlan?: PlanItem | null;
 }
 
 const INITIAL_VISIBLE_ITEMS = 300;
@@ -73,6 +75,7 @@ export function ActivityFeed({
   streamSnapshot,
   defaultThinkOpen = false,
   embedded = false,
+  initialPlan,
 }: ActivityFeedProps) {
   const { t } = useI18n();
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -88,7 +91,7 @@ export function ActivityFeed({
 
   const projector = projectorRef.current;
   if (appliedResetVersion.current !== resetVersion) {
-    projector.reset(retainedEvents, task ?? "");
+    projector.reset(retainedEvents, task ?? "", initialPlan);
     appliedResetVersion.current = resetVersion;
   } else {
     projector.append(eventBatch, task ?? "");
@@ -295,6 +298,8 @@ const TranscriptRow = memo(function TranscriptRow({ item }: { item: TranscriptIt
       );
     case "action_row":
       return <ToolActionRow action={item.action} />;
+    case "plan_card":
+      return <PlanCard plan={item.plan} />;
     case "status_notice":
       return <p className="px-1 text-xs text-warning">{t("feed.modelRetryShort")}</p>;
     case "verification_notice":
@@ -308,6 +313,38 @@ const TranscriptRow = memo(function TranscriptRow({ item }: { item: TranscriptIt
     default:
       return null;
   }
+});
+
+const PlanCard = memo(function PlanCard({ plan }: { plan: PlanItem }) {
+  const { t } = useI18n();
+  return (
+    <section className="my-2 rounded-lg border border-border bg-surface-2/45 px-3 py-3" data-testid="plan-card">
+      <div className="flex items-center gap-2">
+        <ListRestart aria-hidden size={14} className="text-info" />
+        <h4 className="flex-1 text-xs font-semibold text-text">{t("feed.plan.title")}</h4>
+        <span className="text-[10px] text-faint">
+          {t(`feed.plan.state.${plan.state}`)} · v{plan.revision}
+        </span>
+      </div>
+      {plan.explanation ? <p className="mt-1.5 text-[11px] leading-5 text-muted">{plan.explanation}</p> : null}
+      <ol className="mt-2 space-y-1.5">
+        {plan.steps.map((item, index) => (
+          <li key={`${index}-${item.step}`} className="flex items-start gap-2 text-[12px] leading-5 text-muted">
+            {item.status === "completed" ? (
+              <CheckCircle2 aria-hidden size={13} className="mt-1 shrink-0 text-success" />
+            ) : item.status === "in_progress" ? (
+              <Loader2 aria-hidden size={13} className="mt-1 shrink-0 animate-spin text-info" />
+            ) : item.status === "blocked" ? (
+              <CircleStop aria-hidden size={13} className="mt-1 shrink-0 text-warning" />
+            ) : (
+              <span aria-hidden className="mt-[7px] h-2 w-2 shrink-0 rounded-full border border-faint" />
+            )}
+            <span className={item.status === "completed" ? "text-faint line-through" : ""}>{item.step}</span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
 });
 
 const STATUS_ICON = {
@@ -382,6 +419,11 @@ const ToolActionRow = memo(function ToolActionRow({ action }: { action: ToolItem
                 {action.summary}
               </pre>
             </>
+          ) : null}
+          {action.planStep ? (
+            <p className="mt-2 text-faint">
+              {t("feed.plan.currentStep")}: <span className="text-muted">{action.planStep}</span>
+            </p>
           ) : null}
           {action.status === "error" ? <p className="mt-2 text-danger">{t("feed.action.failureRecovery")}</p> : null}
           {action.status === "aborted" ? <p className="mt-2 text-warning">{t("feed.action.abortedRecovery")}</p> : null}

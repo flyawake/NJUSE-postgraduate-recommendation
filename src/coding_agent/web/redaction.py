@@ -70,4 +70,41 @@ def redact_public_payload(kind: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             safe["summary"] = f"run_command {code}"
     if kind == "model_retry" and "reason" in safe:
         safe["reason"] = str(safe["reason"])[:200]
+    if kind == "plan_updated":
+        raw_steps = safe.get("steps")
+        bounded_steps = []
+        if isinstance(raw_steps, list):
+            for item in raw_steps[:7]:
+                if not isinstance(item, dict):
+                    continue
+                step = item.get("step")
+                status = item.get("status")
+                if not isinstance(step, str) or status not in {
+                    "pending",
+                    "in_progress",
+                    "completed",
+                    "blocked",
+                }:
+                    continue
+                bounded_steps.append(
+                    {"step": step.replace("\x00", "")[:240], "status": status}
+                )
+        plan_state = safe.get("state")
+        if plan_state not in {
+            "active",
+            "completed",
+            "blocked",
+            "incomplete",
+            "interrupted",
+            "failed",
+        }:
+            plan_state = "active"
+        safe = {
+            "revision": (
+                int(safe["revision"]) if isinstance(safe.get("revision"), int) else 0
+            ),
+            "state": plan_state,
+            "explanation": str(safe.get("explanation") or "")[:1000],
+            "steps": bounded_steps,
+        }
     return safe

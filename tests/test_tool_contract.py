@@ -45,6 +45,7 @@ EXPECTED_EFFECTS = {
     "run_command": ToolEffect.EXECUTE,
     "web_search": ToolEffect.READ,
     "web_fetch": ToolEffect.READ,
+    "update_plan": ToolEffect.READ,
 }
 
 
@@ -58,6 +59,7 @@ def test_all_default_tools_registered_with_contract(registry):
         "run_command",
         "web_search",
         "web_fetch",
+        "update_plan",
     ]
     for name in registry.names():
         spec = registry.get(name)
@@ -94,6 +96,15 @@ def test_all_default_tools_registered_with_contract(registry):
         ),
         ("web_search", {"query": "Python release"}),
         ("web_fetch", {"url": "https://example.com/"}),
+        (
+            "update_plan",
+            {
+                "plan": [
+                    {"step": "Inspect the issue", "status": "in_progress"},
+                    {"step": "Verify the result", "status": "pending"},
+                ]
+            },
+        ),
     ],
 )
 def test_validator_accepts_minimal_args_and_rejects_wrong_types(

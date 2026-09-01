@@ -56,6 +56,7 @@ from ..models import (
     SystemMessage,
     UserMessage,
 )
+from ..planning import PlanLedger, PlanSnapshot
 from ..prompt import SYSTEM_PROMPT
 from ..provider_config import ProfileError, ProfileStore, ProviderProfile, default_home
 from ..public_redaction import redact_public_run_result
@@ -210,7 +211,7 @@ class _PersistEventSink:
         self._chars += _event_size(event.type, payload)
         self._update_checkpoint(event)
         if (
-            event.type == "run_finished"
+            event.type in {"plan_updated", "run_finished"}
             or len(self._pending) >= self._MAX_BUFFERED_EVENTS
             or self._chars >= self._MAX_BUFFERED_CHARS
             or time.monotonic() - self._last_flush >= self._flush_interval
@@ -2035,6 +2036,17 @@ class ConversationService:
                 pass
         finally:
             journal.close()
+        if result.plan_state:
+            try:
+                # Idempotent fallback for a failure in AgentLoop's terminal
+                # plan callback. Keep it isolated from the already-persisted
+                # turn result so optional plan metadata cannot rewrite a
+                # successful turn as PERSIST_FAILED.
+                self._repository.finish_turn_plan(
+                    conversation_id, turn_id, state=result.plan_state
+                )
+            except Exception:
+                logger.exception("failed to finalize plan for turn %s", turn_id)
 
     def _resolve_connection(
         self, profile_id: Optional[str]
@@ -2111,8 +2123,19 @@ class ConversationService:
                 request_options=options,
             )
         tracker = FileObservationTracker()
+        plan_ledger = PlanLedger(
+            persist=lambda snapshot, expected: self._persist_plan_snapshot(
+                conversation_id,
+                turn_id,
+                snapshot,
+                expected,
+            ),
+            finish=lambda state: self._repository.finish_turn_plan(
+                conversation_id, turn_id, state=state
+            ),
+        )
         registry = build_default_tools(
-            Workspace(workspace), tracker, cancel_event.is_set
+            Workspace(workspace), tracker, cancel_event.is_set, plan_ledger
         )
         executor = ToolExecutor(
             registry,
@@ -2149,7 +2172,25 @@ class ConversationService:
             is_cancelled=cancel_event.is_set,
             event_sink=sink,
             journal=journal,
+            plan_ledger=plan_ledger,
             request_options=options,
+        )
+
+    def _persist_plan_snapshot(
+        self,
+        conversation_id: str,
+        turn_id: str,
+        snapshot: PlanSnapshot,
+        expected_revision: int,
+    ) -> None:
+        self._repository.save_turn_plan(
+            conversation_id,
+            turn_id,
+            revision=snapshot.revision,
+            state=snapshot.state,
+            explanation=snapshot.explanation,
+            steps=[item.to_dict() for item in snapshot.steps],
+            expected_revision=expected_revision,
         )
 
     def _run_worker_with_history(
@@ -2250,6 +2291,15 @@ class ConversationService:
                 result = redact_public_run_result(json.loads(record.result_json))
             except (TypeError, ValueError):
                 result = None
+        try:
+            plan = self._repository.get_turn_plan(record.conversation_id, record.id)
+        except ValueError:
+            # Preserve conversation availability if a manually modified or
+            # damaged optional plan row cannot be decoded. The immutable DB
+            # row remains available for diagnosis; no malformed content is
+            # exposed through the public DTO.
+            logger.error("corrupt plan snapshot for turn %s", record.id)
+            plan = None
         return {
             "id": record.id,
             "conversation_id": record.conversation_id,
@@ -2264,6 +2314,7 @@ class ConversationService:
             "error_code": record.error_code,
             "timeline_state": record.timeline_state,
             "active": record.is_active,
+            "plan": plan,
             "attachments": [
                 self._attachment_to_dict(item)
                 for item in self._repository.list_turn_attachments(

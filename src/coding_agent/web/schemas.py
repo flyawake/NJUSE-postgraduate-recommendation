@@ -9,7 +9,7 @@ types.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -212,6 +212,20 @@ class ConversationPageDTO(BaseModel):
     next_cursor: Optional[str] = None
 
 
+class PlanStepDTO(BaseModel):
+    step: str = Field(min_length=1, max_length=240)
+    status: Literal["pending", "in_progress", "completed", "blocked"]
+
+
+class TurnPlanDTO(BaseModel):
+    revision: int = Field(ge=1)
+    state: Literal[
+        "active", "completed", "blocked", "incomplete", "interrupted", "failed"
+    ]
+    explanation: str = Field(default="", max_length=1000)
+    steps: List[PlanStepDTO] = Field(min_length=2, max_length=7)
+
+
 class TurnDTO(BaseModel):
     id: str
     conversation_id: str
@@ -226,6 +240,7 @@ class TurnDTO(BaseModel):
     error_code: Optional[str] = None
     timeline_state: str = "active"
     active: bool = False
+    plan: Optional[TurnPlanDTO] = None
     attachments: List["AttachmentDTO"] = Field(default_factory=list)
 
 

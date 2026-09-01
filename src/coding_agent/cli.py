@@ -125,11 +125,18 @@ class ConsoleEventSink:
         "assistant_received": "assistant received",
         "tool_started": "tool started",
         "tool_finished": "tool finished",
+        "plan_updated": "plan updated",
+        "plan_completion_deferred": "plan completion deferred",
         "completion_deferred": "completion deferred",
         "run_finished": "run finished",
     }
 
     def emit(self, event: AgentEvent) -> None:
+        if (
+            event.type in {"tool_started", "tool_finished"}
+            and event.payload.get("name") == "update_plan"
+        ):
+            return
         label = self._LABELS.get(event.type, event.type)
         detail = self._format_payload(event)
         line = f"[step {event.step}] {label}"
@@ -159,6 +166,11 @@ class ConsoleEventSink:
             return f"{payload.get('name')}({payload.get('arguments', '')})"
         if event.type == "tool_finished":
             return str(payload.get("summary", ""))
+        if event.type == "plan_updated":
+            steps = payload.get("steps")
+            return f"revision={payload.get('revision')} steps={len(steps) if isinstance(steps, list) else 0}"
+        if event.type == "plan_completion_deferred":
+            return f"revision={payload.get('revision')} still active"
         if event.type == "completion_deferred":
             return f"verification={payload.get('verification_status')}"
         if event.type == "run_finished":

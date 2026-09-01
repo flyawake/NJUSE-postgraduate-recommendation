@@ -1826,6 +1826,32 @@
         "title": "PermissionRequestDTO",
         "type": "object"
       },
+      "PlanStepDTO": {
+        "properties": {
+          "status": {
+            "enum": [
+              "pending",
+              "in_progress",
+              "completed",
+              "blocked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "step": {
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Step",
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "status"
+        ],
+        "title": "PlanStepDTO",
+        "type": "object"
+      },
       "PreviewDTO": {
         "properties": {
           "additions": {
@@ -2552,6 +2578,16 @@
             "title": "Ordinal",
             "type": "integer"
           },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnPlanDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "result": {
             "anyOf": [
               {
@@ -2636,6 +2672,49 @@
           "items"
         ],
         "title": "TurnPageDTO",
+        "type": "object"
+      },
+      "TurnPlanDTO": {
+        "properties": {
+          "explanation": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Explanation",
+            "type": "string"
+          },
+          "revision": {
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "active",
+              "completed",
+              "blocked",
+              "incomplete",
+              "interrupted",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/PlanStepDTO"
+            },
+            "maxItems": 7,
+            "minItems": 2,
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "revision",
+          "state",
+          "steps"
+        ],
+        "title": "TurnPlanDTO",
         "type": "object"
       },
       "UIPreferencesDTO": {

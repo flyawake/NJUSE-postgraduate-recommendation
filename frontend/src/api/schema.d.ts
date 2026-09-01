@@ -1369,6 +1369,16 @@ export interface components {
             /** Turn Id */
             turn_id: string;
         };
+        /** PlanStepDTO */
+        PlanStepDTO: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "in_progress" | "completed" | "blocked";
+            /** Step */
+            step: string;
+        };
         /** PreviewDTO */
         PreviewDTO: {
             /**
@@ -1635,6 +1645,7 @@ export interface components {
             id: string;
             /** Ordinal */
             ordinal: number;
+            plan?: components["schemas"]["TurnPlanDTO"] | null;
             /** Result */
             result?: {
                 [key: string]: unknown;
@@ -1659,6 +1670,23 @@ export interface components {
             items: components["schemas"]["TurnDTO"][];
             /** Next Cursor */
             next_cursor?: string | null;
+        };
+        /** TurnPlanDTO */
+        TurnPlanDTO: {
+            /**
+             * Explanation
+             * @default
+             */
+            explanation: string;
+            /** Revision */
+            revision: number;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "active" | "completed" | "blocked" | "incomplete" | "interrupted" | "failed";
+            /** Steps */
+            steps: components["schemas"]["PlanStepDTO"][];
         };
         /** UIPreferencesDTO */
         UIPreferencesDTO: {

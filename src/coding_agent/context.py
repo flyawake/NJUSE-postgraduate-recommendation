@@ -35,6 +35,7 @@ MAX_INLINE_ATTACHMENT_CHARS = 50_000
 
 _SOURCE_PREFIXES = {
     "completion_policy": "[completion-policy] ",
+    "plan_policy": "[plan-policy] ",
     "loop_guard": "[loop-guard] ",
 }
 

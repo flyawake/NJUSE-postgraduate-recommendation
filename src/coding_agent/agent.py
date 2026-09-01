@@ -27,6 +27,7 @@ from .models import (
     UserMessage,
     VerificationStatus,
 )
+from .planning import PlanLedger
 from .prompt import SYSTEM_PROMPT
 from .public_redaction import (
     format_public_tool_arguments,
@@ -88,6 +89,12 @@ REPEAT_REMINDER_MESSAGE = (
     "请停止机械重试，改用其他参数、其他工具或重新分析工具结果。"
 )
 
+PLAN_COMPLETION_MESSAGE = (
+    "The active plan still has pending or in-progress steps. Before giving the "
+    "final answer, call update_plan with the full plan and mark every step "
+    "completed or blocked. If work remains, continue it first."
+)
+
 
 class AgentLoop:
     """Owns the explicit FSM, counters, pairing, repeat/cancel guards.
@@ -118,6 +125,7 @@ class AgentLoop:
         is_cancelled: Optional[Callable[[], bool]] = None,
         system_prompt: str = SYSTEM_PROMPT,
         journal: Optional[Any] = None,
+        plan_ledger: Optional[PlanLedger] = None,
         request_options: ModelRequestOptions = ModelRequestOptions(),
     ) -> None:
         if max_steps < 1:
@@ -141,6 +149,9 @@ class AgentLoop:
         self._is_cancelled = is_cancelled or (lambda: False)
         self._system_prompt = system_prompt
         self._journal = journal
+        self._plan = (
+            plan_ledger or getattr(tool_registry, "plan_ledger", None) or PlanLedger()
+        )
         self._request_options = request_options
 
         self.phase = LoopPhase.INITIALIZING
@@ -153,6 +164,7 @@ class AgentLoop:
         self._workspace_revision = 0
         self._last_verification: Optional[Dict[str, Any]] = None
         self._completion_deferred = False
+        self._plan_completion_deferred = False
         self._consecutive_failed_rounds = 0
         self._last_signature: Optional[str] = None
         self._repeat_count = 0
@@ -577,12 +589,23 @@ class AgentLoop:
                         call.name, prepared.normalized_args
                     ),
                     "target": public_tool_target(call.name, prepared.normalized_args),
+                    **(
+                        {"plan_step": self._plan.active_step}
+                        if call.name != "update_plan" and self._plan.active_step
+                        else {}
+                    ),
                 },
             )
             outcome = self._tool_executor.execute(prepared)
             self._append_outcome(outcome)
             self._record_outcome_effects(outcome)
             any_success = any_success or outcome.ok
+            if outcome.ok and outcome.tool_name == "update_plan" and outcome.data:
+                self._emit(
+                    event_types.EVENT_PLAN_UPDATED,
+                    step=self._step_count,
+                    payload=dict(outcome.data),
+                )
             self._emit(
                 event_types.EVENT_TOOL_FINISHED,
                 step=self._step_count,
@@ -601,6 +624,11 @@ class AgentLoop:
                         outcome.data,
                         outcome.error.code if outcome.error else None,
                         outcome.summary(),
+                    ),
+                    **(
+                        {"plan_step": self._plan.active_step}
+                        if call.name != "update_plan" and self._plan.active_step
+                        else {}
                     ),
                 },
             )
@@ -647,6 +675,19 @@ class AgentLoop:
         # no tool is executing; if the user queued a steer for this turn, put
         # it into model context before deciding whether the turn should end.
         if self._poll_steer():
+            self._transit(LoopPhase.READY)
+            return
+        if self._plan.needs_completion_update and not self._plan_completion_deferred:
+            self._plan_completion_deferred = True
+            self._append_history(
+                UserMessage(PLAN_COMPLETION_MESSAGE, source="plan_policy")
+            )
+            snapshot = self._plan.snapshot
+            self._emit(
+                event_types.EVENT_PLAN_COMPLETION_DEFERRED,
+                step=self._step_count,
+                payload={"revision": snapshot.revision if snapshot else 0},
+            )
             self._transit(LoopPhase.READY)
             return
         if not self._mutated_paths:
@@ -807,6 +848,14 @@ class AgentLoop:
         self._final_text = final_text
         if details:
             self._error_details.update(details)
+        try:
+            terminal_plan = self._plan.finish(status)
+        except Exception:
+            # Plan finalization is secondary to the unique run terminal event.
+            # The service performs an idempotent persistence fallback and
+            # startup recovery marks any remaining active plans interrupted.
+            terminal_plan = self._plan.snapshot
+            self._error_details["plan_finalize_error"] = True
         if status is RunStatus.INTERRUPTED:
             self._transit(LoopPhase.INTERRUPTED)
         else:
@@ -822,11 +871,20 @@ class AgentLoop:
                 "step_count": self._step_count,
                 "provider_attempt_count": self._provider_attempt_count,
                 "tool_call_count": self._tool_call_count,
+                **(
+                    {
+                        "plan_state": terminal_plan.state,
+                        "plan_revision": terminal_plan.revision,
+                    }
+                    if terminal_plan is not None
+                    else {}
+                ),
             },
         )
         self._finished = True
 
     def _build_result(self) -> RunResult:
+        plan = self._plan.snapshot
         return RunResult(
             run_id=self._run_id,
             status=self._status,
@@ -843,4 +901,6 @@ class AgentLoop:
             context_char_count=(
                 self._last_view.char_count if self._last_view is not None else None
             ),
+            plan_state=plan.state if plan is not None else None,
+            plan_revision=plan.revision if plan is not None else None,
         )

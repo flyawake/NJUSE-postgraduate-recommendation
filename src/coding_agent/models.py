@@ -114,7 +114,7 @@ class AttachmentRef:
 @dataclass(frozen=True)
 class UserMessage:
     content: str
-    source: str = "user"  # "user" | "completion_policy" | "loop_guard"
+    source: str = "user"  # user | steer | completion_policy | plan_policy | loop_guard
     attachments: Tuple[AttachmentRef, ...] = field(default_factory=tuple)
 
 
@@ -182,6 +182,8 @@ class RunResult:
     final_phase: LoopPhase = LoopPhase.INITIALIZING
     details: Dict[str, Any] = field(default_factory=dict)
     context_char_count: Optional[int] = None
+    plan_state: Optional[str] = None
+    plan_revision: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)

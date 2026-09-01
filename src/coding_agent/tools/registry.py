@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .base import ToolSpec
 
 
 class ToolRegistry:
-    def __init__(self) -> None:
+    def __init__(self, *, plan_ledger: Optional[Any] = None) -> None:
         self._specs: Dict[str, ToolSpec] = {}
+        # Composition metadata, deliberately ignored by provider schemas.  It
+        # lets AgentLoop share the exact ledger captured by update_plan even
+        # for callers using the convenience build_default_tools factory.
+        self.plan_ledger = plan_ledger
 
     def register(self, spec: ToolSpec) -> None:
         if spec.name in self._specs:

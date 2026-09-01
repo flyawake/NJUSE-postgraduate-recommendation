@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+from ..planning import PlanLedger
 from .base import ToolSpec
 from .edit_file_tool import build_edit_spec
 from .glob_tool import build_glob_spec
@@ -13,6 +14,7 @@ from .paths import Workspace
 from .read_file_tool import build_read_spec
 from .registry import ToolRegistry
 from .run_command_tool import build_run_spec
+from .update_plan_tool import build_update_plan_spec
 from .web_tools import build_web_fetch_spec, build_web_search_spec
 from .write_file_tool import build_write_spec
 
@@ -25,6 +27,7 @@ DEFAULT_TOOL_NAMES = (
     "run_command",
     "web_search",
     "web_fetch",
+    "update_plan",
 )
 
 
@@ -32,8 +35,10 @@ def build_default_tools(
     workspace: Workspace,
     tracker: FileObservationTracker,
     is_cancelled: Optional[Callable[[], bool]] = None,
+    plan_ledger: Optional[PlanLedger] = None,
 ) -> ToolRegistry:
-    registry = ToolRegistry()
+    ledger = plan_ledger or PlanLedger()
+    registry = ToolRegistry(plan_ledger=ledger)
     specs: tuple[ToolSpec, ...] = (
         build_glob_spec(workspace.root),
         build_grep_spec(workspace.root),
@@ -43,6 +48,7 @@ def build_default_tools(
         build_run_spec(workspace.root, is_cancelled),
         build_web_search_spec(is_cancelled=is_cancelled),
         build_web_fetch_spec(is_cancelled=is_cancelled),
+        build_update_plan_spec(ledger),
     )
     for spec in specs:
         registry.register(spec)

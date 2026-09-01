@@ -148,4 +148,48 @@ describe("TranscriptProjector", () => {
     expect(actionTarget(row.action)).toBe("src/precise-target.py");
     expect(row.action.argsSummary).toContain("***");
   });
+
+  it("shows only one revisioned plan card and hides update_plan as a tool row", () => {
+    const projector = new TranscriptProjector();
+    projector.reset([
+      event(1, "tool_started", { call_id: "plan-1", name: "update_plan", arguments: "{}" }),
+      event(2, "plan_updated", {
+        revision: 1,
+        state: "active",
+        explanation: "multiple dependent outcomes",
+        steps: [
+          { step: "Inspect", status: "in_progress" },
+          { step: "Verify", status: "pending" },
+        ],
+      }),
+      event(3, "tool_finished", { call_id: "plan-1", name: "update_plan", ok: true }),
+      event(4, "tool_started", {
+        call_id: "read-1",
+        name: "read_file",
+        arguments: "{}",
+        plan_step: "Inspect",
+      }),
+    ], "complex task");
+    projector.append([
+      event(5, "plan_updated", {
+        revision: 2,
+        state: "active",
+        explanation: "progress",
+        steps: [
+          { step: "Inspect", status: "completed" },
+          { step: "Verify", status: "in_progress" },
+        ],
+      }),
+      event(6, "run_finished", { status: "SUCCESS", plan_state: "incomplete" }),
+    ], "complex task");
+
+    const plans = projector.snapshot.filter((item) => item.kind === "plan_card");
+    const actions = projector.snapshot.filter((item) => item.kind === "action_row");
+    expect(plans).toHaveLength(1);
+    expect(plans[0].kind === "plan_card" && plans[0].plan.revision).toBe(2);
+    expect(plans[0].kind === "plan_card" && plans[0].plan.state).toBe("incomplete");
+    expect(actions).toHaveLength(1);
+    expect(actions[0].kind === "action_row" && actions[0].action.name).toBe("read_file");
+    expect(actions[0].kind === "action_row" && actions[0].action.planStep).toBe("Inspect");
+  });
 });

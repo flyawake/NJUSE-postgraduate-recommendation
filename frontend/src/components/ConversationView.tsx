@@ -1278,6 +1278,7 @@ function ConversationTurn({
         verificationStatus={turn.result?.verification_status ? String(turn.result.verification_status) : null}
         streamSnapshot={streamSnapshot.data?.checkpoints}
         defaultThinkOpen={defaultThinkOpen}
+        initialPlan={turn.plan ?? undefined}
         embedded
       />
       <MemoryUsageSummary conversationId={conversationId} turnId={turn.id} onOpenSource={onOpenMemorySource} />

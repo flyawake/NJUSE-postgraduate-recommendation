@@ -125,6 +125,41 @@ class DuplicateCallIdModel:
         )
 
 
+class PlanningModel:
+    def __init__(self) -> None:
+        self.request_count = 0
+
+    def request(self, messages: list[dict], tools: list[dict]) -> AssistantTurn:
+        self.request_count += 1
+        if self.request_count <= 2:
+            complete = self.request_count == 2
+            return AssistantTurn(
+                text="",
+                tool_calls=(
+                    make_call(
+                        "update_plan",
+                        {
+                            "explanation": "cross-layer work",
+                            "plan": [
+                                {
+                                    "step": "Inspect architecture",
+                                    "status": "completed"
+                                    if complete
+                                    else "in_progress",
+                                },
+                                {
+                                    "step": "Verify integration",
+                                    "status": "completed" if complete else "pending",
+                                },
+                            ],
+                        },
+                        f"plan-{self.request_count}",
+                    ),
+                ),
+            )
+        return AssistantTurn(text="planned work done", tool_calls=())
+
+
 @pytest.fixture
 def workspace_factory(tmp_path):
     def make():
@@ -146,6 +181,34 @@ def make_service(tmp_path, model, env=None):
 
 
 class TestRepositoryBasics:
+    def test_v17_migration_adds_revisioned_turn_plans(self, tmp_path):
+        database = tmp_path / "state.db"
+        baseline = SQLiteConversationRepository(database, create_backups=False)
+        baseline.initialize()
+        conn = baseline._connect()
+        conn.execute("DROP TABLE turn_plan_revisions")
+        conn.execute("DROP TABLE turn_plans")
+        conn.execute("DELETE FROM schema_meta")
+        conn.execute("INSERT INTO schema_meta(version, applied_at) VALUES (17, 'old')")
+        conn.commit()
+        baseline.close()
+
+        migrated = SQLiteConversationRepository(database, create_backups=False)
+        migrated.initialize()
+        tables = {
+            str(row["name"])
+            for row in migrated._connect().execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert {"turn_plans", "turn_plan_revisions"} <= tables
+        assert (
+            migrated._connect()
+            .execute("SELECT version FROM schema_meta")
+            .fetchone()["version"]
+            == SCHEMA_VERSION
+        )
+
     def test_v14_migration_adds_conversation_reasoning_preference(self, tmp_path):
         path = tmp_path / "v14.db"
         conn = sqlite3.connect(path)
@@ -677,14 +740,140 @@ class TestRepositoryBasics:
         )
         turn = repo.create_turn(conv.id, user_text="hello", run_id="run")
         repo.update_turn_state(conv.id, turn.id, state="running")
+        repo.save_turn_plan(
+            conv.id,
+            turn.id,
+            revision=1,
+            state="active",
+            explanation="complex task",
+            steps=[
+                {"step": "Inspect", "status": "in_progress"},
+                {"step": "Verify", "status": "pending"},
+            ],
+            expected_revision=0,
+        )
         recovered = repo.recover_active_turns()
         assert len(recovered) == 1
         turned = repo.get_turn(conv.id, turn.id)
         assert turned.state == "interrupted"
         assert turned.error_code == "PROCESS_RESTARTED"
+        assert repo.get_turn_plan(conv.id, turn.id)["state"] == "interrupted"
+
+    def test_turn_plan_revisions_are_atomic_and_auditable(
+        self, workspace_factory, tmp_path
+    ):
+        repo = SQLiteConversationRepository(tmp_path / "state.db")
+        repo.initialize()
+        ws = workspace_factory()
+        conv = repo.create_conversation(
+            workspace_path=str(ws), workspace_key=str(ws), profile_id=None, title="t"
+        )
+        turn = repo.create_turn(conv.id, user_text="complex", run_id="run")
+        first_steps = [
+            {"step": "Inspect", "status": "in_progress"},
+            {"step": "Verify", "status": "pending"},
+        ]
+        repo.save_turn_plan(
+            conv.id,
+            turn.id,
+            revision=1,
+            state="active",
+            explanation="initial",
+            steps=first_steps,
+            expected_revision=0,
+        )
+        second_steps = [
+            {"step": "Inspect", "status": "completed"},
+            {"step": "Verify", "status": "completed"},
+        ]
+        repo.save_turn_plan(
+            conv.id,
+            turn.id,
+            revision=2,
+            state="active",
+            explanation="finished",
+            steps=second_steps,
+            expected_revision=1,
+        )
+
+        assert repo.get_turn_plan(conv.id, turn.id)["steps"] == second_steps
+        assert [
+            item["revision"] for item in repo.list_turn_plan_revisions(conv.id, turn.id)
+        ] == [1, 2]
+        with pytest.raises(ValueError, match="plan_revision_conflict"):
+            repo.save_turn_plan(
+                conv.id,
+                turn.id,
+                revision=2,
+                state="active",
+                explanation="stale",
+                steps=first_steps,
+                expected_revision=1,
+            )
+        repo.finish_turn_plan(conv.id, turn.id, state="completed")
+        assert repo.get_turn_plan(conv.id, turn.id)["state"] == "completed"
+
+    def test_restart_reconciles_plan_left_active_after_terminal_turn(
+        self, workspace_factory, tmp_path
+    ):
+        repo = SQLiteConversationRepository(tmp_path / "state.db")
+        repo.initialize()
+        ws = workspace_factory()
+        conv = repo.create_conversation(
+            workspace_path=str(ws), workspace_key=str(ws), profile_id=None, title="t"
+        )
+        turn = repo.create_turn(conv.id, user_text="complex", run_id="run")
+        repo.save_turn_plan(
+            conv.id,
+            turn.id,
+            revision=1,
+            state="active",
+            explanation="done but terminal callback failed",
+            steps=[
+                {"step": "Inspect", "status": "completed"},
+                {"step": "Verify", "status": "completed"},
+            ],
+            expected_revision=0,
+        )
+        repo.set_turn_terminal(conv.id, turn.id, state="success", result_json="{}")
+
+        assert repo.recover_active_turns() == []
+        assert repo.get_turn_plan(conv.id, turn.id)["state"] == "completed"
 
 
 class TestConversationService:
+    def test_plan_is_persisted_and_returned_with_terminal_turn(
+        self, tmp_path, workspace_factory
+    ):
+        service = make_service(tmp_path, PlanningModel())
+        try:
+            workspace = workspace_factory()
+            conversation = service.create_conversation(
+                workspace_path=str(workspace), profile_id=None
+            )
+            started = service.start_turn(
+                conversation["id"], user_text="refactor multiple layers"
+            )
+            finished = wait_turn(service, conversation["id"], started["id"])
+
+            assert finished["state"] == "success"
+            assert finished["plan"]["revision"] == 2
+            assert finished["plan"]["state"] == "completed"
+            assert (
+                len(
+                    service._repository.list_turn_plan_revisions(
+                        conversation["id"], started["id"]
+                    )
+                )
+                == 2
+            )
+            events = service.get_events(
+                conversation["id"], started["id"], after_seq=0, limit=100
+            )
+            assert [event["kind"] for event in events].count("plan_updated") == 2
+        finally:
+            service.shutdown(timeout=5)
+
     def test_command_policy_survives_service_restart_per_conversation(
         self, tmp_path, workspace_factory
     ):

@@ -8,6 +8,7 @@ from coding_agent.public_redaction import (
     public_tool_target,
     redact_public_run_result,
 )
+from coding_agent.web.redaction import redact_public_payload
 
 
 @pytest.mark.parametrize(
@@ -61,3 +62,23 @@ def test_public_run_result_drops_internal_details_fail_closed() -> None:
         }
     )
     assert result == {"status": "ERROR", "stop_reason": "INTERNAL_ERROR"}
+
+
+def test_plan_event_is_shape_checked_and_bounded() -> None:
+    payload = redact_public_payload(
+        "plan_updated",
+        {
+            "revision": 2,
+            "state": "active",
+            "explanation": "x" * 2000,
+            "steps": [
+                {"step": "y" * 500, "status": "in_progress", "secret": "drop"},
+                {"step": "invalid", "status": "invented"},
+            ],
+            "future_internal": "drop",
+        },
+    )
+
+    assert set(payload) == {"revision", "state", "explanation", "steps"}
+    assert len(payload["explanation"]) == 1000
+    assert payload["steps"] == [{"step": "y" * 240, "status": "in_progress"}]
