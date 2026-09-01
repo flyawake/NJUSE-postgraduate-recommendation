@@ -23,7 +23,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
-from ..agent import AgentLoop
+from ..agent import DEFAULT_HARD_MAX_STEPS, AgentLoop
 from ..completion import CompletionPolicy
 from ..config import (
     DEFAULT_CHAR_BUDGET,
@@ -67,7 +67,7 @@ DEFAULT_MAX_EVENT_CHARS = 1_000_000
 _TERMINAL_ERROR_MESSAGES: Dict[StopReason, Tuple[str, str]] = {
     StopReason.MAX_STEPS: (
         "run_failed",
-        "达到最大逻辑步数，运行被终止；请缩小任务范围后再试",
+        "已达到工作步硬上限或没有新的计划进展，安全收尾仍未完成；请查看计划状态后继续",
     ),
     StopReason.MODEL_ERROR: (
         "model_error",
@@ -107,6 +107,10 @@ _LIVE_PHASE_AFTER_EVENT: Dict[str, str] = {
     "assistant_received": LoopPhase.HANDLING_RESPONSE.value,
     "tool_started": LoopPhase.EXECUTING_TOOLS.value,
     "tool_finished": LoopPhase.EXECUTING_TOOLS.value,
+    "plan_updated": LoopPhase.EXECUTING_TOOLS.value,
+    "plan_completion_deferred": LoopPhase.READY.value,
+    "step_budget_extended": LoopPhase.READY.value,
+    "step_budget_finalizing": LoopPhase.READY.value,
     "completion_deferred": LoopPhase.READY.value,
     "run_finished": LoopPhase.TERMINAL.value,
 }
@@ -423,6 +427,7 @@ class RunController:
             completion_policy=CompletionPolicy(),
             run_id=run_id,
             max_steps=DEFAULT_MAX_STEPS,
+            hard_max_steps=DEFAULT_HARD_MAX_STEPS,
             is_cancelled=cancel_event.is_set,
             event_sink=_EventSinkAdapter(sink),
             request_options=ModelRequestOptions(

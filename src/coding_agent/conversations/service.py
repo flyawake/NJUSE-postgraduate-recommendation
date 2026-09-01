@@ -19,7 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from ..agent import AgentLoop
+from ..agent import DEFAULT_HARD_MAX_STEPS, AgentLoop
 from ..artifacts.store import ArtifactStore
 from ..attachments import (
     MAX_ATTACHMENTS_PER_TURN,
@@ -2169,6 +2169,7 @@ class ConversationService:
             turn_id=turn_id,
             inbox_port=inbox_port,
             max_steps=DEFAULT_MAX_STEPS,
+            hard_max_steps=DEFAULT_HARD_MAX_STEPS,
             is_cancelled=cancel_event.is_set,
             event_sink=sink,
             journal=journal,

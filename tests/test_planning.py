@@ -81,6 +81,150 @@ def test_unfinished_plan_defers_final_answer_once(tmp_path):
     assert len(policy_messages) == 1
 
 
+def test_plan_only_rounds_do_not_consume_work_budget_and_can_close_safely(tmp_path):
+    first = make_tool_call("glob", {"pattern": "*.first"})
+    second = make_tool_call("glob", {"pattern": "*.second"})
+    model = ScriptedModel(
+        [
+            turn(calls=[plan_call()]),
+            turn(calls=[first]),
+            turn(calls=[second]),
+            turn(calls=[plan_call(("completed", "completed"))]),
+            turn("Done after closing the plan"),
+        ]
+    )
+    loop, sink, _ = build_loop(tmp_path, model, max_steps=2)
+
+    result = loop.run("A complex task at the old step boundary")
+
+    assert result.status is RunStatus.SUCCESS
+    assert result.work_step_count == 2
+    assert result.plan_step_count == 1
+    assert result.finalization_step_count == 2
+    assert result.step_count == 5
+    assert result.plan_state == "completed"
+    assert sink.types().count("step_budget_finalizing") == 1
+
+
+def test_active_plan_progress_extends_budget_up_to_hard_limit(tmp_path):
+    calls = [
+        make_tool_call("glob", {"pattern": f"*.work-{index}"}) for index in range(4)
+    ]
+    model = ScriptedModel(
+        [
+            turn(calls=[plan_call()]),
+            turn(calls=[calls[0]]),
+            turn(calls=[plan_call(("completed", "in_progress"))]),
+            turn(calls=[calls[1]]),
+            turn(calls=[calls[2]]),
+            turn(calls=[plan_call(("completed", "completed"))]),
+            turn(calls=[calls[3]]),
+            turn("Done at the hard boundary"),
+        ]
+    )
+    loop, sink, _ = build_loop(
+        tmp_path,
+        model,
+        max_steps=2,
+        hard_max_steps=4,
+    )
+
+    result = loop.run("A complex task requiring adaptive budget")
+
+    extensions = [event for event in sink.events if event.type == "step_budget_extended"]
+    assert result.status is RunStatus.SUCCESS
+    assert result.work_step_count == 4
+    assert result.work_step_limit == 4
+    assert result.hard_step_limit == 4
+    assert result.budget_extensions == 1
+    assert result.finalization_step_count == 1
+    assert len(extensions) == 1
+    assert extensions[0].payload == {
+        "from": 2,
+        "to": 4,
+        "hard_limit": 4,
+        "completed_plan_steps": 1,
+    }
+
+
+def test_initial_plan_cannot_claim_old_completed_steps_to_earn_extension(tmp_path):
+    inspect = make_tool_call("glob", {"pattern": "*.work"})
+    model = ScriptedModel(
+        [
+            turn(calls=[plan_call(("completed", "in_progress"))]),
+            turn(calls=[inspect]),
+            turn(calls=[plan_call(("completed", "completed"))]),
+            turn("Done"),
+        ]
+    )
+    loop, sink, _ = build_loop(
+        tmp_path,
+        model,
+        max_steps=1,
+        hard_max_steps=3,
+    )
+
+    result = loop.run("Do not inflate progress")
+
+    assert result.status is RunStatus.SUCCESS
+    assert result.work_step_limit == 1
+    assert result.finalization_step_count == 2
+    assert "step_budget_extended" not in sink.types()
+
+
+def test_plan_only_request_limit_stops_plan_spam_with_paired_results(tmp_path):
+    model = ScriptedModel([turn(calls=[plan_call()]) for _ in range(3)])
+    loop, _sink, _ = build_loop(tmp_path, model, max_plan_steps=2)
+
+    result = loop.run("Keep replanning forever")
+
+    assert result.status is RunStatus.ERROR
+    assert result.stop_reason.value == "MAX_STEPS"
+    assert result.plan_step_count == 3
+    assert "STEP_BUDGET_EXHAUSTED" in [
+        message.content
+        for message in loop.history
+        if getattr(message, "tool_name", None) == "update_plan"
+    ][-1]
+
+
+def test_finalization_cannot_create_a_new_plan(tmp_path):
+    inspect = make_tool_call("glob", {"pattern": "*.work"})
+    model = ScriptedModel(
+        [turn(calls=[inspect]), turn(calls=[plan_call()]), turn("Done")]
+    )
+    loop, sink, _ = build_loop(tmp_path, model, max_steps=1)
+
+    result = loop.run("A task without a plan")
+
+    assert result.status is RunStatus.SUCCESS
+    assert result.plan_state is None
+    assert "plan_updated" not in sink.types()
+    plan_results = [
+        message.content
+        for message in loop.history
+        if getattr(message, "tool_name", None) == "update_plan"
+    ]
+    assert len(plan_results) == 1
+    assert "STEP_BUDGET_EXHAUSTED" in plan_results[0]
+
+
+def test_finalization_accepts_truthful_answer_with_incomplete_plan(tmp_path):
+    inspect = make_tool_call("glob", {"pattern": "*.work"})
+    model = ScriptedModel(
+        [turn(calls=[plan_call()]), turn(calls=[inspect]), turn("Stopped safely")]
+    )
+    loop, sink, _ = build_loop(tmp_path, model, max_steps=1)
+
+    result = loop.run("Stop safely if the plan cannot progress")
+
+    assert result.status is RunStatus.SUCCESS
+    assert result.final_text == "Stopped safely"
+    assert result.plan_state == "incomplete"
+    assert result.finalization_step_count == 1
+    assert "plan_completion_deferred" not in sink.types()
+
+
 def test_plan_contract_rejects_ceremonial_or_ambiguous_plans():
     ledger = PlanLedger()
     with pytest.raises(PlanValidationError, match="2 to 7"):

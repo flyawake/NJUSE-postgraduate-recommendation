@@ -6,7 +6,7 @@
 
 ## 功能亮点
 
-- **自研 Agent 内核**：显式状态机驱动模型请求、tool call、工具结果和完成判断，具备最大步数、重复调用、连续失败、协议错误和取消等独立终止条件。
+- **自研 Agent 内核**：显式状态机驱动模型请求、tool call、工具结果和完成判断；工作步、Plan 更新和安全收尾分别计数，复杂任务可随可验证的计划进展自适应扩容，同时保留硬上限、重复调用、连续失败、协议错误和取消等独立终止条件。
 - **选择性任务计划**：模型按明确复杂度边界自行判断是否进入 Plan；简单问答和一两步小改动零额外轮次直接执行，复杂任务才创建 2–7 步可视计划并持续更新。
 - **本地编程工具**：支持 `glob`、`grep`、`read_file`、`write_file`、`edit_file`、`run_command`、`web_search`、`web_fetch` 和 `update_plan`；文件工具限制在工作区内，读写、搜索和命令输出均有资源上限。
 - **可靠上下文管理**：canonical history 只追加保存事实，每轮生成独立 request view，并同时检查字符、估算 token 与实际请求字节预算。
@@ -215,15 +215,16 @@ FastAPI local app server (loopback only)
 
 - 每个新任务在首次模型请求中完成“是否需要 Plan”的判断，不增加分类请求。以下任一情况应规划：至少三个有依赖的实质动作、跨文件/组件/层修改、先探索再实现的不确定工作、迁移/破坏性/安全或回滚敏感工作、多个独立验收结果，或很可能需要改路。问答、单个明确局部编辑、一次聚焦只读诊断以及预计一两个工具动作可完成的任务必须跳过 Plan。
 - 一旦模型调用 `update_plan`，AgentLoop 会把后续工具事件关联到当前 `in_progress` 步骤。最终答复前若仍有 `pending/in_progress`，PlanPolicy 最多延迟一次并要求完整更新；仍提前结束时结果如实标记 `incomplete`。持久化失败返回可重试的 `PLAN_PERSIST_FAILED`，不会发布未落盘的虚假计划。
+- 步数预算分层：纯 `update_plan` 轮次不占工作步，但单轮最多 12 次，混合 Plan 与其他工具的轮次仍算工作步，不能借 Plan 绕过预算。GUI 从 20 个工作步起步；只有活动计划新增已完成里程碑时才按 10 步扩容，硬上限 60。到达当前上限且无法扩容时进入最多 2 次模型请求的安全收尾，只允许 `update_plan`，任何文件、命令或联网工具都返回 `STEP_BUDGET_EXHAUSTED` 且不会分派执行。
 - 成功的 `write_file`/`edit_file` 记录变更路径并推进内存中的 workspace revision；只有最新 revision 之后、`purpose="verify"` 的 `run_command` 才构成验证尝试：退出码 0 → `VERIFIED`，非零 → `FAILED`，没有尝试 → `NOT_RUN`，没有变更 → `NOT_APPLICABLE`。`purpose` 只是 agent 声明的意图，退出码 0 只证明该命令成功，**不证明测试集合充分**。
 - 有变更但未验证时，CompletionPolicy 最多延迟完成一次：追加 `source=completion_policy`、以 `[completion-policy]` 前缀呈现的内部控制消息并回到 READY；无剩余 step 或提醒后模型再次给出非空最终文本时允许结束，但 `RunResult` 如实保留 `FAILED`/`NOT_RUN`，CLI 醒目标注“完成但未验证/验证失败”。
 - 相同“工具名 + 深度排序后 JSON 参数”签名连续第 3 次：仍执行并追加模型可见换路提醒；连续第 5 次：不再执行，追加 `REPEATED_TOOL_CALL` 错误结果，同组未分派调用追加 `ABORTED_BEFORE_DISPATCH`，随后终止。
-- 连续 3 个工具轮次全部失败 → `TOOL_FAILURE_LIMIT`。默认 `max_steps=20`（CLI 可设 1-50），第 20 步工具组执行完后阻止第 21 次请求。
+- 连续 3 个工具轮次全部失败 → `TOOL_FAILURE_LIMIT`。CLI 的 `--max-steps` 是显式硬上限，默认 20、可设 1–200；Plan 与安全收尾仍分别有界计数。
 - `StopReason`：`FINAL_ANSWER / MAX_STEPS / MODEL_ERROR / PROTOCOL_ERROR / CONTEXT_OVERFLOW / TOOL_FAILURE_LIMIT / REPEATED_TOOL_CALL / INTERRUPTED / INTERNAL_ERROR`。
 
 ### 事件
 
-每个事件含 run 内单调递增 `sequence`、`run_id`、类型、step 和字段级脱敏 payload。核心事件包括 `run_started / step_started / model_retry / assistant_received / tool_started / tool_finished / plan_updated / plan_completion_deferred / completion_deferred / run_finished`；`run_finished` 在每个已开始 run 中恰好出现一次且 sequence 最大。写文件内容、编辑字符串与命令敏感参数不会进入事件，worker 异常文本不会进入 API。
+每个事件含 run 内单调递增 `sequence`、`run_id`、类型、step 和字段级脱敏 payload。核心事件包括 `run_started / step_started / model_retry / assistant_received / tool_started / tool_finished / plan_updated / plan_completion_deferred / step_budget_extended / step_budget_finalizing / completion_deferred / run_finished`；`run_finished` 在每个已开始 run 中恰好出现一次且 sequence 最大。写文件内容、编辑字符串与命令敏感参数不会进入事件，worker 异常文本不会进入 API。
 
 ### 消息不变量
 
@@ -233,7 +234,7 @@ FastAPI local app server (loopback only)
 
 ## 测试
 
-当前验收基线：Python `421 passed / 4 skipped`，前端单元测试 `71 passed`，Playwright 生产端到端测试 `13 passed`；同时通过 Ruff、TypeScript、ESLint、OpenAPI 一致性、Vite production build 与 Python wheel 构建。
+当前验收基线：Python `441 passed / 4 skipped`，前端单元测试 `73 passed`，Playwright 生产端到端测试 `13 passed`；同时通过 Ruff、TypeScript、ESLint、OpenAPI 一致性、Vite production build 与 Python wheel 构建。
 
 全部 Python 测试离线运行，使用 fake/scripted model 与真实临时工作区工具，不访问网络、不依赖真实 API 或开发者机器路径：
 

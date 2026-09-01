@@ -174,6 +174,13 @@ class RunResult:
     stop_reason: StopReason
     final_text: Optional[str] = None
     step_count: int = 0
+    work_step_count: int = 0
+    plan_step_count: int = 0
+    finalization_step_count: int = 0
+    base_step_limit: int = 0
+    work_step_limit: int = 0
+    hard_step_limit: int = 0
+    budget_extensions: int = 0
     provider_attempt_count: int = 0
     tool_call_count: int = 0
     verification_status: VerificationStatus = VerificationStatus.NOT_APPLICABLE

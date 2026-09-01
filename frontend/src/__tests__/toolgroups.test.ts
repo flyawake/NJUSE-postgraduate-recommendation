@@ -32,6 +32,32 @@ describe("TranscriptProjector", () => {
     expect(items[1].kind === "action_row" && items[1].action.name).toBe("read_file");
   });
 
+  it("projects adaptive budget extensions and bounded finalization", () => {
+    const projector = new TranscriptProjector();
+    const items = projector.reset([
+      event(1, "step_budget_extended", { from: 20, to: 30, hard_limit: 60 }),
+      event(2, "step_budget_finalizing", { work_step_limit: 60, hard_limit: 60 }),
+    ], "complex task");
+
+    expect(items.slice(1)).toEqual([
+      {
+        id: "budget-1",
+        kind: "budget_notice",
+        status: "extended",
+        from: 20,
+        to: 30,
+        hardLimit: 60,
+      },
+      {
+        id: "budget-2",
+        kind: "budget_notice",
+        status: "finalizing",
+        to: 60,
+        hardLimit: 60,
+      },
+    ]);
+  });
+
   it("projects only appended events and updates a finished tool action in place", () => {
     const projector = new TranscriptProjector();
     projector.reset([

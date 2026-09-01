@@ -221,6 +221,8 @@ const zhCN = {
   "feed.noEvents": "运行尚未产生事件",
   "feed.loadOlder": "加载更早内容",
   "feed.modelRetryShort": "正在重试模型请求",
+  "feed.budgetExtended": "计划取得进展，工作预算由 {from} 步扩展到 {to} 步（硬上限 {hardLimit}）",
+  "feed.budgetFinalizing": "已到达 {limit} 步工作预算，正在安全收尾（硬上限 {hardLimit}）",
   "feed.verificationPending": "正在检查修改结果",
   "feed.runFinished": "本轮任务已结束",
   "feed.runInterrupted": "本轮任务已停止",

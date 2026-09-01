@@ -390,30 +390,66 @@ def test_context_overflow_terminates_before_model_call(tmp_path):
     assert_valid_event_stream(sink.events)
 
 
-def test_max_steps_blocks_next_request_after_tool_group(tmp_path):
+def test_max_steps_allows_one_safe_final_answer_after_tool_group(tmp_path):
     first = make_tool_call("glob", {"pattern": "*.a"})
     second = make_tool_call("glob", {"pattern": "*.b"})
     model = ScriptedModel([turn(calls=[first]), turn(calls=[second]), turn("too late")])
     loop, _sink, _model = build_loop(tmp_path, model, max_steps=2)
     result = loop.run("task")
-    assert result.status is RunStatus.ERROR
-    assert result.stop_reason is StopReason.MAX_STEPS
-    assert result.step_count == 2
+    assert result.status is RunStatus.SUCCESS
+    assert result.stop_reason is StopReason.FINAL_ANSWER
+    assert result.step_count == 3
+    assert result.work_step_count == 2
+    assert result.finalization_step_count == 1
     assert result.tool_call_count == 2
-    assert len(model.requests) == 2
+    assert len(model.requests) == 3
     assert history_is_paired(loop.history)
 
 
-def test_twentieth_step_tool_group_prevents_21st_request(tmp_path):
+def test_twentieth_work_step_gets_bounded_finalization_request(tmp_path):
     calls = [make_tool_call("glob", {"pattern": f"*.p{index}"}) for index in range(20)]
     turns = [turn(calls=[call]) for call in calls] + [turn("never")]
     model = ScriptedModel(turns)
     loop, _sink, _model = build_loop(tmp_path, model, max_steps=20)
     result = loop.run("task")
-    assert result.stop_reason is StopReason.MAX_STEPS
-    assert result.step_count == 20
+    assert result.stop_reason is StopReason.FINAL_ANSWER
+    assert result.step_count == 21
+    assert result.work_step_count == 20
+    assert result.finalization_step_count == 1
     assert result.tool_call_count == 20
-    assert len(model.requests) == 20
+    assert len(model.requests) == 21
+    assert history_is_paired(loop.history)
+
+
+def test_finalization_never_dispatches_workspace_tools(tmp_path):
+    inspect = make_tool_call("glob", {"pattern": "*.py"})
+    forbidden_one = make_tool_call(
+        "write_file", {"path": "unsafe-one.txt", "content": "must not exist"}
+    )
+    forbidden_two = make_tool_call(
+        "write_file", {"path": "unsafe-two.txt", "content": "must not exist"}
+    )
+    model = ScriptedModel(
+        [
+            turn(calls=[inspect]),
+            turn(calls=[forbidden_one]),
+            turn(calls=[forbidden_two]),
+        ]
+    )
+    loop, sink, _model = build_loop(tmp_path, model, max_steps=1)
+
+    result = loop.run("task")
+
+    assert result.status is RunStatus.ERROR
+    assert result.stop_reason is StopReason.MAX_STEPS
+    assert result.finalization_step_count == 2
+    assert result.tool_call_count == 3
+    assert not (tmp_path / "unsafe-one.txt").exists()
+    assert not (tmp_path / "unsafe-two.txt").exists()
+    denied = tool_contents(loop.history, "write_file")
+    assert len(denied) == 2
+    assert all("STEP_BUDGET_EXHAUSTED" in content for content in denied)
+    assert sink.types().count("step_budget_finalizing") == 1
     assert history_is_paired(loop.history)
 
 

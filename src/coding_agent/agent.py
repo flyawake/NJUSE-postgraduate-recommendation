@@ -46,6 +46,7 @@ from .tools.base import (
     ABORTED_BEFORE_DISPATCH,
     PROTOCOL_ERROR,
     REPEATED_TOOL_CALL,
+    STEP_BUDGET_EXHAUSTED,
     ToolError,
     ToolOutcome,
 )
@@ -53,6 +54,10 @@ from .tools.executor import ToolExecutor
 from .tools.registry import ToolRegistry
 
 DEFAULT_MAX_STEPS = 20
+DEFAULT_HARD_MAX_STEPS = 60
+DEFAULT_MAX_PLAN_STEPS = 12
+DEFAULT_FINALIZATION_STEPS = 2
+DEFAULT_STEP_BUDGET_INCREMENT = 10
 DEFAULT_MAX_PROVIDER_ATTEMPTS = 3
 DEFAULT_TOOL_FAILURE_ROUND_LIMIT = 3
 REPEAT_REMIND_AT = 3
@@ -95,6 +100,14 @@ PLAN_COMPLETION_MESSAGE = (
     "completed or blocked. If work remains, continue it first."
 )
 
+STEP_BUDGET_FINALIZATION_MESSAGE = (
+    "The work-step budget is exhausted. This is a bounded finalization phase, "
+    "not permission to continue implementation. Do not call workspace, command, "
+    "or network tools. If a plan is active, call update_plan now with the full "
+    "plan and mark all remaining steps completed or blocked. Then give a concise, "
+    "truthful final answer, including any unfinished work or failed verification."
+)
+
 
 class AgentLoop:
     """Owns the explicit FSM, counters, pairing, repeat/cancel guards.
@@ -117,6 +130,10 @@ class AgentLoop:
         turn_id: Optional[str] = None,
         inbox_port: Optional[Any] = None,
         max_steps: int = DEFAULT_MAX_STEPS,
+        hard_max_steps: Optional[int] = None,
+        max_plan_steps: int = DEFAULT_MAX_PLAN_STEPS,
+        finalization_steps: int = DEFAULT_FINALIZATION_STEPS,
+        step_budget_increment: int = DEFAULT_STEP_BUDGET_INCREMENT,
         max_provider_attempts: int = DEFAULT_MAX_PROVIDER_ATTEMPTS,
         tool_failure_round_limit: int = DEFAULT_TOOL_FAILURE_ROUND_LIMIT,
         repeat_remind_at: int = REPEAT_REMIND_AT,
@@ -130,6 +147,15 @@ class AgentLoop:
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
+        resolved_hard_max_steps = max_steps if hard_max_steps is None else hard_max_steps
+        if resolved_hard_max_steps < max_steps:
+            raise ValueError("hard_max_steps must be greater than or equal to max_steps")
+        if max_plan_steps < 1:
+            raise ValueError("max_plan_steps must be positive")
+        if finalization_steps < 1:
+            raise ValueError("finalization_steps must be positive")
+        if step_budget_increment < 1:
+            raise ValueError("step_budget_increment must be positive")
         self._model_client = model_client
         self._tool_schemas = tool_registry.provider_tools()
         self._tool_executor = tool_executor
@@ -140,7 +166,12 @@ class AgentLoop:
         self._conversation_id = conversation_id
         self._turn_id = turn_id
         self._inbox_port = inbox_port
-        self._max_steps = max_steps
+        self._base_max_steps = max_steps
+        self._step_budget = max_steps
+        self._hard_max_steps = resolved_hard_max_steps
+        self._max_plan_steps = max_plan_steps
+        self._finalization_step_limit = finalization_steps
+        self._step_budget_increment = step_budget_increment
         self._max_provider_attempts = max_provider_attempts
         self._tool_failure_round_limit = tool_failure_round_limit
         self._repeat_remind_at = repeat_remind_at
@@ -157,6 +188,15 @@ class AgentLoop:
         self.phase = LoopPhase.INITIALIZING
         self._history = CanonicalHistory()
         self._step_count = 0
+        self._work_step_count = 0
+        self._plan_step_count = 0
+        self._finalization_step_count = 0
+        self._budget_extensions = 0
+        self._completed_steps_at_last_extension = self._plan.completed_step_count
+        self._plan_progress_baseline_initialized = self._plan.snapshot is not None
+        self._finalizing = False
+        self._request_is_finalization = False
+        self._plan_step_limit_exceeded = False
         self._provider_attempt_count = 0
         self._tool_call_count = 0
         self._verification = VerificationStatus.NOT_APPLICABLE
@@ -321,20 +361,35 @@ class AgentLoop:
     # ------------------------------------------------------------- states
 
     def _handle_ready(self) -> None:
-        if self._step_count >= self._max_steps:
-            self._finish(RunStatus.ERROR, StopReason.MAX_STEPS)
-            return
         # Safe point 1: after the previous tool group/canonical commit is
         # fully settled and before building the next model request.
         self._poll_steer()
+        if self._finalizing:
+            if self._finalization_step_count >= self._finalization_step_limit:
+                self._finish(
+                    RunStatus.ERROR,
+                    StopReason.MAX_STEPS,
+                    details={"reason": "finalization_step_limit_exhausted"},
+                )
+                return
+        elif self._work_step_count >= self._step_budget:
+            if not self._try_extend_step_budget():
+                self._begin_finalization()
+
         self._last_view = self._context.build_request(self._history)
         self._step_count += 1
+        self._request_is_finalization = self._finalizing
+        if self._request_is_finalization:
+            self._finalization_step_count += 1
         self._emit(
             event_types.EVENT_STEP_STARTED,
             step=self._step_count,
             payload={
                 "char_count": self._last_view.char_count,
                 "budget": self._context.char_budget,
+                "work_step_count": self._work_step_count,
+                "work_step_limit": self._step_budget,
+                "finalizing": self._request_is_finalization,
             },
         )
         self._transit(LoopPhase.REQUESTING_MODEL)
@@ -388,6 +443,16 @@ class AgentLoop:
         if turn is None:
             self._finish(RunStatus.ERROR, StopReason.MODEL_ERROR)
             return
+        plan_only = bool(turn.tool_calls) and all(
+            call.name == "update_plan" for call in turn.tool_calls
+        )
+        if not self._request_is_finalization:
+            if plan_only:
+                self._plan_step_count += 1
+                if self._plan_step_count > self._max_plan_steps:
+                    self._plan_step_limit_exceeded = True
+            else:
+                self._work_step_count += 1
         assistant_message = AssistantMessage(
             text=turn.text or "",
             tool_calls=tuple(turn.tool_calls),
@@ -537,14 +602,47 @@ class AgentLoop:
             )
             return
 
+        if self._plan_step_limit_exceeded:
+            for call in calls:
+                self._append_budget_denied_outcome(
+                    call,
+                    "plan-only request limit exhausted; no plan update was dispatched",
+                )
+            self._finish(
+                RunStatus.ERROR,
+                StopReason.MAX_STEPS,
+                details={
+                    "reason": "plan_step_limit_exhausted",
+                    "plan_step_limit": self._max_plan_steps,
+                },
+            )
+            return
+
         interrupted = False
         reminder_due = False
         any_success = False
+        budget_denied = False
         for index, call in enumerate(calls):
             if self._is_cancelled():
                 interrupted = True
                 self._append_remaining_aborted(calls[index:])
                 break
+
+            if self._finalizing and (
+                call.name != "update_plan" or not self._plan.needs_completion_update
+            ):
+                budget_denied = True
+                message = (
+                    "update_plan may only close an existing active plan during "
+                    "bounded finalization"
+                    if call.name == "update_plan"
+                    else "only update_plan is allowed during bounded finalization"
+                )
+                self._append_budget_denied_outcome(
+                    call,
+                    message,
+                )
+                continue
 
             prepared = self._tool_executor.prepare(call)
             # Second cancel guard: policy/prepare ran without side effects,
@@ -601,6 +699,14 @@ class AgentLoop:
             self._record_outcome_effects(outcome)
             any_success = any_success or outcome.ok
             if outcome.ok and outcome.tool_name == "update_plan" and outcome.data:
+                if not self._plan_progress_baseline_initialized:
+                    # A plan may legitimately be created after some exploration.
+                    # Do not treat steps declared completed in its first snapshot
+                    # as progress earned during this run's adaptive budget window.
+                    self._completed_steps_at_last_extension = (
+                        self._plan.completed_step_count
+                    )
+                    self._plan_progress_baseline_initialized = True
                 self._emit(
                     event_types.EVENT_PLAN_UPDATED,
                     step=self._step_count,
@@ -654,7 +760,7 @@ class AgentLoop:
 
         if any_success:
             self._consecutive_failed_rounds = 0
-        else:
+        elif not budget_denied:
             self._consecutive_failed_rounds += 1
         if self._consecutive_failed_rounds >= self._tool_failure_round_limit:
             self._finish(
@@ -677,7 +783,11 @@ class AgentLoop:
         if self._poll_steer():
             self._transit(LoopPhase.READY)
             return
-        if self._plan.needs_completion_update and not self._plan_completion_deferred:
+        if (
+            self._plan.needs_completion_update
+            and not self._plan_completion_deferred
+            and not self._finalizing
+        ):
             self._plan_completion_deferred = True
             self._append_history(
                 UserMessage(PLAN_COMPLETION_MESSAGE, source="plan_policy")
@@ -695,8 +805,8 @@ class AgentLoop:
         decision = self._completion.decide(
             has_changes=bool(self._mutated_paths),
             verification=self._verification,
-            step_count=self._step_count,
-            max_steps=self._max_steps,
+            step_count=self._work_step_count,
+            max_steps=self._step_budget,
             deferred=self._completion_deferred,
         )
         if decision.complete:
@@ -714,6 +824,84 @@ class AgentLoop:
         self._transit(LoopPhase.READY)
 
     # ------------------------------------------------------------ helpers
+
+    def _try_extend_step_budget(self) -> bool:
+        """Extend only when a live plan has made new milestone progress."""
+        completed = self._plan.completed_step_count
+        if (
+            self._step_budget >= self._hard_max_steps
+            or not self._plan.needs_completion_update
+            or completed <= self._completed_steps_at_last_extension
+        ):
+            return False
+        previous = self._step_budget
+        self._step_budget = min(
+            self._hard_max_steps,
+            self._step_budget + self._step_budget_increment,
+        )
+        self._completed_steps_at_last_extension = completed
+        self._budget_extensions += 1
+        self._emit(
+            event_types.EVENT_STEP_BUDGET_EXTENDED,
+            step=self._step_count,
+            payload={
+                "from": previous,
+                "to": self._step_budget,
+                "hard_limit": self._hard_max_steps,
+                "completed_plan_steps": completed,
+            },
+        )
+        return True
+
+    def _begin_finalization(self) -> None:
+        self._finalizing = True
+        self._append_history(
+            UserMessage(STEP_BUDGET_FINALIZATION_MESSAGE, source="step_budget")
+        )
+        self._emit(
+            event_types.EVENT_STEP_BUDGET_FINALIZING,
+            step=self._step_count,
+            payload={
+                "work_steps": self._work_step_count,
+                "work_step_limit": self._step_budget,
+                "hard_limit": self._hard_max_steps,
+                "requests_allowed": self._finalization_step_limit,
+                "plan_active": self._plan.needs_completion_update,
+            },
+        )
+
+    def _append_budget_denied_outcome(self, call: ToolCall, message: str) -> None:
+        """Pair a forbidden tool call without parsing, policy, or dispatch."""
+        self._tool_call_count += 1
+        self._emit(
+            event_types.EVENT_TOOL_STARTED,
+            step=self._step_count,
+            payload={
+                "call_id": call.id,
+                "name": call.name,
+                "arguments": "<not dispatched>",
+                "target": None,
+            },
+        )
+        outcome = ToolOutcome(
+            call_id=call.id,
+            tool_name=call.name,
+            ok=False,
+            normalized_args={},
+            error=ToolError(STEP_BUDGET_EXHAUSTED, message),
+        )
+        self._append_outcome(outcome)
+        self._emit(
+            event_types.EVENT_TOOL_FINISHED,
+            step=self._step_count,
+            payload={
+                "call_id": call.id,
+                "name": call.name,
+                "ok": False,
+                "error_code": STEP_BUDGET_EXHAUSTED,
+                "summary": outcome.summary(),
+            },
+        )
 
     @staticmethod
     def _invalid_tool_call_indices(calls: Sequence[ToolCall]) -> set[int]:
@@ -891,6 +1079,13 @@ class AgentLoop:
             stop_reason=self._stop_reason,
             final_text=self._final_text,
             step_count=self._step_count,
+            work_step_count=self._work_step_count,
+            plan_step_count=self._plan_step_count,
+            finalization_step_count=self._finalization_step_count,
+            base_step_limit=self._base_max_steps,
+            work_step_limit=self._step_budget,
+            hard_step_limit=self._hard_max_steps,
+            budget_extensions=self._budget_extensions,
             provider_attempt_count=self._provider_attempt_count,
             tool_call_count=self._tool_call_count,
             verification_status=self._verification,

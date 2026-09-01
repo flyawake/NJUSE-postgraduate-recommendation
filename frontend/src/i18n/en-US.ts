@@ -223,6 +223,8 @@ const enUS: typeof zhCN = {
   "feed.noEvents": "No events yet",
   "feed.loadOlder": "Load earlier activity",
   "feed.modelRetryShort": "Retrying the model request",
+  "feed.budgetExtended": "Plan progress extended the work budget from {from} to {to} steps (hard limit {hardLimit})",
+  "feed.budgetFinalizing": "Work budget reached {limit} steps; safely finalizing (hard limit {hardLimit})",
   "feed.verificationPending": "Checking the changes",
   "feed.runFinished": "This task has finished",
   "feed.runInterrupted": "This task was stopped",

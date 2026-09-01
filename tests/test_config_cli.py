@@ -73,7 +73,7 @@ def test_legacy_base_url_uses_same_url_validator(tmp_path):
     assert config.base_url == "https://api.example.com/v1"
 
 
-@pytest.mark.parametrize("max_steps", [0, 51, 100])
+@pytest.mark.parametrize("max_steps", [0, 201, 1000])
 def test_max_steps_out_of_range_rejected(tmp_path, max_steps):
     with pytest.raises(ConfigError):
         load_config(
@@ -81,6 +81,15 @@ def test_max_steps_out_of_range_rejected(tmp_path, max_steps):
             max_steps=max_steps,
             env={"OPENAI_API_KEY": "sk-test", "OPENAI_MODEL": "m"},
         )
+
+
+def test_large_explicit_cli_budget_is_supported(tmp_path):
+    config = load_config(
+        str(tmp_path),
+        max_steps=80,
+        env={"OPENAI_API_KEY": "sk-test", "OPENAI_MODEL": "m"},
+    )
+    assert config.max_steps == 80
 
 
 def test_workspace_must_exist(tmp_path):
@@ -118,7 +127,7 @@ def test_cli_invalid_max_steps_exits_one(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("CODING_AGENT_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("OPENAI_MODEL", "m")
-    assert cli.main(["--workspace", str(tmp_path), "--max-steps", "99", "task"]) == 1
+    assert cli.main(["--workspace", str(tmp_path), "--max-steps", "999", "task"]) == 1
     assert "max-steps" in capsys.readouterr().err
 
 

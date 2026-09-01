@@ -30,12 +30,19 @@ _LIVE_PHASE_AFTER_EVENT = {
     "assistant_received": "HANDLING_RESPONSE",
     "tool_started": "EXECUTING_TOOLS",
     "tool_finished": "EXECUTING_TOOLS",
+    "plan_updated": "EXECUTING_TOOLS",
+    "plan_completion_deferred": "READY",
+    "step_budget_extended": "READY",
+    "step_budget_finalizing": "READY",
     "completion_deferred": "READY",
     "run_finished": "TERMINAL",
 }
 
 _ERRORS = {
-    "MAX_STEPS": ("run_failed", "达到最大逻辑步数，运行被终止；请缩小任务范围后再试"),
+    "MAX_STEPS": (
+        "run_failed",
+        "已达到工作步硬上限或没有新的计划进展，安全收尾仍未完成；请查看计划状态后继续",
+    ),
     "MODEL_ERROR": (
         "model_error",
         "模型请求失败；请检查 profile 的 key、模型名与 base URL",

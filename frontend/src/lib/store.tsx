@@ -34,6 +34,10 @@ const LIVE_PHASE_AFTER_EVENT: Record<string, string> = {
   assistant_received: "HANDLING_RESPONSE",
   tool_started: "EXECUTING_TOOLS",
   tool_finished: "EXECUTING_TOOLS",
+  plan_updated: "EXECUTING_TOOLS",
+  plan_completion_deferred: "READY",
+  step_budget_extended: "READY",
+  step_budget_finalizing: "READY",
   completion_deferred: "READY",
   run_finished: "TERMINAL",
 };

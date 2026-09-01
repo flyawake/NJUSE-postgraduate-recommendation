@@ -30,6 +30,14 @@ export type TranscriptItem =
   | { id: string; kind: "plan_card"; plan: PlanItem }
   | { id: string; kind: "stream_attempt"; attempt: number }
   | { id: string; kind: "status_notice"; status: "retry" }
+  | {
+      id: string;
+      kind: "budget_notice";
+      status: "extended" | "finalizing";
+      from?: number;
+      to?: number;
+      hardLimit?: number;
+    }
   | { id: string; kind: "verification_notice"; status: string | null }
   | { id: string; kind: "terminal_notice"; status: string | null };
 
@@ -204,6 +212,27 @@ export class TranscriptProjector {
       }
       case "model_retry":
         this.items.push({ id: `retry-${event.id}`, kind: "status_notice", status: "retry" });
+        this.prune();
+        return;
+      case "step_budget_extended":
+        this.items.push({
+          id: `budget-${event.id}`,
+          kind: "budget_notice",
+          status: "extended",
+          from: typeof event.payload.from === "number" ? event.payload.from : undefined,
+          to: typeof event.payload.to === "number" ? event.payload.to : undefined,
+          hardLimit: typeof event.payload.hard_limit === "number" ? event.payload.hard_limit : undefined,
+        });
+        this.prune();
+        return;
+      case "step_budget_finalizing":
+        this.items.push({
+          id: `budget-${event.id}`,
+          kind: "budget_notice",
+          status: "finalizing",
+          to: typeof event.payload.work_step_limit === "number" ? event.payload.work_step_limit : undefined,
+          hardLimit: typeof event.payload.hard_limit === "number" ? event.payload.hard_limit : undefined,
+        });
         this.prune();
         return;
       case "completion_deferred":

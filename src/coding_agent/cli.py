@@ -69,7 +69,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-steps",
         type=int,
         default=None,
-        help="Maximum logical model steps (1-50, default 20).",
+        help=(
+            "Hard maximum work steps for CLI runs (1-200, default 20). "
+            "Plan-only and bounded finalization requests are counted separately."
+        ),
     )
     parser.add_argument(
         "--profile",
@@ -127,6 +130,8 @@ class ConsoleEventSink:
         "tool_finished": "tool finished",
         "plan_updated": "plan updated",
         "plan_completion_deferred": "plan completion deferred",
+        "step_budget_extended": "work budget extended",
+        "step_budget_finalizing": "work budget finalizing",
         "completion_deferred": "completion deferred",
         "run_finished": "run finished",
     }
@@ -171,6 +176,16 @@ class ConsoleEventSink:
             return f"revision={payload.get('revision')} steps={len(steps) if isinstance(steps, list) else 0}"
         if event.type == "plan_completion_deferred":
             return f"revision={payload.get('revision')} still active"
+        if event.type == "step_budget_extended":
+            return (
+                f"{payload.get('from')} -> {payload.get('to')} work steps "
+                f"(hard limit {payload.get('hard_limit')})"
+            )
+        if event.type == "step_budget_finalizing":
+            return (
+                f"limit={payload.get('work_step_limit')}, "
+                f"finalization requests={payload.get('requests_allowed')}"
+            )
         if event.type == "completion_deferred":
             return f"verification={payload.get('verification_status')}"
         if event.type == "run_finished":

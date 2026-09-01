@@ -302,6 +302,21 @@ const TranscriptRow = memo(function TranscriptRow({ item }: { item: TranscriptIt
       return <PlanCard plan={item.plan} />;
     case "status_notice":
       return <p className="px-1 text-xs text-warning">{t("feed.modelRetryShort")}</p>;
+    case "budget_notice":
+      return (
+        <p className="px-1 text-xs text-muted" data-testid={`budget-${item.status}`}>
+          {item.status === "extended"
+            ? t("feed.budgetExtended", {
+                from: item.from ?? "?",
+                to: item.to ?? "?",
+                hardLimit: item.hardLimit ?? "?",
+              })
+            : t("feed.budgetFinalizing", {
+                limit: item.to ?? "?",
+                hardLimit: item.hardLimit ?? "?",
+              })}
+        </p>
+      );
     case "verification_notice":
       return <p className="px-1 text-xs text-muted">{t("feed.verificationPending")}</p>;
     case "terminal_notice":

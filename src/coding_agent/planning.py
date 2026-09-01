@@ -99,6 +99,13 @@ class PlanLedger:
                 )
             )
 
+    @property
+    def completed_step_count(self) -> int:
+        with self._lock:
+            if self._snapshot is None:
+                return 0
+            return sum(item.status == "completed" for item in self._snapshot.steps)
+
     def update(self, explanation: str, steps: Sequence[Dict[str, str]]) -> PlanSnapshot:
         normalized_explanation, normalized_steps = validate_plan(explanation, steps)
         with self._lock:

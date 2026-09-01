@@ -545,7 +545,15 @@ class BootstrapDTO(BaseModel):
 # summaries produced by the kernel.
 EVENT_PAYLOAD_KEYS: Dict[str, frozenset] = {
     "run_started": frozenset({"task_chars"}),
-    "step_started": frozenset({"char_count", "budget"}),
+    "step_started": frozenset(
+        {
+            "char_count",
+            "budget",
+            "work_step_count",
+            "work_step_limit",
+            "finalizing",
+        }
+    ),
     "model_retry": frozenset({"attempt", "next_attempt", "reason"}),
     "model_stream_started": frozenset({"attempt"}),
     "assistant_text_delta": frozenset({"delta", "attempt"}),
@@ -555,8 +563,26 @@ EVENT_PAYLOAD_KEYS: Dict[str, frozenset] = {
     "assistant_received": frozenset(
         {"text_chars", "tool_call_count", "attempt", "elapsed_ms"}
     ),
-    "tool_started": frozenset({"call_id", "name", "arguments", "target"}),
-    "tool_finished": frozenset({"call_id", "name", "ok", "error_code", "summary"}),
+    "tool_started": frozenset(
+        {"call_id", "name", "arguments", "target", "plan_step"}
+    ),
+    "tool_finished": frozenset(
+        {"call_id", "name", "ok", "error_code", "summary", "plan_step"}
+    ),
+    "plan_updated": frozenset({"revision", "state", "explanation", "steps"}),
+    "plan_completion_deferred": frozenset({"revision"}),
+    "step_budget_extended": frozenset(
+        {"from", "to", "hard_limit", "completed_plan_steps"}
+    ),
+    "step_budget_finalizing": frozenset(
+        {
+            "work_steps",
+            "work_step_limit",
+            "hard_limit",
+            "requests_allowed",
+            "plan_active",
+        }
+    ),
     "completion_deferred": frozenset({"verification_status"}),
     "steer_delivered": frozenset({"item_id", "chars"}),
     "run_finished": frozenset(
@@ -568,6 +594,8 @@ EVENT_PAYLOAD_KEYS: Dict[str, frozenset] = {
             "step_count",
             "provider_attempt_count",
             "tool_call_count",
+            "plan_state",
+            "plan_revision",
         }
     ),
 }
